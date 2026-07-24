@@ -26,6 +26,15 @@ Before stitching, FFmpeg preflight verifies every successful clip is 704×1248 a
 
 The workflow templates will be rebuilt independently from live node contracts. The approved reference workflows are never written to or copied into this repository.
 
+Scene workflows are built dynamically from the validated job rather than mutating user-owned workflow JSON. The T2I
+builder selects Anima or Pony from `character.lora.base`, applies the character LoRA once, adds any scene LoRAs, and
+uses the exact family sampler route. The I2V builder consumes the deterministic PNG produced by the matching T2I
+scene, adds DMD and JoyAI before dynamic model-only LoRAs, enables feed-forward chunking, and uses separate LCM
+samplers and sigma schedules around the tiled spatial upscaler.
+
+The x2 spatial upscaler requires a half-resolution first-pass latent. Its internal dimensions are 352×624 so the
+second pass lands exactly at the only production output size, 704×1248. No alternate output resolution is exposed.
+
 ## No-render validation
 
 - `python -m unittest discover -s tests -v`
@@ -34,3 +43,6 @@ The workflow templates will be rebuilt independently from live node contracts. T
 - Restart ComfyUI, then query `/object_info/<node type>` for all seven `10MinVideoMaker_*` types.
 - Queue `10MinVideoMaker_ReleaseMemory` alone as a harmless API smoke test. This verifies real execution without
   loading a model or generating media.
+- Run `python scripts/export_workflows.py --install-approved-shared-copies` while ComfyUI is healthy. Export refuses
+  unavailable classes or mismatched routes, lays out nodes by dependency depth, checks node overlaps and group bounds,
+  and writes both API and GUI forms.

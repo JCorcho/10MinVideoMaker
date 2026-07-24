@@ -22,6 +22,7 @@ class NodeSurfaceTests(unittest.TestCase):
                 "10MinVideoMaker_PollGmail",
                 "10MinVideoMaker_ResolveLoras",
                 "10MinVideoMaker_ReleaseMemory",
+                "10MinVideoMaker_SaveSceneFrame",
                 "10MinVideoMaker_StitchClips",
             },
         )

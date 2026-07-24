@@ -20,6 +20,10 @@
 - ComfyUI 0.27.1 on this machine discovers this project through legacy `NODE_CLASS_MAPPINGS`; a V3-only entrypoint
   imported but did not appear in `/object_info`. Keep node wrappers thin and framework-independent services
   authoritative until the live loader behavior changes.
+- The exact Grok schema uses `character.lora.base` to select Anima/Pony and
+  `character.lora.recommended_weight` for the global T2I character LoRA. Scene LoRAs continue to use `weight`.
+- The LTX x2 spatial-upscale route uses an internal 352×624 first-pass latent and produces the fixed 704×1248
+  decoded clip. Do not expose or save an alternate production size.
 
 ## Implementation and testing
 
@@ -68,3 +72,27 @@
   - `python -m unittest discover -s tests -v`
   - `python -m compileall -q tenminvideomaker __init__.py`
   - `git diff --check`
+
+### 2026-07-24 — dynamic scene workflows
+
+- Changed files: `tenminvideomaker/artifacts.py`, `tenminvideomaker/contracts.py`,
+  `tenminvideomaker/nodes.py`, `tenminvideomaker/workflow_builder.py`,
+  `tenminvideomaker/workflow_export.py`, `scripts/export_workflows.py`,
+  `examples/example_job.json`, `workflows/10MinVideoMaker_*`, `tests/test_artifacts.py`,
+  `tests/test_contracts.py`, `tests/test_nodes.py`, `tests/test_workflow_builder.py`,
+  `tests/test_workflow_export.py`, `README.md`, `docs/architecture.md`, `docs/user-guide.md`.
+- Contract correction: the global character LoRA consumes the example schema's `recommended_weight` and required
+  `base`; dynamic stage LoRAs consume `weight`.
+- Routing: Anima and Pony use their separate verified T2I samplers. I2V uses the exact cached frame, two LCM passes,
+  separate verified sigmas, the x2 spatial upscaler, DMD 1.0, JoyAI 0.5, dynamic model-only LoRAs, generated audio,
+  and feed-forward chunking.
+- Persistence: T2I frames are atomically written to
+  `D:\output\10minfinals\.work\{job_id}\frames\scene_{id}.png`.
+- GUI export: project-local layout code is used because the shared skill bundle does not contain its referenced
+  `workflow_layout.py`. Export performs live contract validation, deterministic dependency-depth layout, overlap
+  inspection, crossing reporting, and group-bound checks.
+- Verification:
+  - 40 unit tests passed.
+  - All Anima, Pony, and I2V generated connections passed live `/object_info` type validation.
+  - All GUI exports had zero node overlaps and zero group-bound violations.
+  - No model was loaded and no media was rendered.

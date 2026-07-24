@@ -14,8 +14,9 @@ def payload() -> dict:
             "series": "Frozen",
             "lora": {
                 "name": "Elsa Frozen Anima",
+                "base": "Anima",
                 "download_url": "https://civitai.com/api/download/models/3184055",
-                "weight": 0.85,
+                "recommended_weight": 0.85,
             },
         },
         "ltxv_character_lora": None,
@@ -50,6 +51,8 @@ def payload() -> dict:
 class ContractTests(unittest.TestCase):
     def test_valid_payload_uses_ltx_frame_rule(self) -> None:
         job = parse_job_payload(payload())
+        self.assertEqual(job.character.base_model, "Anima")
+        self.assertEqual(job.character.lora.weight, 0.85)
         self.assertEqual(job.scenes[0].frame_count, 433)
         self.assertEqual(seconds_for_frame_count(job.scenes[0].frame_count), 18.0)
 
@@ -80,6 +83,17 @@ class ContractTests(unittest.TestCase):
     def test_frame_count_rejects_out_of_range_duration(self) -> None:
         with self.assertRaises(ValueError):
             frame_count_for_seconds(33)
+
+    def test_character_lora_requires_exact_base_and_recommended_weight_fields(self) -> None:
+        data = payload()
+        data["character"]["lora"]["weight"] = data["character"]["lora"].pop("recommended_weight")
+        with self.assertRaisesRegex(ContractValidationError, "recommended_weight"):
+            parse_job_payload(data)
+
+        data = payload()
+        data["character"]["lora"]["base"] = "Unknown"
+        with self.assertRaisesRegex(ContractValidationError, "Anima or Pony"):
+            parse_job_payload(data)
 
 
 if __name__ == "__main__":

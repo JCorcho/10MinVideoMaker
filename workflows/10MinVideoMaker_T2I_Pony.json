@@ -1,0 +1,998 @@
+{
+  "last_node_id": 9,
+  "last_link_id": 15,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "CheckpointLoaderSimple",
+      "pos": [
+        0,
+        0
+      ],
+      "size": [
+        360,
+        220
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "ckpt_name",
+          "type": [
+            "10Eros_v1.4_fp8mixed_learned.safetensors",
+            "cyberrealisticPony_v180Coreshift.safetensors",
+            "miaomiaoHarem_v19.safetensors"
+          ],
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            1
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "CLIP",
+          "type": "CLIP",
+          "links": [
+            2
+          ],
+          "slot_index": 1
+        },
+        {
+          "name": "VAE",
+          "type": "VAE",
+          "links": [
+            14
+          ],
+          "slot_index": 2
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CheckpointLoaderSimple"
+      },
+      "widgets_values": [
+        "cyberrealisticPony_v180Coreshift.safetensors"
+      ],
+      "title": "Pony checkpoint"
+    },
+    {
+      "id": 2,
+      "type": "LoraLoader",
+      "pos": [
+        520,
+        0
+      ],
+      "size": [
+        360,
+        250
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 1
+        },
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 2
+        },
+        {
+          "name": "lora_name",
+          "type": [
+            "(ltx)cum_13_000002500.safetensors",
+            "2BCosplay.safetensors",
+            "Age1_000000200.safetensors",
+            "Ahegao-000014.safetensors",
+            "AmpStumplessPony.safetensors",
+            "Beautiful face_alpha1.0_rank4_noxattn_last.safetensors",
+            "Breast Size Slider - Illustrious - V2_alpha1.0_rank4_noxattn_last.safetensors",
+            "Breast Slider - Pony_alpha1.0_rank4_noxattn_last.safetensors",
+            "Cr3ampi3_animation_sulphur-2_i2v_v1.0.safetensors",
+            "CyberRealistic_AnimaTurbo_V4.2.safetensors",
+            "DR34ML4Y_LTXXX_V2.safetensors",
+            "DaSiWa_LTX23_NSFW_Bodyphysics_Fluid_Motion_Enhancer_v01.safetensors",
+            "Darth TalonDG_Anima_V1.safetensors",
+            "DetailerPony-000001.safetensors",
+            "Emonette__Miraculous_Ladybug__Pony.safetensors",
+            "Flux_2-Turbo-LoRA_comfyui.safetensors",
+            "Frozen_elsa_textV1-PonyXL.safetensors",
+            "Futa_on_Female-000051(1).safetensors",
+            "JoyAI-Echo-content_r256.safetensors",
+            "LTX2.3_DMD_reshaped_r256.safetensors",
+            "LTX2.3_FUTANARI_futa_nar1_000015000.safetensors",
+            "LTX2.3_Fr0z3nAnna_V1_000006750.safetensors",
+            "LTX2.3_Fr0z3nElsa_V1_000007000.safetensors",
+            "LTX23_Marinette_3000steps.comfy.safetensors",
+            "LTX23_Penile_Praxis_v4.safetensors",
+            "Ladybug__Miraculous_Ladybug__Pony.safetensors",
+            "Lena_Mossclaw_LTX_Local_v1.safetensors",
+            "Malina_The_Emperors_New_School_pony.safetensors",
+            "MarinetteLTX.comfy.safetensors",
+            "MarinetteLTX23_4000steps.comfy.safetensors",
+            "MarinetteLTX4550.comfy.safetensors",
+            "MarinetteLTXFinal.safetensors",
+            "Marinette_Dupain_Cheng__Miraculous_Ladybug__Pony.safetensors",
+            "Marinette_LTX23_3500steps.safetensors",
+            "Marinette_LTX_2500steps.comfy.safetensors",
+            "Nagatoro_ANIMAv1_v1.safetensors",
+            "Nicole_Watterson_Anime.safetensors",
+            "Penis Size Slider - Illustrious - Girthy_alpha1.0_rank4_noxattn_250steps.safetensors",
+            "Princess_Anna.safetensors",
+            "Princess_Ariel.safetensors",
+            "Princess_Aurora.safetensors",
+            "Princess_Cinderella.safetensors",
+            "Princess_Elsa.safetensors",
+            "Princess_Jasmine.safetensors",
+            "Princess_Merida.safetensors",
+            "Princess_Moana.safetensors",
+            "Princess_Mulan.safetensors",
+            "Princess_Pocahontas.safetensors",
+            "Princess_Rapunzel.safetensors",
+            "Princess_Snow_White.safetensors",
+            "Princess_Tiana.safetensors",
+            "Puffy_Nipples_PonyXL.safetensors",
+            "RealSkin_xxXL_v1.safetensors",
+            "ShinySkinSlider3.0_800steps.safetensors",
+            "Thigh Size Slider V2_alpha1.0_rank4_noxattn_last.safetensors",
+            "TomagoPony.safetensors",
+            "annaXL.safetensors",
+            "anna_Pony_LoRA_0.1-000002.safetensors",
+            "checkpoint-e20_s400.safetensors",
+            "cinematic photography detailed pony xl v5.1.safetensors",
+            "cowgirl-ride-withfuta.safetensors",
+            "dmd2_sdxl_4step_lora.safetensors",
+            "eye_catching.safetensors",
+            "large_areolae_addift.safetensors",
+            "liquid_wet_dr1pp_ltx2_v1.0_scaled.safetensors",
+            "lora_weights_step_00300.safetensors",
+            "ltx-2.3-22b-distilled-lora-1.1_fro90_ceil72_condsafe.safetensors",
+            "ltx-2.3-22b-distilled-lora-1.1_rank72_energy.safetensors",
+            "ltx-2.3-22b-distilled-lora-384-1.1.safetensors",
+            "ltx-2.3-22b-ic-lora-deblur-0.9.safetensors",
+            "ltx-2.3-22b-ic-lora-in-outpainting-0.9.safetensors",
+            "ltx-2.3-22b-ic-lora-lipdub-0.9.safetensors",
+            "ltx-2.3-22b-ic-lora-pixel-spatial-upscaler-x2-0.9.safetensors",
+            "ltx-2.3-22b-ic-lora-pixel-spatial-upscaler-x4-0.9.safetensors",
+            "ltx-2.3-22b-ic-lora-union-control-ref0.5.safetensors",
+            "ltx2.3_audio_reactive_lora_v2.safetensors",
+            "ltx23-ultimatedt-NSFW-sulphured_audio_v3_k3nk.safetensors",
+            "ltx23_ic_char_lora-step00000500.comfy.safetensors",
+            "ltx23_ic_char_lora-step00001000.comfy.safetensors",
+            "ltx23_ic_char_lora-step00002000.comfy.safetensors",
+            "st0mach_bulge_ltx23_v1.1.safetensors",
+            "stomach_bulge_10eros_sulphur_v1.safetensors",
+            "tentaclesX.safetensors",
+            "trkti_lora_v1_600.safetensors",
+            "wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors",
+            "wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors"
+          ],
+          "link": null
+        },
+        {
+          "name": "strength_model",
+          "type": "FLOAT",
+          "link": null
+        },
+        {
+          "name": "strength_clip",
+          "type": "FLOAT",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            5,
+            9
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "CLIP",
+          "type": "CLIP",
+          "links": [
+            3,
+            4
+          ],
+          "slot_index": 1
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoraLoader"
+      },
+      "widgets_values": [
+        "Example_Character_Pony.safetensors",
+        0.85,
+        0.85
+      ],
+      "title": "T2I LoRA: Example Character Pony"
+    },
+    {
+      "id": 3,
+      "type": "CLIPTextEncode",
+      "pos": [
+        1040,
+        0
+      ],
+      "size": [
+        360,
+        220
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "text",
+          "type": "STRING",
+          "link": null
+        },
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 3
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            6,
+            10
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CLIPTextEncode"
+      },
+      "widgets_values": [
+        "masterpiece, best quality, highres, realistic portrait, example character, soft directional light, detailed skin, looking at viewer"
+      ],
+      "title": "Scene positive prompt"
+    },
+    {
+      "id": 4,
+      "type": "CLIPTextEncode",
+      "pos": [
+        1040,
+        300
+      ],
+      "size": [
+        360,
+        220
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "text",
+          "type": "STRING",
+          "link": null
+        },
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 4
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            7,
+            11
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CLIPTextEncode"
+      },
+      "widgets_values": [
+        "worst quality, low quality, sketch, text, watermark, logo"
+      ],
+      "title": "Scene negative prompt"
+    },
+    {
+      "id": 5,
+      "type": "EmptyLatentImage",
+      "pos": [
+        0,
+        300
+      ],
+      "size": [
+        360,
+        220
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "width",
+          "type": "INT",
+          "link": null
+        },
+        {
+          "name": "height",
+          "type": "INT",
+          "link": null
+        },
+        {
+          "name": "batch_size",
+          "type": "INT",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            8
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "EmptyLatentImage"
+      },
+      "widgets_values": [
+        704,
+        1248,
+        1
+      ],
+      "title": "704x1248 production latent"
+    },
+    {
+      "id": 6,
+      "type": "KSamplerAdvanced",
+      "pos": [
+        1560,
+        0
+      ],
+      "size": [
+        360,
+        474
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 5
+        },
+        {
+          "name": "add_noise",
+          "type": [
+            "enable",
+            "disable"
+          ],
+          "link": null
+        },
+        {
+          "name": "noise_seed",
+          "type": "INT",
+          "link": null
+        },
+        {
+          "name": "steps",
+          "type": "INT",
+          "link": null
+        },
+        {
+          "name": "cfg",
+          "type": "FLOAT",
+          "link": null
+        },
+        {
+          "name": "sampler_name",
+          "type": [
+            "euler",
+            "euler_cfg_pp",
+            "euler_ancestral",
+            "euler_ancestral_cfg_pp",
+            "heun",
+            "heunpp2",
+            "exp_heun_2_x0",
+            "exp_heun_2_x0_sde",
+            "dpm_2",
+            "dpm_2_ancestral",
+            "lms",
+            "dpm_fast",
+            "dpm_adaptive",
+            "dpmpp_2s_ancestral",
+            "dpmpp_2s_ancestral_cfg_pp",
+            "dpmpp_sde",
+            "dpmpp_sde_gpu",
+            "dpmpp_2m",
+            "dpmpp_2m_cfg_pp",
+            "dpmpp_2m_sde",
+            "dpmpp_2m_sde_gpu",
+            "dpmpp_2m_sde_heun",
+            "dpmpp_2m_sde_heun_gpu",
+            "dpmpp_3m_sde",
+            "dpmpp_3m_sde_gpu",
+            "ddpm",
+            "lcm",
+            "ipndm",
+            "ipndm_v",
+            "deis",
+            "res_multistep",
+            "res_multistep_cfg_pp",
+            "res_multistep_ancestral",
+            "res_multistep_ancestral_cfg_pp",
+            "gradient_estimation",
+            "gradient_estimation_cfg_pp",
+            "er_sde",
+            "seeds_2",
+            "seeds_3",
+            "sa_solver",
+            "sa_solver_pece",
+            "ddim",
+            "uni_pc",
+            "uni_pc_bh2",
+            "legacy_rk",
+            "rk",
+            "rk_beta",
+            "deis_3m_ode",
+            "deis_2m_ode",
+            "deis_3m",
+            "deis_2m",
+            "res_6s_ode",
+            "res_5s_ode",
+            "res_3s_ode",
+            "res_2s_ode",
+            "res_3m_ode",
+            "res_2m_ode",
+            "res_6s",
+            "res_5s",
+            "res_3s",
+            "res_2s",
+            "res_3m",
+            "res_2m"
+          ],
+          "link": null
+        },
+        {
+          "name": "scheduler",
+          "type": [
+            "simple",
+            "sgm_uniform",
+            "karras",
+            "exponential",
+            "ddim_uniform",
+            "beta",
+            "normal",
+            "linear_quadratic",
+            "kl_optimal",
+            "ays",
+            "ays+",
+            "ays_30",
+            "ays_30+",
+            "gits",
+            "beta_1_1",
+            "bong_tangent",
+            "beta57"
+          ],
+          "link": null
+        },
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "link": 6
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "link": 7
+        },
+        {
+          "name": "latent_image",
+          "type": "LATENT",
+          "link": 8
+        },
+        {
+          "name": "start_at_step",
+          "type": "INT",
+          "link": null
+        },
+        {
+          "name": "end_at_step",
+          "type": "INT",
+          "link": null
+        },
+        {
+          "name": "return_with_leftover_noise",
+          "type": [
+            "disable",
+            "enable"
+          ],
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            12
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "KSamplerAdvanced"
+      },
+      "widgets_values": [
+        "enable",
+        2472348977,
+        30,
+        6.0,
+        "res_5s_ode",
+        "karras",
+        0,
+        30,
+        "disable"
+      ],
+      "title": "Pony pass 1: res_5s_ode"
+    },
+    {
+      "id": 7,
+      "type": "KSamplerAdvanced",
+      "pos": [
+        2080,
+        0
+      ],
+      "size": [
+        360,
+        474
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 9
+        },
+        {
+          "name": "add_noise",
+          "type": [
+            "enable",
+            "disable"
+          ],
+          "link": null
+        },
+        {
+          "name": "noise_seed",
+          "type": "INT",
+          "link": null
+        },
+        {
+          "name": "steps",
+          "type": "INT",
+          "link": null
+        },
+        {
+          "name": "cfg",
+          "type": "FLOAT",
+          "link": null
+        },
+        {
+          "name": "sampler_name",
+          "type": [
+            "euler",
+            "euler_cfg_pp",
+            "euler_ancestral",
+            "euler_ancestral_cfg_pp",
+            "heun",
+            "heunpp2",
+            "exp_heun_2_x0",
+            "exp_heun_2_x0_sde",
+            "dpm_2",
+            "dpm_2_ancestral",
+            "lms",
+            "dpm_fast",
+            "dpm_adaptive",
+            "dpmpp_2s_ancestral",
+            "dpmpp_2s_ancestral_cfg_pp",
+            "dpmpp_sde",
+            "dpmpp_sde_gpu",
+            "dpmpp_2m",
+            "dpmpp_2m_cfg_pp",
+            "dpmpp_2m_sde",
+            "dpmpp_2m_sde_gpu",
+            "dpmpp_2m_sde_heun",
+            "dpmpp_2m_sde_heun_gpu",
+            "dpmpp_3m_sde",
+            "dpmpp_3m_sde_gpu",
+            "ddpm",
+            "lcm",
+            "ipndm",
+            "ipndm_v",
+            "deis",
+            "res_multistep",
+            "res_multistep_cfg_pp",
+            "res_multistep_ancestral",
+            "res_multistep_ancestral_cfg_pp",
+            "gradient_estimation",
+            "gradient_estimation_cfg_pp",
+            "er_sde",
+            "seeds_2",
+            "seeds_3",
+            "sa_solver",
+            "sa_solver_pece",
+            "ddim",
+            "uni_pc",
+            "uni_pc_bh2",
+            "legacy_rk",
+            "rk",
+            "rk_beta",
+            "deis_3m_ode",
+            "deis_2m_ode",
+            "deis_3m",
+            "deis_2m",
+            "res_6s_ode",
+            "res_5s_ode",
+            "res_3s_ode",
+            "res_2s_ode",
+            "res_3m_ode",
+            "res_2m_ode",
+            "res_6s",
+            "res_5s",
+            "res_3s",
+            "res_2s",
+            "res_3m",
+            "res_2m"
+          ],
+          "link": null
+        },
+        {
+          "name": "scheduler",
+          "type": [
+            "simple",
+            "sgm_uniform",
+            "karras",
+            "exponential",
+            "ddim_uniform",
+            "beta",
+            "normal",
+            "linear_quadratic",
+            "kl_optimal",
+            "ays",
+            "ays+",
+            "ays_30",
+            "ays_30+",
+            "gits",
+            "beta_1_1",
+            "bong_tangent",
+            "beta57"
+          ],
+          "link": null
+        },
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "link": 10
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "link": 11
+        },
+        {
+          "name": "latent_image",
+          "type": "LATENT",
+          "link": 12
+        },
+        {
+          "name": "start_at_step",
+          "type": "INT",
+          "link": null
+        },
+        {
+          "name": "end_at_step",
+          "type": "INT",
+          "link": null
+        },
+        {
+          "name": "return_with_leftover_noise",
+          "type": [
+            "disable",
+            "enable"
+          ],
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            13
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "KSamplerAdvanced"
+      },
+      "widgets_values": [
+        "enable",
+        2472348977,
+        30,
+        6.0,
+        "res_3m_ode",
+        "karras",
+        0,
+        30,
+        "disable"
+      ],
+      "title": "Pony pass 2: res_3m_ode"
+    },
+    {
+      "id": 8,
+      "type": "VAEDecode",
+      "pos": [
+        2600,
+        0
+      ],
+      "size": [
+        360,
+        220
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "samples",
+          "type": "LATENT",
+          "link": 13
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 14
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            15
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VAEDecode"
+      },
+      "widgets_values": [],
+      "title": "Decode initial frame"
+    },
+    {
+      "id": 9,
+      "type": "10MinVideoMaker_SaveSceneFrame",
+      "pos": [
+        3120,
+        0
+      ],
+      "size": [
+        360,
+        220
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 15
+        },
+        {
+          "name": "job_id",
+          "type": "STRING",
+          "link": null
+        },
+        {
+          "name": "scene_id",
+          "type": "INT",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "frame_path",
+          "type": "STRING",
+          "links": [],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "10MinVideoMaker_SaveSceneFrame"
+      },
+      "widgets_values": [
+        "example-20260724-1610",
+        1
+      ],
+      "title": "Cache deterministic scene frame"
+    }
+  ],
+  "links": [
+    [
+      1,
+      1,
+      0,
+      2,
+      0,
+      "MODEL"
+    ],
+    [
+      2,
+      1,
+      1,
+      2,
+      1,
+      "CLIP"
+    ],
+    [
+      3,
+      2,
+      1,
+      3,
+      1,
+      "CLIP"
+    ],
+    [
+      4,
+      2,
+      1,
+      4,
+      1,
+      "CLIP"
+    ],
+    [
+      5,
+      2,
+      0,
+      6,
+      0,
+      "MODEL"
+    ],
+    [
+      6,
+      3,
+      0,
+      6,
+      7,
+      "CONDITIONING"
+    ],
+    [
+      7,
+      4,
+      0,
+      6,
+      8,
+      "CONDITIONING"
+    ],
+    [
+      8,
+      5,
+      0,
+      6,
+      9,
+      "LATENT"
+    ],
+    [
+      9,
+      2,
+      0,
+      7,
+      0,
+      "MODEL"
+    ],
+    [
+      10,
+      3,
+      0,
+      7,
+      7,
+      "CONDITIONING"
+    ],
+    [
+      11,
+      4,
+      0,
+      7,
+      8,
+      "CONDITIONING"
+    ],
+    [
+      12,
+      6,
+      0,
+      7,
+      9,
+      "LATENT"
+    ],
+    [
+      13,
+      7,
+      0,
+      8,
+      0,
+      "LATENT"
+    ],
+    [
+      14,
+      1,
+      2,
+      8,
+      1,
+      "VAE"
+    ],
+    [
+      15,
+      8,
+      0,
+      9,
+      0,
+      "IMAGE"
+    ]
+  ],
+  "groups": [
+    {
+      "id": 1,
+      "title": "10MinVideoMaker T2I Pony",
+      "bounding": [
+        -80,
+        -80,
+        3640,
+        680
+      ],
+      "color": "#2b6f8a",
+      "font_size": 28,
+      "flags": {}
+    }
+  ],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.65,
+      "offset": [
+        120,
+        120
+      ]
+    },
+    "10MinVideoMaker": {
+      "production_width": 704,
+      "production_height": 1248,
+      "fps": 24,
+      "generated_from": "tenminvideomaker.workflow_builder"
+    }
+  },
+  "version": 0.4
+}

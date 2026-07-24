@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .assembly import AssemblyError, FfmpegAssembler, probe_video, validate_video_profile
+from .artifacts import ArtifactError, save_scene_frame
 from .assets import LocalLoraRequirement, LoraAssetManager
 from .constants import MANDATORY_I2V_LORAS, PRODUCTION_FPS, PRODUCTION_HEIGHT, PRODUCTION_WIDTH
 from .contracts import ContractValidationError, JobPayload, effective_t2i_loras, parse_job_payload
@@ -225,6 +226,32 @@ class TenMinReleaseMemoryNode(_AlwaysRun):
         return (f"Python objects collected: {collected}; {cuda_status}",)
 
 
+class TenMinSaveSceneFrameNode(_AlwaysRun):
+    CATEGORY = "10MinVideoMaker/Artifacts"
+    DESCRIPTION = "Atomically caches the exact 704x1248 scene frame at a deterministic project path."
+    FUNCTION = "execute"
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("frame_path",)
+    OUTPUT_NODE = True
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "images": ("IMAGE",),
+                "job_id": ("STRING", {"default": ""}),
+                "scene_id": ("INT", {"default": 1, "min": 1}),
+            }
+        }
+
+    def execute(self, images, job_id: str, scene_id: int):
+        try:
+            path = save_scene_frame(images, job_id, scene_id)
+        except ArtifactError as error:
+            raise RuntimeError(str(error)) from error
+        return (str(path),)
+
+
 class TenMinStitchClipsNode(_AlwaysRun):
     CATEGORY = "10MinVideoMaker/Assembly"
     DESCRIPTION = "FFprobes 704x1248/24 fps clips, then concatenates them to the final project output."
@@ -261,6 +288,7 @@ NODE_CLASS_MAPPINGS = {
     "10MinVideoMaker_PollGmail": TenMinPollGmailNode,
     "10MinVideoMaker_ResolveLoras": TenMinResolveLorasNode,
     "10MinVideoMaker_ReleaseMemory": TenMinReleaseMemoryNode,
+    "10MinVideoMaker_SaveSceneFrame": TenMinSaveSceneFrameNode,
     "10MinVideoMaker_StitchClips": TenMinStitchClipsNode,
 }
 
@@ -271,5 +299,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "10MinVideoMaker_PollGmail": "10Min Video Maker: Poll Gmail Once",
     "10MinVideoMaker_ResolveLoras": "10Min Video Maker: Resolve LoRAs",
     "10MinVideoMaker_ReleaseMemory": "10Min Video Maker: Release Memory",
+    "10MinVideoMaker_SaveSceneFrame": "10Min Video Maker: Save Scene Frame",
     "10MinVideoMaker_StitchClips": "10Min Video Maker: Stitch Clips",
 }

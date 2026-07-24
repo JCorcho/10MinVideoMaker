@@ -36,6 +36,7 @@ class StageSpec:
 class CharacterSpec:
     name: str
     series: str
+    base_model: str
     lora: LoraSpec
 
 
@@ -102,11 +103,11 @@ def _https_url(value: Any, field: str) -> str:
     return url
 
 
-def _lora(value: Any, context: str) -> LoraSpec:
+def _lora(value: Any, context: str, *, weight_field: str = "weight") -> LoraSpec:
     data = _mapping(value, context)
-    weight = _number(_required(data, "weight", context), f"{context}.weight")
+    weight = _number(_required(data, weight_field, context), f"{context}.{weight_field}")
     if not -4.0 <= weight <= 4.0:
-        raise ContractValidationError(f"{context}.weight must be between -4.0 and 4.0.")
+        raise ContractValidationError(f"{context}.{weight_field} must be between -4.0 and 4.0.")
     return LoraSpec(
         name=_string(_required(data, "name", context), f"{context}.name"),
         download_url=_https_url(_required(data, "download_url", context), f"{context}.download_url"),
@@ -152,10 +153,15 @@ def parse_job_payload(value: Any) -> JobPayload:
         raise ContractValidationError("payload.job_id may contain only letters, numbers, dot, underscore, and hyphen.")
 
     character_data = _mapping(_required(data, "character", "payload"), "payload.character")
+    character_lora_data = _mapping(_required(character_data, "lora", "payload.character"), "payload.character.lora")
+    base_model = _string(_required(character_lora_data, "base", "payload.character.lora"), "payload.character.lora.base")
+    if base_model.casefold() not in {"anima", "pony"}:
+        raise ContractValidationError("payload.character.lora.base must be either Anima or Pony.")
     character = CharacterSpec(
         name=_string(_required(character_data, "name", "payload.character"), "payload.character.name"),
         series=_string(_required(character_data, "series", "payload.character"), "payload.character.series"),
-        lora=_lora(_required(character_data, "lora", "payload.character"), "payload.character.lora"),
+        base_model=base_model,
+        lora=_lora(character_lora_data, "payload.character.lora", weight_field="recommended_weight"),
     )
     ltxv_character_value = data.get("ltxv_character_lora")
     ltxv_character_lora = None if ltxv_character_value is None else _lora(ltxv_character_value, "payload.ltxv_character_lora")

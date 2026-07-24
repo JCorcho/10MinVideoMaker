@@ -1,0 +1,2659 @@
+{
+  "last_node_id": 36,
+  "last_link_id": 54,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "CheckpointLoaderSimple",
+      "pos": [
+        0,
+        0
+      ],
+      "size": [
+        360,
+        220
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "ckpt_name",
+          "type": [
+            "10Eros_v1.4_fp8mixed_learned.safetensors",
+            "cyberrealisticPony_v180Coreshift.safetensors",
+            "miaomiaoHarem_v19.safetensors"
+          ],
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            1
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "CLIP",
+          "type": "CLIP",
+          "links": [],
+          "slot_index": 1
+        },
+        {
+          "name": "VAE",
+          "type": "VAE",
+          "links": [
+            11,
+            18,
+            30,
+            33,
+            39,
+            50
+          ],
+          "slot_index": 2
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CheckpointLoaderSimple"
+      },
+      "widgets_values": [
+        "10Eros_v1.4_fp8mixed_learned.safetensors"
+      ],
+      "title": "LTX 2.3 checkpoint"
+    },
+    {
+      "id": 2,
+      "type": "LTXAVTextEncoderLoader",
+      "pos": [
+        0,
+        300
+      ],
+      "size": [
+        360,
+        220
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "text_encoder",
+          "type": "COMBO",
+          "link": null
+        },
+        {
+          "name": "ckpt_name",
+          "type": "COMBO",
+          "link": null
+        },
+        {
+          "name": "device",
+          "type": "COMBO",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CLIP",
+          "type": "CLIP",
+          "links": [
+            5,
+            6
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LTXAVTextEncoderLoader"
+      },
+      "widgets_values": [
+        "gemma-3-12b-it-ablit-norms-biproj-fp8mixed.safetensors",
+        "10Eros_v1.4_fp8mixed_learned.safetensors",
+        "default"
+      ],
+      "title": "LTX 2.3 text encoder"
+    },
+    {
+      "id": 3,
+      "type": "LTXVAudioVAELoader",
+      "pos": [
+        0,
+        600
+      ],
+      "size": [
+        360,
+        220
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "ckpt_name",
+          "type": "COMBO",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "Audio VAE",
+          "type": "VAE",
+          "links": [
+            14,
+            52
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LTXVAudioVAELoader"
+      },
+      "widgets_values": [
+        "10Eros_v1.4_fp8mixed_learned.safetensors"
+      ],
+      "title": "LTX audio VAE"
+    },
+    {
+      "id": 4,
+      "type": "LoraLoaderModelOnly",
+      "pos": [
+        520,
+        0
+      ],
+      "size": [
+        360,
+        220
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 1
+        },
+        {
+          "name": "lora_name",
+          "type": [
+            "(ltx)cum_13_000002500.safetensors",
+            "2BCosplay.safetensors",
+            "Age1_000000200.safetensors",
+            "Ahegao-000014.safetensors",
+            "AmpStumplessPony.safetensors",
+            "Beautiful face_alpha1.0_rank4_noxattn_last.safetensors",
+            "Breast Size Slider - Illustrious - V2_alpha1.0_rank4_noxattn_last.safetensors",
+            "Breast Slider - Pony_alpha1.0_rank4_noxattn_last.safetensors",
+            "Cr3ampi3_animation_sulphur-2_i2v_v1.0.safetensors",
+            "CyberRealistic_AnimaTurbo_V4.2.safetensors",
+            "DR34ML4Y_LTXXX_V2.safetensors",
+            "DaSiWa_LTX23_NSFW_Bodyphysics_Fluid_Motion_Enhancer_v01.safetensors",
+            "Darth TalonDG_Anima_V1.safetensors",
+            "DetailerPony-000001.safetensors",
+            "Emonette__Miraculous_Ladybug__Pony.safetensors",
+            "Flux_2-Turbo-LoRA_comfyui.safetensors",
+            "Frozen_elsa_textV1-PonyXL.safetensors",
+            "Futa_on_Female-000051(1).safetensors",
+            "JoyAI-Echo-content_r256.safetensors",
+            "LTX2.3_DMD_reshaped_r256.safetensors",
+            "LTX2.3_FUTANARI_futa_nar1_000015000.safetensors",
+            "LTX2.3_Fr0z3nAnna_V1_000006750.safetensors",
+            "LTX2.3_Fr0z3nElsa_V1_000007000.safetensors",
+            "LTX23_Marinette_3000steps.comfy.safetensors",
+            "LTX23_Penile_Praxis_v4.safetensors",
+            "Ladybug__Miraculous_Ladybug__Pony.safetensors",
+            "Lena_Mossclaw_LTX_Local_v1.safetensors",
+            "Malina_The_Emperors_New_School_pony.safetensors",
+            "MarinetteLTX.comfy.safetensors",
+            "MarinetteLTX23_4000steps.comfy.safetensors",
+            "MarinetteLTX4550.comfy.safetensors",
+            "MarinetteLTXFinal.safetensors",
+            "Marinette_Dupain_Cheng__Miraculous_Ladybug__Pony.safetensors",
+            "Marinette_LTX23_3500steps.safetensors",
+            "Marinette_LTX_2500steps.comfy.safetensors",
+            "Nagatoro_ANIMAv1_v1.safetensors",
+            "Nicole_Watterson_Anime.safetensors",
+            "Penis Size Slider - Illustrious - Girthy_alpha1.0_rank4_noxattn_250steps.safetensors",
+            "Princess_Anna.safetensors",
+            "Princess_Ariel.safetensors",
+            "Princess_Aurora.safetensors",
+            "Princess_Cinderella.safetensors",
+            "Princess_Elsa.safetensors",
+            "Princess_Jasmine.safetensors",
+            "Princess_Merida.safetensors",
+            "Princess_Moana.safetensors",
+            "Princess_Mulan.safetensors",
+            "Princess_Pocahontas.safetensors",
+            "Princess_Rapunzel.safetensors",
+            "Princess_Snow_White.safetensors",
+            "Princess_Tiana.safetensors",
+            "Puffy_Nipples_PonyXL.safetensors",
+            "RealSkin_xxXL_v1.safetensors",
+            "ShinySkinSlider3.0_800steps.safetensors",
+            "Thigh Size Slider V2_alpha1.0_rank4_noxattn_last.safetensors",
+            "TomagoPony.safetensors",
+            "annaXL.safetensors",
+            "anna_Pony_LoRA_0.1-000002.safetensors",
+            "checkpoint-e20_s400.safetensors",
+            "cinematic photography detailed pony xl v5.1.safetensors",
+            "cowgirl-ride-withfuta.safetensors",
+            "dmd2_sdxl_4step_lora.safetensors",
+            "eye_catching.safetensors",
+            "large_areolae_addift.safetensors",
+            "liquid_wet_dr1pp_ltx2_v1.0_scaled.safetensors",
+            "lora_weights_step_00300.safetensors",
+            "ltx-2.3-22b-distilled-lora-1.1_fro90_ceil72_condsafe.safetensors",
+            "ltx-2.3-22b-distilled-lora-1.1_rank72_energy.safetensors",
+            "ltx-2.3-22b-distilled-lora-384-1.1.safetensors",
+            "ltx-2.3-22b-ic-lora-deblur-0.9.safetensors",
+            "ltx-2.3-22b-ic-lora-in-outpainting-0.9.safetensors",
+            "ltx-2.3-22b-ic-lora-lipdub-0.9.safetensors",
+            "ltx-2.3-22b-ic-lora-pixel-spatial-upscaler-x2-0.9.safetensors",
+            "ltx-2.3-22b-ic-lora-pixel-spatial-upscaler-x4-0.9.safetensors",
+            "ltx-2.3-22b-ic-lora-union-control-ref0.5.safetensors",
+            "ltx2.3_audio_reactive_lora_v2.safetensors",
+            "ltx23-ultimatedt-NSFW-sulphured_audio_v3_k3nk.safetensors",
+            "ltx23_ic_char_lora-step00000500.comfy.safetensors",
+            "ltx23_ic_char_lora-step00001000.comfy.safetensors",
+            "ltx23_ic_char_lora-step00002000.comfy.safetensors",
+            "st0mach_bulge_ltx23_v1.1.safetensors",
+            "stomach_bulge_10eros_sulphur_v1.safetensors",
+            "tentaclesX.safetensors",
+            "trkti_lora_v1_600.safetensors",
+            "wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors",
+            "wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors"
+          ],
+          "link": null
+        },
+        {
+          "name": "strength_model",
+          "type": "FLOAT",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            2
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoraLoaderModelOnly"
+      },
+      "widgets_values": [
+        "LTX2.3_DMD_reshaped_r256.safetensors",
+        1.0
+      ],
+      "title": "Mandatory I2V LoRA: LTX2.3_DMD_reshaped_r256.safetensors"
+    },
+    {
+      "id": 5,
+      "type": "LoraLoaderModelOnly",
+      "pos": [
+        1040,
+        0
+      ],
+      "size": [
+        360,
+        220
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 2
+        },
+        {
+          "name": "lora_name",
+          "type": [
+            "(ltx)cum_13_000002500.safetensors",
+            "2BCosplay.safetensors",
+            "Age1_000000200.safetensors",
+            "Ahegao-000014.safetensors",
+            "AmpStumplessPony.safetensors",
+            "Beautiful face_alpha1.0_rank4_noxattn_last.safetensors",
+            "Breast Size Slider - Illustrious - V2_alpha1.0_rank4_noxattn_last.safetensors",
+            "Breast Slider - Pony_alpha1.0_rank4_noxattn_last.safetensors",
+            "Cr3ampi3_animation_sulphur-2_i2v_v1.0.safetensors",
+            "CyberRealistic_AnimaTurbo_V4.2.safetensors",
+            "DR34ML4Y_LTXXX_V2.safetensors",
+            "DaSiWa_LTX23_NSFW_Bodyphysics_Fluid_Motion_Enhancer_v01.safetensors",
+            "Darth TalonDG_Anima_V1.safetensors",
+            "DetailerPony-000001.safetensors",
+            "Emonette__Miraculous_Ladybug__Pony.safetensors",
+            "Flux_2-Turbo-LoRA_comfyui.safetensors",
+            "Frozen_elsa_textV1-PonyXL.safetensors",
+            "Futa_on_Female-000051(1).safetensors",
+            "JoyAI-Echo-content_r256.safetensors",
+            "LTX2.3_DMD_reshaped_r256.safetensors",
+            "LTX2.3_FUTANARI_futa_nar1_000015000.safetensors",
+            "LTX2.3_Fr0z3nAnna_V1_000006750.safetensors",
+            "LTX2.3_Fr0z3nElsa_V1_000007000.safetensors",
+            "LTX23_Marinette_3000steps.comfy.safetensors",
+            "LTX23_Penile_Praxis_v4.safetensors",
+            "Ladybug__Miraculous_Ladybug__Pony.safetensors",
+            "Lena_Mossclaw_LTX_Local_v1.safetensors",
+            "Malina_The_Emperors_New_School_pony.safetensors",
+            "MarinetteLTX.comfy.safetensors",
+            "MarinetteLTX23_4000steps.comfy.safetensors",
+            "MarinetteLTX4550.comfy.safetensors",
+            "MarinetteLTXFinal.safetensors",
+            "Marinette_Dupain_Cheng__Miraculous_Ladybug__Pony.safetensors",
+            "Marinette_LTX23_3500steps.safetensors",
+            "Marinette_LTX_2500steps.comfy.safetensors",
+            "Nagatoro_ANIMAv1_v1.safetensors",
+            "Nicole_Watterson_Anime.safetensors",
+            "Penis Size Slider - Illustrious - Girthy_alpha1.0_rank4_noxattn_250steps.safetensors",
+            "Princess_Anna.safetensors",
+            "Princess_Ariel.safetensors",
+            "Princess_Aurora.safetensors",
+            "Princess_Cinderella.safetensors",
+            "Princess_Elsa.safetensors",
+            "Princess_Jasmine.safetensors",
+            "Princess_Merida.safetensors",
+            "Princess_Moana.safetensors",
+            "Princess_Mulan.safetensors",
+            "Princess_Pocahontas.safetensors",
+            "Princess_Rapunzel.safetensors",
+            "Princess_Snow_White.safetensors",
+            "Princess_Tiana.safetensors",
+            "Puffy_Nipples_PonyXL.safetensors",
+            "RealSkin_xxXL_v1.safetensors",
+            "ShinySkinSlider3.0_800steps.safetensors",
+            "Thigh Size Slider V2_alpha1.0_rank4_noxattn_last.safetensors",
+            "TomagoPony.safetensors",
+            "annaXL.safetensors",
+            "anna_Pony_LoRA_0.1-000002.safetensors",
+            "checkpoint-e20_s400.safetensors",
+            "cinematic photography detailed pony xl v5.1.safetensors",
+            "cowgirl-ride-withfuta.safetensors",
+            "dmd2_sdxl_4step_lora.safetensors",
+            "eye_catching.safetensors",
+            "large_areolae_addift.safetensors",
+            "liquid_wet_dr1pp_ltx2_v1.0_scaled.safetensors",
+            "lora_weights_step_00300.safetensors",
+            "ltx-2.3-22b-distilled-lora-1.1_fro90_ceil72_condsafe.safetensors",
+            "ltx-2.3-22b-distilled-lora-1.1_rank72_energy.safetensors",
+            "ltx-2.3-22b-distilled-lora-384-1.1.safetensors",
+            "ltx-2.3-22b-ic-lora-deblur-0.9.safetensors",
+            "ltx-2.3-22b-ic-lora-in-outpainting-0.9.safetensors",
+            "ltx-2.3-22b-ic-lora-lipdub-0.9.safetensors",
+            "ltx-2.3-22b-ic-lora-pixel-spatial-upscaler-x2-0.9.safetensors",
+            "ltx-2.3-22b-ic-lora-pixel-spatial-upscaler-x4-0.9.safetensors",
+            "ltx-2.3-22b-ic-lora-union-control-ref0.5.safetensors",
+            "ltx2.3_audio_reactive_lora_v2.safetensors",
+            "ltx23-ultimatedt-NSFW-sulphured_audio_v3_k3nk.safetensors",
+            "ltx23_ic_char_lora-step00000500.comfy.safetensors",
+            "ltx23_ic_char_lora-step00001000.comfy.safetensors",
+            "ltx23_ic_char_lora-step00002000.comfy.safetensors",
+            "st0mach_bulge_ltx23_v1.1.safetensors",
+            "stomach_bulge_10eros_sulphur_v1.safetensors",
+            "tentaclesX.safetensors",
+            "trkti_lora_v1_600.safetensors",
+            "wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors",
+            "wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors"
+          ],
+          "link": null
+        },
+        {
+          "name": "strength_model",
+          "type": "FLOAT",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            3
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoraLoaderModelOnly"
+      },
+      "widgets_values": [
+        "JoyAI-Echo-content_r256.safetensors",
+        0.5
+      ],
+      "title": "Mandatory I2V LoRA: JoyAI-Echo-content_r256.safetensors"
+    },
+    {
+      "id": 6,
+      "type": "LTXVChunkFeedForward",
+      "pos": [
+        1560,
+        0
+      ],
+      "size": [
+        360,
+        220
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 3
+        },
+        {
+          "name": "chunks",
+          "type": "INT",
+          "link": null
+        },
+        {
+          "name": "dim_threshold",
+          "type": "INT",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "links": [
+            4
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LTXVChunkFeedForward"
+      },
+      "widgets_values": [
+        2,
+        4096
+      ],
+      "title": "16 GB VRAM chunking"
+    },
+    {
+      "id": 7,
+      "type": "LTXReferenceEnable",
+      "pos": [
+        2080,
+        0
+      ],
+      "size": [
+        360,
+        220
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 4
+        },
+        {
+          "name": "zero_ref_timesteps",
+          "type": "BOOLEAN",
+          "link": null
+        },
+        {
+          "name": "verbose",
+          "type": "BOOLEAN",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "links": [
+            17,
+            38
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LTXReferenceEnable"
+      },
+      "widgets_values": [
+        false,
+        false
+      ],
+      "title": "Enable image reference conditioning"
+    },
+    {
+      "id": 8,
+      "type": "CLIPTextEncode",
+      "pos": [
+        520,
+        300
+      ],
+      "size": [
+        360,
+        220
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "text",
+          "type": "STRING",
+          "link": null
+        },
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 5
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            7
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CLIPTextEncode"
+      },
+      "widgets_values": [
+        "A close portrait holds steady as the subject turns toward camera; a slow push-in reveals a gentle smile while fabric and hair move naturally in the ambient air."
+      ],
+      "title": "I2V motion prompt"
+    },
+    {
+      "id": 9,
+      "type": "CLIPTextEncode",
+      "pos": [
+        520,
+        600
+      ],
+      "size": [
+        360,
+        220
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "text",
+          "type": "STRING",
+          "link": null
+        },
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 6
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            8
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CLIPTextEncode"
+      },
+      "widgets_values": [
+        "still image, bad quality, subtitles, text, watermark, logo, static, blur"
+      ],
+      "title": "I2V negative prompt"
+    },
+    {
+      "id": 10,
+      "type": "LTXVConditioning",
+      "pos": [
+        1040,
+        300
+      ],
+      "size": [
+        360,
+        220
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "link": 7
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "link": 8
+        },
+        {
+          "name": "frame_rate",
+          "type": "FLOAT",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "links": [
+            22,
+            43
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "links": [
+            23,
+            44
+          ],
+          "slot_index": 1
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LTXVConditioning"
+      },
+      "widgets_values": [
+        24.0
+      ],
+      "title": "24 fps conditioning"
+    },
+    {
+      "id": 11,
+      "type": "VHS_LoadImagePath",
+      "pos": [
+        0,
+        900
+      ],
+      "size": [
+        360,
+        220
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "STRING",
+          "link": null
+        },
+        {
+          "name": "custom_width",
+          "type": "INT",
+          "link": null
+        },
+        {
+          "name": "custom_height",
+          "type": "INT",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            9,
+            31
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "mask",
+          "type": "MASK",
+          "links": [],
+          "slot_index": 1
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VHS_LoadImagePath"
+      },
+      "widgets_values": [
+        "D:\\output\\10minfinals\\.work\\example-20260724-1610\\frames\\scene_0001.png",
+        0,
+        0
+      ],
+      "title": "Load exact cached T2I frame"
+    },
+    {
+      "id": 12,
+      "type": "ImageScale",
+      "pos": [
+        520,
+        900
+      ],
+      "size": [
+        360,
+        250
+      ],
+      "flags": {},
+      "order": 11,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 9
+        },
+        {
+          "name": "upscale_method",
+          "type": [
+            "nearest-exact",
+            "bilinear",
+            "area",
+            "bicubic",
+            "lanczos"
+          ],
+          "link": null
+        },
+        {
+          "name": "width",
+          "type": "INT",
+          "link": null
+        },
+        {
+          "name": "height",
+          "type": "INT",
+          "link": null
+        },
+        {
+          "name": "crop",
+          "type": [
+            "disabled",
+            "center"
+          ],
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            10
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "ImageScale"
+      },
+      "widgets_values": [
+        "lanczos",
+        352,
+        624,
+        "disabled"
+      ],
+      "title": "Scale frame for first pass"
+    },
+    {
+      "id": 13,
+      "type": "LTXVPreprocess",
+      "pos": [
+        1040,
+        600
+      ],
+      "size": [
+        360,
+        220
+      ],
+      "flags": {},
+      "order": 12,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 10
+        },
+        {
+          "name": "img_compression",
+          "type": "INT",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output_image",
+          "type": "IMAGE",
+          "links": [
+            13,
+            19
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LTXVPreprocess"
+      },
+      "widgets_values": [
+        35
+      ],
+      "title": "Preprocess first-pass reference"
+    },
+    {
+      "id": 14,
+      "type": "EmptyLTXVLatentVideo",
+      "pos": [
+        0,
+        1200
+      ],
+      "size": [
+        360,
+        222
+      ],
+      "flags": {},
+      "order": 13,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "width",
+          "type": "INT",
+          "link": null
+        },
+        {
+          "name": "height",
+          "type": "INT",
+          "link": null
+        },
+        {
+          "name": "length",
+          "type": "INT",
+          "link": null
+        },
+        {
+          "name": "batch_size",
+          "type": "INT",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            12
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "EmptyLTXVLatentVideo"
+      },
+      "widgets_values": [
+        352,
+        624,
+        193,
+        1
+      ],
+      "title": "Half-resolution video latent"
+    },
+    {
+      "id": 15,
+      "type": "LTXVImgToVideoInplaceKJ",
+      "pos": [
+        1560,
+        300
+      ],
+      "size": [
+        360,
+        278
+      ],
+      "flags": {},
+      "order": 14,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 11
+        },
+        {
+          "name": "latent",
+          "type": "LATENT",
+          "link": 12
+        },
+        {
+          "name": "num_images",
+          "type": "COMFY_DYNAMICCOMBO_V3",
+          "link": null
+        },
+        {
+          "name": "num_images.strength_1",
+          "type": "FLOAT",
+          "link": null
+        },
+        {
+          "name": "num_images.image_1",
+          "type": "IMAGE",
+          "link": 13
+        },
+        {
+          "name": "num_images.index_1",
+          "type": "INT",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "latent",
+          "type": "LATENT",
+          "links": [
+            15,
+            20
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LTXVImgToVideoInplaceKJ"
+      },
+      "widgets_values": [
+        "1",
+        0.75,
+        0
+      ],
+      "title": "Inject cached frame into first pass"
+    },
+    {
+      "id": 16,
+      "type": "LTXVEmptyLatentAudio",
+      "pos": [
+        520,
+        1230
+      ],
+      "size": [
+        360,
+        222
+      ],
+      "flags": {},
+      "order": 15,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "frames_number",
+          "type": "INT",
+          "link": null
+        },
+        {
+          "name": "frame_rate",
+          "type": "INT",
+          "link": null
+        },
+        {
+          "name": "batch_size",
+          "type": "INT",
+          "link": null
+        },
+        {
+          "name": "audio_vae",
+          "type": "VAE",
+          "link": 14
+        }
+      ],
+      "outputs": [
+        {
+          "name": "Latent",
+          "type": "LATENT",
+          "links": [
+            16
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LTXVEmptyLatentAudio"
+      },
+      "widgets_values": [
+        193,
+        24,
+        1
+      ],
+      "title": "Matching empty audio latent"
+    },
+    {
+      "id": 17,
+      "type": "LTXVConcatAVLatent",
+      "pos": [
+        2080,
+        300
+      ],
+      "size": [
+        360,
+        220
+      ],
+      "flags": {},
+      "order": 16,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "video_latent",
+          "type": "LATENT",
+          "link": 15
+        },
+        {
+          "name": "audio_latent",
+          "type": "LATENT",
+          "link": 16
+        }
+      ],
+      "outputs": [
+        {
+          "name": "latent",
+          "type": "LATENT",
+          "links": [
+            26
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LTXVConcatAVLatent"
+      },
+      "widgets_values": [],
+      "title": "First-pass AV latent"
+    },
+    {
+      "id": 18,
+      "type": "LTXReferenceConditioning",
+      "pos": [
+        2600,
+        0
+      ],
+      "size": [
+        360,
+        306
+      ],
+      "flags": {},
+      "order": 17,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 17
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 18
+        },
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 19
+        },
+        {
+          "name": "target_latent",
+          "type": "LATENT",
+          "link": 20
+        },
+        {
+          "name": "strength",
+          "type": "FLOAT",
+          "link": null
+        },
+        {
+          "name": "position_mode",
+          "type": [
+            "reference",
+            "prefix_continuous"
+          ],
+          "link": null
+        },
+        {
+          "name": "verbose",
+          "type": "BOOLEAN",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "links": [
+            21
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LTXReferenceConditioning"
+      },
+      "widgets_values": [
+        0.75,
+        "reference",
+        false
+      ],
+      "title": "First-pass reference model"
+    },
+    {
+      "id": 19,
+      "type": "KSamplerSelect",
+      "pos": [
+        0,
+        1502
+      ],
+      "size": [
+        360,
+        220
+      ],
+      "flags": {},
+      "order": 18,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "sampler_name",
+          "type": "COMBO",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "SAMPLER",
+          "type": "SAMPLER",
+          "links": [
+            24
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "KSamplerSelect"
+      },
+      "widgets_values": [
+        "lcm"
+      ],
+      "title": "LCM first pass"
+    },
+    {
+      "id": 20,
+      "type": "ManualSigmas",
+      "pos": [
+        0,
+        1802
+      ],
+      "size": [
+        360,
+        220
+      ],
+      "flags": {},
+      "order": 19,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "sigmas",
+          "type": "STRING",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "SIGMAS",
+          "type": "SIGMAS",
+          "links": [
+            25
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "ManualSigmas"
+      },
+      "widgets_values": [
+        "1, 0.99375, 0.9875, 0.98125, 0.975, 0.909375, 0.725, 0.421875, 0"
+      ],
+      "title": "Verified first-pass sigmas"
+    },
+    {
+      "id": 21,
+      "type": "SamplerCustom",
+      "pos": [
+        3120,
+        0
+      ],
+      "size": [
+        360,
+        362
+      ],
+      "flags": {},
+      "order": 20,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 21
+        },
+        {
+          "name": "add_noise",
+          "type": "BOOLEAN",
+          "link": null
+        },
+        {
+          "name": "noise_seed",
+          "type": "INT",
+          "link": null
+        },
+        {
+          "name": "cfg",
+          "type": "FLOAT",
+          "link": null
+        },
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "link": 22
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "link": 23
+        },
+        {
+          "name": "sampler",
+          "type": "SAMPLER",
+          "link": 24
+        },
+        {
+          "name": "sigmas",
+          "type": "SIGMAS",
+          "link": 25
+        },
+        {
+          "name": "latent_image",
+          "type": "LATENT",
+          "link": 26
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output",
+          "type": "LATENT",
+          "links": [],
+          "slot_index": 0
+        },
+        {
+          "name": "denoised_output",
+          "type": "LATENT",
+          "links": [
+            27
+          ],
+          "slot_index": 1
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "SamplerCustom"
+      },
+      "widgets_values": [
+        true,
+        2472348977,
+        1.0
+      ],
+      "title": "First LCM pass"
+    },
+    {
+      "id": 22,
+      "type": "LTXVSeparateAVLatent",
+      "pos": [
+        3640,
+        0
+      ],
+      "size": [
+        360,
+        220
+      ],
+      "flags": {},
+      "order": 21,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "av_latent",
+          "type": "LATENT",
+          "link": 27
+        }
+      ],
+      "outputs": [
+        {
+          "name": "video_latent",
+          "type": "LATENT",
+          "links": [
+            28
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "audio_latent",
+          "type": "LATENT",
+          "links": [
+            37
+          ],
+          "slot_index": 1
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LTXVSeparateAVLatent"
+      },
+      "widgets_values": [],
+      "title": "Split first-pass AV latent"
+    },
+    {
+      "id": 23,
+      "type": "LatentUpscaleModelLoader",
+      "pos": [
+        0,
+        2102
+      ],
+      "size": [
+        360,
+        220
+      ],
+      "flags": {},
+      "order": 22,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model_name",
+          "type": "COMBO",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "LATENT_UPSCALE_MODEL",
+          "type": "LATENT_UPSCALE_MODEL",
+          "links": [
+            29
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LatentUpscaleModelLoader"
+      },
+      "widgets_values": [
+        "ltx-2.3-spatial-upscaler-x2-1.1.safetensors"
+      ],
+      "title": "LTX spatial x2 upscaler"
+    },
+    {
+      "id": 24,
+      "type": "LTXVLatentUpsamplerTiled",
+      "pos": [
+        4160,
+        0
+      ],
+      "size": [
+        360,
+        334
+      ],
+      "flags": {},
+      "order": 23,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "samples",
+          "type": "LATENT",
+          "link": 28
+        },
+        {
+          "name": "upscale_model",
+          "type": "LATENT_UPSCALE_MODEL",
+          "link": 29
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 30
+        },
+        {
+          "name": "tile_size",
+          "type": "INT",
+          "link": null
+        },
+        {
+          "name": "overlap",
+          "type": "INT",
+          "link": null
+        },
+        {
+          "name": "max_size_for_no_tile",
+          "type": "INT",
+          "link": null
+        },
+        {
+          "name": "rotate_for_landscape",
+          "type": "BOOLEAN",
+          "link": null
+        },
+        {
+          "name": "debug",
+          "type": "BOOLEAN",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            34
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LTXVLatentUpsamplerTiled"
+      },
+      "widgets_values": [
+        11,
+        6,
+        22,
+        false,
+        false
+      ],
+      "title": "Tiled spatial upscale"
+    },
+    {
+      "id": 25,
+      "type": "ImageScale",
+      "pos": [
+        520,
+        1532
+      ],
+      "size": [
+        360,
+        250
+      ],
+      "flags": {},
+      "order": 24,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 31
+        },
+        {
+          "name": "upscale_method",
+          "type": [
+            "nearest-exact",
+            "bilinear",
+            "area",
+            "bicubic",
+            "lanczos"
+          ],
+          "link": null
+        },
+        {
+          "name": "width",
+          "type": "INT",
+          "link": null
+        },
+        {
+          "name": "height",
+          "type": "INT",
+          "link": null
+        },
+        {
+          "name": "crop",
+          "type": [
+            "disabled",
+            "center"
+          ],
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            32
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "ImageScale"
+      },
+      "widgets_values": [
+        "lanczos",
+        704,
+        1248,
+        "disabled"
+      ],
+      "title": "Scale exact frame to production size"
+    },
+    {
+      "id": 26,
+      "type": "LTXVPreprocess",
+      "pos": [
+        1040,
+        900
+      ],
+      "size": [
+        360,
+        220
+      ],
+      "flags": {},
+      "order": 25,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 32
+        },
+        {
+          "name": "img_compression",
+          "type": "INT",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output_image",
+          "type": "IMAGE",
+          "links": [
+            35,
+            40
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LTXVPreprocess"
+      },
+      "widgets_values": [
+        30
+      ],
+      "title": "Preprocess upscale-pass reference"
+    },
+    {
+      "id": 27,
+      "type": "LTXVImgToVideoInplaceKJ",
+      "pos": [
+        4680,
+        0
+      ],
+      "size": [
+        360,
+        278
+      ],
+      "flags": {},
+      "order": 26,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 33
+        },
+        {
+          "name": "latent",
+          "type": "LATENT",
+          "link": 34
+        },
+        {
+          "name": "num_images",
+          "type": "COMFY_DYNAMICCOMBO_V3",
+          "link": null
+        },
+        {
+          "name": "num_images.strength_1",
+          "type": "FLOAT",
+          "link": null
+        },
+        {
+          "name": "num_images.image_1",
+          "type": "IMAGE",
+          "link": 35
+        },
+        {
+          "name": "num_images.index_1",
+          "type": "INT",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "latent",
+          "type": "LATENT",
+          "links": [
+            36,
+            41
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LTXVImgToVideoInplaceKJ"
+      },
+      "widgets_values": [
+        "1",
+        1.0,
+        0
+      ],
+      "title": "Reinject cached frame after spatial upscale"
+    },
+    {
+      "id": 28,
+      "type": "LTXVConcatAVLatent",
+      "pos": [
+        5200,
+        0
+      ],
+      "size": [
+        360,
+        220
+      ],
+      "flags": {},
+      "order": 27,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "video_latent",
+          "type": "LATENT",
+          "link": 36
+        },
+        {
+          "name": "audio_latent",
+          "type": "LATENT",
+          "link": 37
+        }
+      ],
+      "outputs": [
+        {
+          "name": "latent",
+          "type": "LATENT",
+          "links": [
+            47
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LTXVConcatAVLatent"
+      },
+      "widgets_values": [],
+      "title": "Upscale-pass AV latent"
+    },
+    {
+      "id": 29,
+      "type": "LTXReferenceConditioning",
+      "pos": [
+        5200,
+        300
+      ],
+      "size": [
+        360,
+        306
+      ],
+      "flags": {},
+      "order": 28,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 38
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 39
+        },
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 40
+        },
+        {
+          "name": "target_latent",
+          "type": "LATENT",
+          "link": 41
+        },
+        {
+          "name": "strength",
+          "type": "FLOAT",
+          "link": null
+        },
+        {
+          "name": "position_mode",
+          "type": [
+            "reference",
+            "prefix_continuous"
+          ],
+          "link": null
+        },
+        {
+          "name": "verbose",
+          "type": "BOOLEAN",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "links": [
+            42
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LTXReferenceConditioning"
+      },
+      "widgets_values": [
+        1.0,
+        "reference",
+        false
+      ],
+      "title": "Upscale-pass reference model"
+    },
+    {
+      "id": 30,
+      "type": "KSamplerSelect",
+      "pos": [
+        0,
+        2402
+      ],
+      "size": [
+        360,
+        220
+      ],
+      "flags": {},
+      "order": 29,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "sampler_name",
+          "type": "COMBO",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "SAMPLER",
+          "type": "SAMPLER",
+          "links": [
+            45
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "KSamplerSelect"
+      },
+      "widgets_values": [
+        "lcm"
+      ],
+      "title": "LCM upscale pass"
+    },
+    {
+      "id": 31,
+      "type": "ManualSigmas",
+      "pos": [
+        0,
+        2702
+      ],
+      "size": [
+        360,
+        220
+      ],
+      "flags": {},
+      "order": 30,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "sigmas",
+          "type": "STRING",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "SIGMAS",
+          "type": "SIGMAS",
+          "links": [
+            46
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "ManualSigmas"
+      },
+      "widgets_values": [
+        "0.909375, 0.725, 0.421875, 0"
+      ],
+      "title": "Verified upscale-pass sigmas"
+    },
+    {
+      "id": 32,
+      "type": "SamplerCustom",
+      "pos": [
+        5720,
+        0
+      ],
+      "size": [
+        360,
+        362
+      ],
+      "flags": {},
+      "order": 31,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 42
+        },
+        {
+          "name": "add_noise",
+          "type": "BOOLEAN",
+          "link": null
+        },
+        {
+          "name": "noise_seed",
+          "type": "INT",
+          "link": null
+        },
+        {
+          "name": "cfg",
+          "type": "FLOAT",
+          "link": null
+        },
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "link": 43
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "link": 44
+        },
+        {
+          "name": "sampler",
+          "type": "SAMPLER",
+          "link": 45
+        },
+        {
+          "name": "sigmas",
+          "type": "SIGMAS",
+          "link": 46
+        },
+        {
+          "name": "latent_image",
+          "type": "LATENT",
+          "link": 47
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output",
+          "type": "LATENT",
+          "links": [],
+          "slot_index": 0
+        },
+        {
+          "name": "denoised_output",
+          "type": "LATENT",
+          "links": [
+            48
+          ],
+          "slot_index": 1
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "SamplerCustom"
+      },
+      "widgets_values": [
+        true,
+        2472348977,
+        1.0
+      ],
+      "title": "Second LCM pass"
+    },
+    {
+      "id": 33,
+      "type": "LTXVSeparateAVLatent",
+      "pos": [
+        6240,
+        0
+      ],
+      "size": [
+        360,
+        220
+      ],
+      "flags": {},
+      "order": 32,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "av_latent",
+          "type": "LATENT",
+          "link": 48
+        }
+      ],
+      "outputs": [
+        {
+          "name": "video_latent",
+          "type": "LATENT",
+          "links": [
+            49
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "audio_latent",
+          "type": "LATENT",
+          "links": [
+            51
+          ],
+          "slot_index": 1
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LTXVSeparateAVLatent"
+      },
+      "widgets_values": [],
+      "title": "Split final AV latent"
+    },
+    {
+      "id": 34,
+      "type": "VAEDecode",
+      "pos": [
+        6760,
+        0
+      ],
+      "size": [
+        360,
+        220
+      ],
+      "flags": {},
+      "order": 33,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "samples",
+          "type": "LATENT",
+          "link": 49
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 50
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            53
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VAEDecode"
+      },
+      "widgets_values": [],
+      "title": "Decode 704x1248 video"
+    },
+    {
+      "id": 35,
+      "type": "LTXVAudioVAEDecode",
+      "pos": [
+        6760,
+        300
+      ],
+      "size": [
+        360,
+        220
+      ],
+      "flags": {},
+      "order": 34,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "samples",
+          "type": "LATENT",
+          "link": 51
+        },
+        {
+          "name": "audio_vae",
+          "type": "VAE",
+          "link": 52
+        }
+      ],
+      "outputs": [
+        {
+          "name": "Audio",
+          "type": "AUDIO",
+          "links": [
+            54
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LTXVAudioVAEDecode"
+      },
+      "widgets_values": [],
+      "title": "Decode generated audio"
+    },
+    {
+      "id": 36,
+      "type": "VHS_VideoCombine",
+      "pos": [
+        7280,
+        0
+      ],
+      "size": [
+        360,
+        446
+      ],
+      "flags": {},
+      "order": 35,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 53
+        },
+        {
+          "name": "frame_rate",
+          "type": "FLOAT",
+          "link": null
+        },
+        {
+          "name": "loop_count",
+          "type": "INT",
+          "link": null
+        },
+        {
+          "name": "filename_prefix",
+          "type": "STRING",
+          "link": null
+        },
+        {
+          "name": "format",
+          "type": [
+            "image/gif",
+            "image/webp",
+            "video/koolook-ASTRA-h264.json",
+            "video/koolook-ProRes.json",
+            "video/16bit-png",
+            "video/8bit-png",
+            "video/av1-webm",
+            "video/ffmpeg-gif",
+            "video/ffv1-mkv",
+            "video/h264-mp4",
+            "video/h265-mp4",
+            "video/nvenc_av1-mp4",
+            "video/nvenc_h264-mp4",
+            "video/nvenc_hevc-mp4",
+            "video/ProRes",
+            "video/webm"
+          ],
+          "link": null
+        },
+        {
+          "name": "pingpong",
+          "type": "BOOLEAN",
+          "link": null
+        },
+        {
+          "name": "save_output",
+          "type": "BOOLEAN",
+          "link": null
+        },
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "link": 54
+        },
+        {
+          "name": "pix_fmt",
+          "type": [
+            "yuv420p",
+            "yuv420p10le"
+          ],
+          "link": null
+        },
+        {
+          "name": "crf",
+          "type": "INT",
+          "link": null
+        },
+        {
+          "name": "save_metadata",
+          "type": "BOOLEAN",
+          "link": null
+        },
+        {
+          "name": "trim_to_audio",
+          "type": "BOOLEAN",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "Filenames",
+          "type": "VHS_FILENAMES",
+          "links": [],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VHS_VideoCombine"
+      },
+      "widgets_values": [
+        24.0,
+        0,
+        "10MinVideoMaker/example-20260724-1610/clips/scene_0001",
+        "video/h264-mp4",
+        false,
+        true,
+        "yuv420p",
+        19,
+        true,
+        false
+      ],
+      "title": "Save 704x1248 24 fps scene clip"
+    }
+  ],
+  "links": [
+    [
+      1,
+      1,
+      0,
+      4,
+      0,
+      "MODEL"
+    ],
+    [
+      2,
+      4,
+      0,
+      5,
+      0,
+      "MODEL"
+    ],
+    [
+      3,
+      5,
+      0,
+      6,
+      0,
+      "MODEL"
+    ],
+    [
+      4,
+      6,
+      0,
+      7,
+      0,
+      "MODEL"
+    ],
+    [
+      5,
+      2,
+      0,
+      8,
+      1,
+      "CLIP"
+    ],
+    [
+      6,
+      2,
+      0,
+      9,
+      1,
+      "CLIP"
+    ],
+    [
+      7,
+      8,
+      0,
+      10,
+      0,
+      "CONDITIONING"
+    ],
+    [
+      8,
+      9,
+      0,
+      10,
+      1,
+      "CONDITIONING"
+    ],
+    [
+      9,
+      11,
+      0,
+      12,
+      0,
+      "IMAGE"
+    ],
+    [
+      10,
+      12,
+      0,
+      13,
+      0,
+      "IMAGE"
+    ],
+    [
+      11,
+      1,
+      2,
+      15,
+      0,
+      "VAE"
+    ],
+    [
+      12,
+      14,
+      0,
+      15,
+      1,
+      "LATENT"
+    ],
+    [
+      13,
+      13,
+      0,
+      15,
+      4,
+      "IMAGE"
+    ],
+    [
+      14,
+      3,
+      0,
+      16,
+      3,
+      "VAE"
+    ],
+    [
+      15,
+      15,
+      0,
+      17,
+      0,
+      "LATENT"
+    ],
+    [
+      16,
+      16,
+      0,
+      17,
+      1,
+      "LATENT"
+    ],
+    [
+      17,
+      7,
+      0,
+      18,
+      0,
+      "MODEL"
+    ],
+    [
+      18,
+      1,
+      2,
+      18,
+      1,
+      "VAE"
+    ],
+    [
+      19,
+      13,
+      0,
+      18,
+      2,
+      "IMAGE"
+    ],
+    [
+      20,
+      15,
+      0,
+      18,
+      3,
+      "LATENT"
+    ],
+    [
+      21,
+      18,
+      0,
+      21,
+      0,
+      "MODEL"
+    ],
+    [
+      22,
+      10,
+      0,
+      21,
+      4,
+      "CONDITIONING"
+    ],
+    [
+      23,
+      10,
+      1,
+      21,
+      5,
+      "CONDITIONING"
+    ],
+    [
+      24,
+      19,
+      0,
+      21,
+      6,
+      "SAMPLER"
+    ],
+    [
+      25,
+      20,
+      0,
+      21,
+      7,
+      "SIGMAS"
+    ],
+    [
+      26,
+      17,
+      0,
+      21,
+      8,
+      "LATENT"
+    ],
+    [
+      27,
+      21,
+      1,
+      22,
+      0,
+      "LATENT"
+    ],
+    [
+      28,
+      22,
+      0,
+      24,
+      0,
+      "LATENT"
+    ],
+    [
+      29,
+      23,
+      0,
+      24,
+      1,
+      "LATENT_UPSCALE_MODEL"
+    ],
+    [
+      30,
+      1,
+      2,
+      24,
+      2,
+      "VAE"
+    ],
+    [
+      31,
+      11,
+      0,
+      25,
+      0,
+      "IMAGE"
+    ],
+    [
+      32,
+      25,
+      0,
+      26,
+      0,
+      "IMAGE"
+    ],
+    [
+      33,
+      1,
+      2,
+      27,
+      0,
+      "VAE"
+    ],
+    [
+      34,
+      24,
+      0,
+      27,
+      1,
+      "LATENT"
+    ],
+    [
+      35,
+      26,
+      0,
+      27,
+      4,
+      "IMAGE"
+    ],
+    [
+      36,
+      27,
+      0,
+      28,
+      0,
+      "LATENT"
+    ],
+    [
+      37,
+      22,
+      1,
+      28,
+      1,
+      "LATENT"
+    ],
+    [
+      38,
+      7,
+      0,
+      29,
+      0,
+      "MODEL"
+    ],
+    [
+      39,
+      1,
+      2,
+      29,
+      1,
+      "VAE"
+    ],
+    [
+      40,
+      26,
+      0,
+      29,
+      2,
+      "IMAGE"
+    ],
+    [
+      41,
+      27,
+      0,
+      29,
+      3,
+      "LATENT"
+    ],
+    [
+      42,
+      29,
+      0,
+      32,
+      0,
+      "MODEL"
+    ],
+    [
+      43,
+      10,
+      0,
+      32,
+      4,
+      "CONDITIONING"
+    ],
+    [
+      44,
+      10,
+      1,
+      32,
+      5,
+      "CONDITIONING"
+    ],
+    [
+      45,
+      30,
+      0,
+      32,
+      6,
+      "SAMPLER"
+    ],
+    [
+      46,
+      31,
+      0,
+      32,
+      7,
+      "SIGMAS"
+    ],
+    [
+      47,
+      28,
+      0,
+      32,
+      8,
+      "LATENT"
+    ],
+    [
+      48,
+      32,
+      1,
+      33,
+      0,
+      "LATENT"
+    ],
+    [
+      49,
+      33,
+      0,
+      34,
+      0,
+      "LATENT"
+    ],
+    [
+      50,
+      1,
+      2,
+      34,
+      1,
+      "VAE"
+    ],
+    [
+      51,
+      33,
+      1,
+      35,
+      0,
+      "LATENT"
+    ],
+    [
+      52,
+      3,
+      0,
+      35,
+      1,
+      "VAE"
+    ],
+    [
+      53,
+      34,
+      0,
+      36,
+      0,
+      "IMAGE"
+    ],
+    [
+      54,
+      35,
+      0,
+      36,
+      7,
+      "AUDIO"
+    ]
+  ],
+  "groups": [
+    {
+      "id": 1,
+      "title": "10MinVideoMaker I2V LTX23 TwoPass",
+      "bounding": [
+        -80,
+        -80,
+        7800,
+        3082
+      ],
+      "color": "#2b6f8a",
+      "font_size": 28,
+      "flags": {}
+    }
+  ],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.65,
+      "offset": [
+        120,
+        120
+      ]
+    },
+    "10MinVideoMaker": {
+      "production_width": 704,
+      "production_height": 1248,
+      "fps": 24,
+      "generated_from": "tenminvideomaker.workflow_builder"
+    }
+  },
+  "version": 0.4
+}

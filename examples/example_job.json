@@ -1,0 +1,59 @@
+{
+  "job_id": "example-20260724-1610",
+  "created_at": "2026-07-24T16:10:45Z",
+  "subreddits": [
+    "r/ExampleAI"
+  ],
+  "selection_rationale": "Example payload for no-render workflow validation.",
+  "core_concept": "A single elegant portrait transitions into a gentle camera move.",
+  "character": {
+    "name": "Example Character",
+    "series": "Example Series",
+    "lora": {
+      "name": "Example Character Anima",
+      "base": "Anima",
+      "model_id": 100,
+      "version_id": 101,
+      "download_url": "https://example.invalid/example-character.safetensors",
+      "trigger_words": [
+        "example character"
+      ],
+      "trigger_analysis": "Keep the character trigger in each T2I prompt.",
+      "recommended_weight": 0.85
+    }
+  },
+  "ltxv_character_lora": null,
+  "total_estimated_sec": 8,
+  "scenes": [
+    {
+      "id": 1,
+      "title": "Example portrait",
+      "estimated_sec": 8,
+      "position": "portrait",
+      "inspiration": {
+        "civitai_url": "https://example.invalid/inspiration",
+        "original_seed": 2472348977,
+        "original_prompt_excerpt": "example portrait",
+        "act_loras_from_source": []
+      },
+      "i2v": {
+        "prompt": "A close portrait holds steady as the subject turns toward camera; a slow push-in reveals a gentle smile while fabric and hair move naturally in the ambient air.",
+        "negative": "still image, bad quality, subtitles, text, watermark, logo, static, blur",
+        "seed": 2472348977,
+        "loras": []
+      },
+      "t2i": {
+        "prompt": "masterpiece, best quality, highres, realistic portrait, example character, soft directional light, detailed skin, looking at viewer",
+        "negative": "worst quality, low quality, sketch, text, watermark, logo",
+        "seed": 2472348977,
+        "loras": [
+          {
+            "name": "Example Character Anima",
+            "download_url": "https://example.invalid/example-character.safetensors",
+            "weight": 0.85
+          }
+        ]
+      }
+    }
+  ]
+}
