@@ -35,6 +35,11 @@ class StateStoreTests(unittest.TestCase):
         self.assertTrue(self.store.claim_message("imap:42"))
         self.assertFalse(self.store.claim_message("imap:42"))
 
+    def test_inbound_job_claim_is_atomic_and_message_deduplicated(self) -> None:
+        self.assertTrue(self.store.claim_inbound_job("imap:42", self.job))
+        self.assertFalse(self.store.claim_inbound_job("imap:42", self.job))
+        self.assertEqual(self.store.snapshot().state, PipelineState.DOWNLOADING_ASSETS)
+
     def test_requeue_keeps_successful_scene_intact(self) -> None:
         self.store.claim_job(self.job)
         self.store.set_scene_state(self.job.job_id, 1, SceneState.SUCCEEDED, frame_path="frame.png", video_path="scene.mp4")

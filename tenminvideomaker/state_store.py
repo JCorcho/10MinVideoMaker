@@ -160,32 +160,57 @@ class PipelineStateStore:
         self.initialize()
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            current = connection.execute("SELECT state, job_id FROM pipeline_state WHERE singleton = 1").fetchone()
-            if PipelineState(current["state"]) not in {PipelineState.IDLE, PipelineState.WAITING_FOR_GROK}:
-                raise StateTransitionError(f"Cannot accept {payload.job_id}; pipeline is {current['state']}.")
-            existing = connection.execute("SELECT 1 FROM jobs WHERE job_id = ?", (payload.job_id,)).fetchone()
-            if existing:
-                raise StateTransitionError(f"Job {payload.job_id} has already been accepted.")
+            self._claim_job(connection, payload)
 
+    def claim_inbound_job(self, message_key: str, payload: JobPayload) -> bool:
+        """Atomically de-duplicate an IMAP message and accept its job exactly once."""
+        self.initialize()
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            current = connection.execute("SELECT state FROM pipeline_state WHERE singleton = 1").fetchone()
+            if PipelineState(current["state"]) not in {PipelineState.IDLE, PipelineState.WAITING_FOR_GROK}:
+                return False
+            already_seen = connection.execute(
+                "SELECT 1 FROM mail_messages WHERE message_key = ?", (message_key,)
+            ).fetchone()
+            already_accepted = connection.execute("SELECT 1 FROM jobs WHERE job_id = ?", (payload.job_id,)).fetchone()
+            if already_seen or already_accepted:
+                return False
             connection.execute(
-                "INSERT INTO jobs (job_id, payload_json, created_at) VALUES (?, ?, ?)",
-                (payload.job_id, json.dumps(payload.raw, sort_keys=True), _utc_now()),
+                "INSERT INTO mail_messages (message_key, job_id, processed_at) VALUES (?, ?, ?)",
+                (message_key, payload.job_id, _utc_now()),
             )
-            connection.executemany(
-                """
-                INSERT INTO scenes (job_id, scene_id, state, frame_path, video_path, error, updated_at)
-                VALUES (?, ?, ?, NULL, NULL, NULL, ?)
-                """,
-                [(payload.job_id, scene.scene_id, SceneState.PENDING, _utc_now()) for scene in payload.scenes],
-            )
-            connection.execute(
-                """
-                UPDATE pipeline_state
-                SET state = ?, job_id = ?, active_scene_id = NULL, error = NULL, updated_at = ?
-                WHERE singleton = 1
-                """,
-                (PipelineState.DOWNLOADING_ASSETS, payload.job_id, _utc_now()),
-            )
+            self._claim_job(connection, payload)
+            return True
+
+    @staticmethod
+    def _claim_job(connection: sqlite3.Connection, payload: JobPayload) -> None:
+        current = connection.execute("SELECT state, job_id FROM pipeline_state WHERE singleton = 1").fetchone()
+        if PipelineState(current["state"]) not in {PipelineState.IDLE, PipelineState.WAITING_FOR_GROK}:
+            raise StateTransitionError(f"Cannot accept {payload.job_id}; pipeline is {current['state']}.")
+        existing = connection.execute("SELECT 1 FROM jobs WHERE job_id = ?", (payload.job_id,)).fetchone()
+        if existing:
+            raise StateTransitionError(f"Job {payload.job_id} has already been accepted.")
+
+        connection.execute(
+            "INSERT INTO jobs (job_id, payload_json, created_at) VALUES (?, ?, ?)",
+            (payload.job_id, json.dumps(payload.raw, sort_keys=True), _utc_now()),
+        )
+        connection.executemany(
+            """
+            INSERT INTO scenes (job_id, scene_id, state, frame_path, video_path, error, updated_at)
+            VALUES (?, ?, ?, NULL, NULL, NULL, ?)
+            """,
+            [(payload.job_id, scene.scene_id, SceneState.PENDING, _utc_now()) for scene in payload.scenes],
+        )
+        connection.execute(
+            """
+            UPDATE pipeline_state
+            SET state = ?, job_id = ?, active_scene_id = NULL, error = NULL, updated_at = ?
+            WHERE singleton = 1
+            """,
+            (PipelineState.DOWNLOADING_ASSETS, payload.job_id, _utc_now()),
+        )
 
     def set_scene_state(
         self,
