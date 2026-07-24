@@ -3,9 +3,16 @@ from __future__ import annotations
 from email.message import EmailMessage
 import json
 import unittest
+from unittest.mock import patch
 
 from tenminvideomaker.contracts import ContractValidationError
-from tenminvideomaker.mail import GmailSettings, PIPELINE_SUBJECT, build_pipeline_request, extract_job_payload
+from tenminvideomaker.mail import (
+    GmailClient,
+    GmailSettings,
+    PIPELINE_SUBJECT,
+    build_pipeline_request,
+    extract_job_payload,
+)
 
 from test_contracts import payload
 
@@ -58,6 +65,45 @@ class MailTests(unittest.TestCase):
         )
         self.assertEqual(settings.auth_mode, "oauth2")
         self.assertEqual(settings.secret, "ephemeral-token")
+
+    def test_environment_supports_persistent_oauth_refresh_credentials(self) -> None:
+        settings = GmailSettings.from_environment(
+            {
+                "TENMIN_GMAIL_USERNAME": "owner@example.com",
+                "TENMIN_GMAIL_RECIPIENT": "owner@example.com",
+                "TENMIN_GMAIL_AUTH_MODE": "oauth2",
+                "TENMIN_GMAIL_OAUTH_CLIENT_ID": "client-id",
+                "TENMIN_GMAIL_OAUTH_CLIENT_SECRET": "client-secret",
+                "TENMIN_GMAIL_OAUTH_REFRESH_TOKEN": "refresh-token",
+            }
+        )
+        self.assertEqual(settings.oauth_client_id, "client-id")
+        self.assertEqual(settings.oauth_refresh_token, "refresh-token")
+        self.assertEqual(settings.secret, "")
+
+    def test_oauth_access_token_is_refreshed_once_then_cached(self) -> None:
+        settings = GmailSettings(
+            username="owner@example.com",
+            recipient="owner@example.com",
+            allowed_senders=frozenset({"owner@example.com"}),
+            auth_mode="oauth2",
+            secret="",
+            oauth_client_id="client-id",
+            oauth_client_secret="client-secret",
+            oauth_refresh_token="refresh-token",
+        )
+        client = GmailClient(settings)
+        with patch(
+            "tenminvideomaker.mail.refresh_access_token",
+            return_value=("access-token", 3600),
+        ) as refresh:
+            self.assertEqual(client._oauth_access_token(), "access-token")
+            self.assertEqual(client._oauth_access_token(), "access-token")
+        refresh.assert_called_once_with(
+            client_id="client-id",
+            client_secret="client-secret",
+            refresh_token="refresh-token",
+        )
 
 
 if __name__ == "__main__":

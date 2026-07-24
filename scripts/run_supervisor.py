@@ -21,6 +21,7 @@ import folder_paths
 from tenminvideomaker.assembly import FfmpegAssembler, probe_video
 from tenminvideomaker.assets import LoraAssetManager
 from tenminvideomaker.comfy_http import ComfyHttpClient
+from tenminvideomaker.configuration import load_project_environment
 from tenminvideomaker.mail import GmailClient, GmailSettings
 from tenminvideomaker.state_store import PipelineStateStore
 from tenminvideomaker.supervisor import PipelineSupervisor, SupervisorSettings
@@ -56,6 +57,14 @@ def restart_comfyui() -> bool:
 
 
 def build_supervisor(*, allow_restart: bool) -> PipelineSupervisor:
+    configured_environment = load_project_environment(PROJECT_ROOT)
+    os.environ.update(
+        {
+            key: value
+            for key, value in configured_environment.items()
+            if key.startswith("TENMIN_")
+        }
+    )
     runtime = PROJECT_ROOT / "runtime"
     runtime.mkdir(parents=True, exist_ok=True)
     comfy_url = os.environ.get("TENMIN_COMFY_URL", "http://127.0.0.1:8188")

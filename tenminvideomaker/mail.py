@@ -12,9 +12,11 @@ import json
 import os
 import smtplib
 import ssl
+import time
 from typing import Any, Iterable, Mapping
 
 from .contracts import ContractValidationError, JobPayload, parse_job_payload
+from .oauth import OAuthError, refresh_access_token
 from .state_store import PipelineState, PipelineStateStore
 
 PIPELINE_SUBJECT = "Run the LTX video pipeline"
@@ -35,6 +37,9 @@ class GmailSettings:
     allowed_senders: frozenset[str]
     auth_mode: str
     secret: str
+    oauth_client_id: str = ""
+    oauth_client_secret: str = ""
+    oauth_refresh_token: str = ""
     imap_host: str = "imap.gmail.com"
     smtp_host: str = "smtp.gmail.com"
     imap_port: int = 993
@@ -48,15 +53,33 @@ class GmailSettings:
         auth_mode = values.get("TENMIN_GMAIL_AUTH_MODE", "app_password").strip().lower()
         if auth_mode not in {"app_password", "oauth2"}:
             raise MailConfigurationError("TENMIN_GMAIL_AUTH_MODE must be app_password or oauth2.")
-        secret_name = "TENMIN_GMAIL_APP_PASSWORD" if auth_mode == "app_password" else "TENMIN_GMAIL_OAUTH2_TOKEN"
-        secret = values.get(secret_name, "").strip()
+        secret = values.get(
+            "TENMIN_GMAIL_APP_PASSWORD" if auth_mode == "app_password" else "TENMIN_GMAIL_OAUTH2_TOKEN",
+            "",
+        ).strip()
+        oauth_client_id = values.get("TENMIN_GMAIL_OAUTH_CLIENT_ID", "").strip()
+        oauth_client_secret = values.get("TENMIN_GMAIL_OAUTH_CLIENT_SECRET", "").strip()
+        oauth_refresh_token = values.get("TENMIN_GMAIL_OAUTH_REFRESH_TOKEN", "").strip()
         senders = values.get("TENMIN_GMAIL_ALLOWED_SENDERS", username)
         allowed_senders = frozenset(sender.strip().casefold() for sender in senders.split(",") if sender.strip())
-        if not username or not recipient or not secret or not allowed_senders:
+        oauth_ready = bool(
+            secret or (oauth_client_id and oauth_client_secret and oauth_refresh_token)
+        )
+        selected_secret_ready = bool(secret) if auth_mode == "app_password" else oauth_ready
+        if not username or not recipient or not selected_secret_ready or not allowed_senders:
             raise MailConfigurationError(
                 "Set TENMIN_GMAIL_USERNAME, TENMIN_GMAIL_RECIPIENT, and the selected Gmail auth secret."
             )
-        return cls(username, recipient, allowed_senders, auth_mode, secret)
+        return cls(
+            username,
+            recipient,
+            allowed_senders,
+            auth_mode,
+            secret,
+            oauth_client_id,
+            oauth_client_secret,
+            oauth_refresh_token,
+        )
 
 
 @dataclass(frozen=True)
@@ -152,6 +175,8 @@ class GmailClient:
 
     def __init__(self, settings: GmailSettings):
         self.settings = settings
+        self._cached_access_token = ""
+        self._access_token_expires_at = 0.0
 
     def send_request(self, *, previous_job_id: str | None = None, succeeded: bool | None = None) -> str:
         message = build_pipeline_request(self.settings, previous_job_id=previous_job_id, succeeded=succeeded)
@@ -194,21 +219,59 @@ class GmailClient:
             if status != "OK":
                 raise MailTransportError(f"Could not mark Gmail UID {uid} as read.")
 
+    def validate_credentials(self) -> None:
+        """Authenticate to both transports without reading messages or sending email."""
+        context = ssl.create_default_context()
+        try:
+            with smtplib.SMTP_SSL(
+                self.settings.smtp_host,
+                self.settings.smtp_port,
+                context=context,
+                timeout=30,
+            ) as smtp:
+                self._authenticate_smtp(smtp)
+                smtp.noop()
+            with imaplib.IMAP4_SSL(
+                self.settings.imap_host,
+                self.settings.imap_port,
+                ssl_context=context,
+                timeout=30,
+            ) as client:
+                self._authenticate_imap(client)
+        except (OSError, smtplib.SMTPException, imaplib.IMAP4.error, OAuthError) as error:
+            raise MailTransportError(f"Gmail credential validation failed: {error}") from error
+
     def _authenticate_smtp(self, smtp: smtplib.SMTP_SSL) -> None:
         if self.settings.auth_mode == "app_password":
             smtp.login(self.settings.username, self.settings.secret)
             return
-        token = f"user={self.settings.username}\x01auth=Bearer {self.settings.secret}\x01\x01"
+        token = f"user={self.settings.username}\x01auth=Bearer {self._oauth_access_token()}\x01\x01"
         smtp.auth("XOAUTH2", lambda _: token)
 
     def _authenticate_imap(self, client: imaplib.IMAP4_SSL) -> None:
         if self.settings.auth_mode == "app_password":
             status, _ = client.login(self.settings.username, self.settings.secret)
         else:
-            token = f"user={self.settings.username}\x01auth=Bearer {self.settings.secret}\x01\x01"
+            token = f"user={self.settings.username}\x01auth=Bearer {self._oauth_access_token()}\x01\x01"
             status, _ = client.authenticate("XOAUTH2", lambda _: token.encode("utf-8"))
         if status != "OK":
             raise MailTransportError("Gmail authentication failed.")
+
+    def _oauth_access_token(self) -> str:
+        if self.settings.oauth_refresh_token:
+            if self._cached_access_token and time.monotonic() < self._access_token_expires_at:
+                return self._cached_access_token
+            token, expires_in = refresh_access_token(
+                client_id=self.settings.oauth_client_id,
+                client_secret=self.settings.oauth_client_secret,
+                refresh_token=self.settings.oauth_refresh_token,
+            )
+            self._cached_access_token = token
+            self._access_token_expires_at = time.monotonic() + max(expires_in - 60, 30)
+            return token
+        if self.settings.secret:
+            return self.settings.secret
+        raise MailConfigurationError("OAuth2 is configured without an access or refresh token.")
 
 
 class GmailPollingService:

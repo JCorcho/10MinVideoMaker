@@ -28,6 +28,13 @@ The controlled Windows restart script resolves the expected Easy Install paths, 
 on port 8188 is the expected embedded Python executable, stops only that process, launches the unchanged
 `Start ComfyUI.bat` hidden, and waits for HTTP health. It is called only for fatal ComfyUI availability failures.
 
+The one-click launcher is also project-local; it does not edit shared ComfyUI startup scripts or global environment
+configuration. Non-secret settings live in ignored `.env`. App Passwords, OAuth client secrets, and refresh tokens
+live in ignored `runtime/secrets.json` after encryption with Windows DPAPI for the current Windows user. Explicit
+process environment variables take precedence over saved project values. OAuth uses a loopback desktop callback,
+PKCE, state validation, offline access, and the full Gmail IMAP/SMTP scope. `GmailClient` exchanges the stored refresh
+token for short-lived access tokens and caches them only in memory.
+
 ## Production profile
 
 - Image/video size: 704×1248.
@@ -51,7 +58,8 @@ second pass lands exactly at the only production output size, 704×1248. No alte
 ## No-render validation
 
 - `python -m unittest discover -s tests -v`
-- `python -m compileall -q tenminvideomaker __init__.py`
+- `python -m compileall -q tenminvideomaker scripts __init__.py`
+- `python scripts/setup_and_start.py --help`
 - `git diff --check`
 - Restart ComfyUI, then query `/object_info/<node type>` for all seven `10MinVideoMaker_*` types.
 - Queue `10MinVideoMaker_ReleaseMemory` alone as a harmless API smoke test. This verifies real execution without

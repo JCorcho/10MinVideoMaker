@@ -17,6 +17,10 @@
 - Production video geometry is fixed at 704×1248 and 24 fps. LTX I2V clips use the `8n + 1` frame rule, a maximum duration of 32 seconds, LCM for both sampler passes, the verified first-pass and upscale sigma schedules, and the LTX spatial upscaler.
 - T2I retains the matching reference workflow sampler: Anima uses `er_sde` with `beta57`; Pony uses `res_5s_ode` then `res_3m_ode`, both with their reference values.
 - Gmail polling and ComfyUI restart supervision run outside ComfyUI node execution. Nodes and the supervisor share one service layer so that authentication, state transitions, and validation cannot diverge.
+- One-click setup remains project-local. Store non-secrets in ignored `.env`; encrypt App Passwords, OAuth client
+  secrets, and refresh tokens with current-user Windows DPAPI in ignored `runtime/secrets.json`. Process environment
+  variables override saved values. Persistent OAuth uses a desktop loopback callback, PKCE/state, offline access, and
+  the full Gmail IMAP/SMTP scope.
 - ComfyUI 0.27.1 on this machine discovers this project through legacy `NODE_CLASS_MAPPINGS`; a V3-only entrypoint
   imported but did not appear in `/object_info`. Keep node wrappers thin and framework-independent services
   authoritative until the live loader behavior changes.
@@ -122,3 +126,33 @@
   - The supervisor entry point imported successfully and resolved the configured ComfyUI LoRA root.
   - FFmpeg and FFprobe were present on `PATH`.
   - No Gmail message was sent, no asset was downloaded, no model was loaded, and no media was rendered.
+
+### 2026-07-24 — one-click setup and start
+
+- Changed files: `.gitignore`, `.env.example`, `Start 10MinVideoMaker.bat`,
+  `tenminvideomaker/configuration.py`, `tenminvideomaker/oauth.py`, `tenminvideomaker/mail.py`,
+  `scripts/setup_and_start.py`, `scripts/run_supervisor.py`, `tests/test_configuration.py`,
+  `tests/test_oauth.py`, `tests/test_mail.py`, `tests/test_setup_and_start.py`, `README.md`,
+  `docs/architecture.md`, `docs/user-guide.md`, `AI_DEVELOPMENT_RULES.md`.
+- Setup: double-clicking the project launcher detects missing Gmail details, supports App Password or Google OAuth2,
+  offers the optional-settings editor, validates both transports without sending mail, health-checks local ComfyUI,
+  and then replaces the setup process with the durable supervisor.
+- OAuth routing: a Desktop-app authorization-code flow uses loopback redirect, PKCE, state, offline access, and
+  `https://mail.google.com/`; Gmail access tokens are refreshed from the DPAPI-protected refresh token and cached only
+  in memory.
+- Persistence: `.env` contains only allowlisted non-secret settings. Secrets are encrypted with current-user Windows
+  DPAPI in ignored `runtime/secrets.json`; explicit process values retain precedence.
+- Reproduction:
+  - Double-click `Start 10MinVideoMaker.bat` for interactive setup and start.
+  - Run `python scripts\setup_and_start.py --setup-only` to configure and authenticate without starting the loop.
+  - Run `python scripts\setup_and_start.py --setup-only --skip-gmail-check` only for offline UI diagnostics.
+- Verification commands:
+  - `python -m unittest discover -s tests -v`
+  - `python -m compileall -q tenminvideomaker scripts __init__.py`
+  - `python scripts\setup_and_start.py --help`
+  - `python scripts\run_supervisor.py --help`
+  - `git diff --check`
+- Results: all 58 tests passed under system Python and the Easy Install embedded Python; both launcher/supervisor
+  help entry points succeeded; the local ComfyUI `/system_stats` health check succeeded.
+- Side-effect boundary: validation did not send mail, open OAuth, start the supervisor, download assets, load models,
+  or render media.
