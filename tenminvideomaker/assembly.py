@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
@@ -99,3 +100,41 @@ class FfmpegAssembler:
         if not output_path.is_file():
             raise AssemblyError("FFmpeg reported success but did not create the final video.")
         return output_path
+
+
+def probe_video(
+    path: str | Path,
+    *,
+    ffprobe_executable: str = "ffprobe",
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> VideoStreamInfo:
+    """Read only the primary video stream metadata needed for concat safety."""
+    video_path = Path(path)
+    if not video_path.is_file():
+        raise AssemblyError(f"Scene clip is missing: {video_path}")
+    command = [
+        ffprobe_executable,
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=width,height,r_frame_rate",
+        "-of",
+        "json",
+        str(video_path),
+    ]
+    completed = runner(command, capture_output=True, text=True, check=False)
+    if completed.returncode != 0:
+        raise AssemblyError(f"FFprobe failed for {video_path}: {completed.stderr.strip()}")
+    try:
+        streams = json.loads(completed.stdout).get("streams", [])
+        stream = streams[0]
+        return VideoStreamInfo(
+            path=video_path,
+            width=int(stream["width"]),
+            height=int(stream["height"]),
+            frame_rate=Fraction(str(stream["r_frame_rate"])),
+        )
+    except (IndexError, KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+        raise AssemblyError(f"FFprobe did not return a usable video stream for {video_path}.") from error

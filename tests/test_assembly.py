@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 import unittest
 
-from tenminvideomaker.assembly import AssemblyError, FfmpegAssembler, VideoStreamInfo, concat_list_text, validate_video_profile
+from tenminvideomaker.assembly import AssemblyError, FfmpegAssembler, VideoStreamInfo, concat_list_text, probe_video, validate_video_profile
 
 
 class AssemblyTests(unittest.TestCase):
@@ -48,6 +48,14 @@ class AssemblyTests(unittest.TestCase):
     def test_final_path_rejects_traversal(self) -> None:
         with self.assertRaises(AssemblyError):
             FfmpegAssembler(self.root).final_path("../job")
+
+    def test_probe_reads_primary_video_profile(self) -> None:
+        def runner(command, **_kwargs):
+            self.assertIn("ffprobe", command[0])
+            return subprocess.CompletedProcess(command, 0, '{"streams":[{"width":704,"height":1248,"r_frame_rate":"24/1"}]}', "")
+
+        stream = probe_video(self.clip, runner=runner)
+        self.assertEqual(stream, VideoStreamInfo(self.clip, 704, 1248, Fraction(24, 1)))
 
 
 if __name__ == "__main__":

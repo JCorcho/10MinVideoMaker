@@ -4,7 +4,21 @@ An independent ComfyUI custom-node project for building a guided long-form video
 
 ## Current status
 
-This is the initial project scaffold. It intentionally exposes no production nodes or bundled workflows yet.
+The durable job contract, SQLite state machine, Gmail transport, LoRA resolver, FFmpeg assembly service, and seven
+interactive ComfyUI control nodes are implemented. Generation workflows and the unattended supervisor are still
+under construction; no production render has been run.
+
+## Available nodes
+
+- **Validate Job** — validates and normalizes the exact Grok JSON contract.
+- **Pipeline Status** — reads the durable pipeline state.
+- **Request Grok Job** — sends the exact request subject using environment-provided Gmail credentials.
+- **Poll Gmail Once** — performs one attachment-first IMAP poll; scheduling belongs to the supervisor.
+- **Resolve LoRAs** — checks local LoRA roots, resolves dynamic assets, and verifies mandatory I2V LoRAs.
+- **Release Memory** — runs Python and CUDA cache cleanup.
+- **Stitch Clips** — verifies every clip is 704×1248 at 24 fps before FFmpeg concat.
+
+Nodes that access Gmail, download assets, or stitch video have side effects and should only be queued deliberately.
 
 ## Installation
 
@@ -14,6 +28,9 @@ The repository is intended to live at:
 
 Restart ComfyUI after adding or changing a Python node module. Once nodes are introduced, ComfyUI will discover the
 pack through `NODE_CLASS_MAPPINGS` in `__init__.py`.
+
+This installation currently discovers this package through the legacy V1 mappings. The node implementations remain
+thin wrappers over framework-independent services so the automation supervisor and ComfyUI surface share behavior.
 
 ## Repository layout
 

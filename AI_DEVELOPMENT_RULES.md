@@ -17,6 +17,9 @@
 - Production video geometry is fixed at 704×1248 and 24 fps. LTX I2V clips use the `8n + 1` frame rule, a maximum duration of 32 seconds, LCM for both sampler passes, the verified first-pass and upscale sigma schedules, and the LTX spatial upscaler.
 - T2I retains the matching reference workflow sampler: Anima uses `er_sde` with `beta57`; Pony uses `res_5s_ode` then `res_3m_ode`, both with their reference values.
 - Gmail polling and ComfyUI restart supervision run outside ComfyUI node execution. Nodes and the supervisor share one service layer so that authentication, state transitions, and validation cannot diverge.
+- ComfyUI 0.27.1 on this machine discovers this project through legacy `NODE_CLASS_MAPPINGS`; a V3-only entrypoint
+  imported but did not appear in `/object_info`. Keep node wrappers thin and framework-independent services
+  authoritative until the live loader behavior changes.
 
 ## Implementation and testing
 
@@ -49,3 +52,19 @@
 - Reference facts were read once from the approved workflow directory and will be rebuilt independently; no reference JSON will be modified or copied into this project.
 - T2I references: `CyberRealistic_AnimaSemi_V6.0.safetensors` with Anima's `er_sde`/`beta57` sampler; `cyberrealisticPony_v180Coreshift.safetensors` with the Pony two-pass sampler settings above.
 - I2V reference facts: LCM on both passes; first-pass sigmas `1.0, 0.99375, 0.9875, 0.98125, 0.975, 0.909375, 0.725, 0.421875, 0.0`; upscale sigmas `0.909375, 0.725, 0.421875, 0.0`; spatial upscaler `ltx-2.3-spatial-upscaler-x2-1.1.safetensors`; DMD `LTX2.3_DMD_reshaped_r256.safetensors` at 1.0; JoyAI `JoyAI-Echo-content_r256.safetensors` at 0.5.
+
+### 2026-07-24 — ComfyUI control-node surface
+
+- Changed files: `__init__.py`, `tenminvideomaker/nodes.py`, `tenminvideomaker/assembly.py`,
+  `tests/test_nodes.py`, `tests/test_assembly.py`, `README.md`, `docs/architecture.md`,
+  `AI_DEVELOPMENT_RULES.md`.
+- Architecture: seven V1-compatible node wrappers expose the shared contract, state, Gmail, asset, cleanup, and
+  assembly services. Gmail polling nodes never sleep; the future supervisor owns the five-minute schedule.
+- Routing: the stitching node uses FFprobe before FFmpeg concat, rejecting any clip that differs from 704×1248
+  or 24 fps. Dynamic LoRAs are de-duplicated by case-insensitive name before resolution.
+- Live verification: all seven node types were returned by ComfyUI `/object_info`; the no-render
+  `10MinVideoMaker_ReleaseMemory` API prompt completed successfully.
+- Verification commands:
+  - `python -m unittest discover -s tests -v`
+  - `python -m compileall -q tenminvideomaker __init__.py`
+  - `git diff --check`
