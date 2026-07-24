@@ -171,3 +171,22 @@
   - `git diff --check`
 - Results: all 8 focused mail tests and all 59 project tests passed; embedded-Python compilation passed; live
   OAuth refresh plus SMTP/IMAP authentication succeeded without sending or reading email.
+
+### 2026-07-24 — SMTP XOAUTH2 command sequencing
+
+- Changed files: `tenminvideomaker/mail.py`, `tests/test_mail.py`, `AI_DEVELOPMENT_RULES.md`.
+- Cause: unlike `SMTP.login()`, `SMTP.auth()` does not automatically issue `EHLO`. Gmail returned `503 EHLO/HELO
+  first`; Python's SMTP library treats a `503` response to `AUTH` as already authenticated, so the earlier `NOOP`
+  validation falsely passed. `send_message()` then sent `EHLO`, followed by an unauthenticated `MAIL FROM` rejected
+  with `530 Authentication Required`.
+- Fix: issue `ehlo_or_helo_if_needed()` before XOAUTH2. Credential validation now checks an authenticated,
+  non-delivering `MAIL FROM` envelope and immediately clears it with `RSET`, rather than relying on `NOOP`.
+- Regression: the SMTP fake records and asserts `EHLO` before `AUTH`, while retaining the zero-argument callback
+  check from the prior repair.
+- Verification commands:
+  - `python -m unittest discover -s tests -v`
+  - `python -m compileall -q tenminvideomaker scripts __init__.py`
+  - live OAuth SMTP `MAIL FROM` followed by `RSET` (no message body or delivery)
+  - `git diff --check`
+- Results: all 8 focused mail tests and all 59 project tests passed under the Easy Install embedded Python; live
+  OAuth SMTP envelope validation plus IMAP authentication succeeded without sending or reading email.

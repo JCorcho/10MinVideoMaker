@@ -230,7 +230,12 @@ class GmailClient:
                 timeout=30,
             ) as smtp:
                 self._authenticate_smtp(smtp)
-                smtp.noop()
+                status, response = smtp.mail(self.settings.username)
+                if status != 250:
+                    raise MailTransportError(
+                        f"Gmail rejected the authenticated sender envelope: {response!r}"
+                    )
+                smtp.rset()
             with imaplib.IMAP4_SSL(
                 self.settings.imap_host,
                 self.settings.imap_port,
@@ -245,6 +250,7 @@ class GmailClient:
         if self.settings.auth_mode == "app_password":
             smtp.login(self.settings.username, self.settings.secret)
             return
+        smtp.ehlo_or_helo_if_needed()
         token = f"user={self.settings.username}\x01auth=Bearer {self._oauth_access_token()}\x01\x01"
         smtp.auth("XOAUTH2", lambda _challenge=None: token)
 

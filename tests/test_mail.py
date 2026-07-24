@@ -117,14 +117,20 @@ class MailTests(unittest.TestCase):
         class FakeSmtp:
             mechanism = ""
             initial_response = ""
+            events = []
+
+            def ehlo_or_helo_if_needed(self):
+                self.events.append("ehlo")
 
             def auth(self, mechanism, authobject):
+                self.events.append("auth")
                 self.mechanism = mechanism
                 self.initial_response = authobject()
 
         smtp = FakeSmtp()
         GmailClient(settings)._authenticate_smtp(smtp)
         self.assertEqual(smtp.mechanism, "XOAUTH2")
+        self.assertEqual(smtp.events, ["ehlo", "auth"])
         self.assertIn("user=owner@example.com", smtp.initial_response)
         self.assertIn("auth=Bearer access-token", smtp.initial_response)
 
