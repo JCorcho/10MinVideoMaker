@@ -529,7 +529,7 @@ def build_i2v_api_workflow(
         filename_prefix=filename_prefix,
         format="video/h264-mp4",
         pingpong=False,
-        save_output=True,
+        save_output=False,
         pix_fmt="yuv420p",
         crf=19,
         save_metadata=True,

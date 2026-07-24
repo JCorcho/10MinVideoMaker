@@ -44,6 +44,19 @@ class PipelineSnapshot:
     error: str | None
 
 
+@dataclass(frozen=True)
+class SceneRecord:
+    job_id: str
+    scene_id: int
+    state: SceneState
+    frame_path: str | None
+    video_path: str | None
+    error: str | None
+    t2i_attempts: int
+    i2v_attempts: int
+    prompt_id: str | None
+
+
 def _utc_now() -> str:
     return datetime.now(UTC).isoformat()
 
@@ -94,6 +107,9 @@ class PipelineStateStore:
                     frame_path TEXT,
                     video_path TEXT,
                     error TEXT,
+                    t2i_attempts INTEGER NOT NULL DEFAULT 0,
+                    i2v_attempts INTEGER NOT NULL DEFAULT 0,
+                    prompt_id TEXT,
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY (job_id, scene_id),
                     FOREIGN KEY (job_id) REFERENCES jobs(job_id)
@@ -105,6 +121,16 @@ class PipelineStateStore:
                 );
                 """
             )
+            scene_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(scenes)").fetchall()
+            }
+            for column, declaration in (
+                ("t2i_attempts", "INTEGER NOT NULL DEFAULT 0"),
+                ("i2v_attempts", "INTEGER NOT NULL DEFAULT 0"),
+                ("prompt_id", "TEXT"),
+            ):
+                if column not in scene_columns:
+                    connection.execute(f"ALTER TABLE scenes ADD COLUMN {column} {declaration}")
             connection.execute(
                 """
                 INSERT OR IGNORE INTO pipeline_state (singleton, state, job_id, active_scene_id, error, updated_at)
@@ -241,6 +267,96 @@ class PipelineStateStore:
                 """,
                 (state, frame_path, video_path, error, _utc_now(), job_id, scene_id),
             )
+
+    def begin_scene_stage(
+        self,
+        job_id: str,
+        scene_id: int,
+        pipeline_state: PipelineState,
+        *,
+        prompt_id: str | None = None,
+    ) -> int:
+        if pipeline_state not in {PipelineState.RUNNING_T2I, PipelineState.RUNNING_I2V}:
+            raise StateTransitionError("Scene stages can only begin in running_t2i or running_i2v.")
+        attempt_column = "t2i_attempts" if pipeline_state == PipelineState.RUNNING_T2I else "i2v_attempts"
+        self.initialize()
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                f"SELECT {attempt_column} FROM scenes WHERE job_id = ? AND scene_id = ?",
+                (job_id, scene_id),
+            ).fetchone()
+            if row is None:
+                raise StateTransitionError(f"Unknown scene {scene_id} for job {job_id}.")
+            attempt = int(row[attempt_column]) + 1
+            connection.execute(
+                f"""
+                UPDATE scenes
+                SET state = ?, {attempt_column} = ?, prompt_id = ?, error = NULL, updated_at = ?
+                WHERE job_id = ? AND scene_id = ?
+                """,
+                (SceneState.RUNNING, attempt, prompt_id, _utc_now(), job_id, scene_id),
+            )
+            connection.execute(
+                """
+                UPDATE pipeline_state
+                SET state = ?, job_id = ?, active_scene_id = ?, error = NULL, updated_at = ?
+                WHERE singleton = 1
+                """,
+                (pipeline_state, job_id, scene_id, _utc_now()),
+            )
+        return attempt
+
+    def set_scene_prompt_id(self, job_id: str, scene_id: int, prompt_id: str) -> None:
+        self.initialize()
+        with self._connection() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE scenes SET prompt_id = ?, updated_at = ?
+                WHERE job_id = ? AND scene_id = ?
+                """,
+                (prompt_id, _utc_now(), job_id, scene_id),
+            )
+            if cursor.rowcount != 1:
+                raise StateTransitionError(f"Unknown scene {scene_id} for job {job_id}.")
+
+    def load_job(self, job_id: str) -> JobPayload:
+        self.initialize()
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT payload_json FROM jobs WHERE job_id = ?", (job_id,)
+            ).fetchone()
+        if row is None:
+            raise StateTransitionError(f"Unknown job {job_id}.")
+        from .contracts import parse_job_payload
+
+        return parse_job_payload(json.loads(row["payload_json"]))
+
+    def scene_records(self, job_id: str) -> tuple[SceneRecord, ...]:
+        self.initialize()
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT job_id, scene_id, state, frame_path, video_path, error,
+                       t2i_attempts, i2v_attempts, prompt_id
+                FROM scenes WHERE job_id = ? ORDER BY scene_id
+                """,
+                (job_id,),
+            ).fetchall()
+        return tuple(
+            SceneRecord(
+                job_id=row["job_id"],
+                scene_id=int(row["scene_id"]),
+                state=SceneState(row["state"]),
+                frame_path=row["frame_path"],
+                video_path=row["video_path"],
+                error=row["error"],
+                t2i_attempts=int(row["t2i_attempts"]),
+                i2v_attempts=int(row["i2v_attempts"]),
+                prompt_id=row["prompt_id"],
+            )
+            for row in rows
+        )
 
     def scene_states(self, job_id: str) -> dict[int, SceneState]:
         self.initialize()

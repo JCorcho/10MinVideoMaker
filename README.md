@@ -5,8 +5,9 @@ An independent ComfyUI custom-node project for building a guided long-form video
 ## Current status
 
 The durable job contract, SQLite state machine, Gmail transport, LoRA resolver, FFmpeg assembly service, eight
-interactive ComfyUI nodes, and scene-specific Anima/Pony/LTX workflow builders are implemented. The unattended
-supervisor is still under construction; no production render has been run.
+interactive ComfyUI nodes, scene-specific Anima/Pony/LTX workflow builders, and unattended supervisor are
+implemented. The supervisor has not been started because Gmail credentials have not been configured, and no
+production render has been run.
 
 ## Available nodes
 

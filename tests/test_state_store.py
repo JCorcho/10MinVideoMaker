@@ -53,6 +53,22 @@ class StateStoreTests(unittest.TestCase):
         with self.assertRaises(StateTransitionError):
             self.store.claim_job(parse_job_payload(second))
 
+    def test_job_and_scene_records_restore_payload_and_attempts(self) -> None:
+        self.store.claim_job(self.job)
+        self.assertEqual(self.store.load_job(self.job.job_id).job_id, self.job.job_id)
+        attempt = self.store.begin_scene_stage(
+            self.job.job_id,
+            1,
+            PipelineState.RUNNING_T2I,
+        )
+        self.store.set_scene_prompt_id(self.job.job_id, 1, "prompt-123")
+        record = self.store.scene_records(self.job.job_id)[0]
+        self.assertEqual(attempt, 1)
+        self.assertEqual(record.t2i_attempts, 1)
+        self.assertEqual(record.i2v_attempts, 0)
+        self.assertEqual(record.prompt_id, "prompt-123")
+        self.assertEqual(self.store.snapshot().active_scene_id, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

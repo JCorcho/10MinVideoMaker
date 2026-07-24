@@ -24,6 +24,10 @@
   `character.lora.recommended_weight` for the global T2I character LoRA. Scene LoRAs continue to use `weight`.
 - The LTX x2 spatial-upscale route uses an internal 352×624 first-pass latent and produces the fixed 704×1248
   decoded clip. Do not expose or save an alternate production size.
+- I2V uses `VHS_VideoCombine` temporary output. The supervisor retrieves its exact history metadata through
+  `/view` and writes the project clip under `D:\output\10minfinals\.work`; do not scan or move shared output folders.
+- Controlled restart must verify the port-8188 owner is the expected Easy Install embedded Python executable before
+  stopping it. Never weaken that path check.
 
 ## Implementation and testing
 
@@ -96,3 +100,25 @@
   - All Anima, Pony, and I2V generated connections passed live `/object_info` type validation.
   - All GUI exports had zero node overlaps and zero group-bound violations.
   - No model was loaded and no media was rendered.
+
+### 2026-07-24 — unattended supervisor
+
+- Changed files: `tenminvideomaker/comfy_http.py`, `tenminvideomaker/state_store.py`,
+  `tenminvideomaker/supervisor.py`, `tenminvideomaker/workflow_builder.py`,
+  `scripts/run_supervisor.py`, `scripts/restart_comfyui.ps1`, `tests/test_comfy_http.py`,
+  `tests/test_state_store.py`, `tests/test_supervisor.py`, regenerated workflow JSON,
+  `README.md`, `docs/architecture.md`, `docs/user-guide.md`, `AI_DEVELOPMENT_RULES.md`.
+- State: scene records persist separate T2I/I2V attempt counts and last prompt ID. Interrupted/failed/cancelled scenes
+  can be requeued while succeeded scenes remain immutable.
+- Scheduling: the external supervisor owns the five-minute Gmail interval; no ComfyUI node sleeps.
+- Recovery: prompt timeout cancels the matching prompt; transient stage errors retry only the unfinished stage;
+  missing scene assets do not abort other scenes; fatal server loss uses a path-verified controlled restart.
+- Output: temporary VHS results are downloaded via the local HTTP API to deterministic D-drive clip paths, then
+  FFprobed and stream-copied into `{job_id}_final.mp4`.
+- Validation:
+  - 46 unit tests passed, including fake T2I → I2V → stitch → next-email execution, transient-stage retry, and
+    per-scene asset-failure continuation.
+  - PowerShell restart script parsed without syntax errors.
+  - The supervisor entry point imported successfully and resolved the configured ComfyUI LoRA root.
+  - FFmpeg and FFprobe were present on `PATH`.
+  - No Gmail message was sent, no asset was downloaded, no model was loaded, and no media was rendered.

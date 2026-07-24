@@ -89,6 +89,7 @@ class WorkflowBuilderTests(unittest.TestCase):
         )
         combine = nodes_of_type(build.api, "VHS_VideoCombine")[0]["inputs"]
         self.assertEqual(combine["frame_rate"], 24.0)
+        self.assertFalse(combine["save_output"])
         self.assertEqual(build.api[build.output_node_id]["class_type"], "VHS_VideoCombine")
 
     def test_i2v_mandatory_loras_are_always_first_and_exact(self) -> None:

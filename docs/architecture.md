@@ -11,9 +11,22 @@ outside the node classes, so this registration choice does not fork the automati
 
 `runtime/pipeline.sqlite3` is the local durable state store. It is intentionally ignored by Git and records one global pipeline state plus per-scene states. A job is accepted only from `idle` or `waiting_for_grok`; completed scene artifacts remain intact when unfinished scenes are re-queued.
 
+Each scene stores independent T2I/I2V attempt counts and its last ComfyUI prompt ID. On a transient prompt failure,
+only the unfinished stage is retried. A timed-out prompt is deleted if pending or interrupted only when that exact
+prompt ID is the running project prompt. On process recovery, succeeded scenes and their deterministic artifacts are
+left untouched.
+
 LoRA files are resolved independently and mapped to predictable safe `.safetensors` filenames. The manager first checks only ComfyUI-provided LoRA roots, then downloads a missing payload-provided HTTPS asset with redirect-following retries into the authorized LoRA destination. Each failed asset is reported independently so its scene can fail without cancelling the rest of the job. Mandatory DMD and JoyAI I2V LoRAs must already be installed because no trusted download URL was supplied for them.
 
 Before stitching, FFmpeg preflight verifies every successful clip is 704×1248 at 24 fps. The concat operation uses stream copy and emits `D:\output\10minfinals\{job_id}_final.mp4`; the folder is created only when a completed job is actually assembled.
+
+VHS writes scene video to its temporary ComfyUI output and returns metadata through prompt history. The supervisor
+downloads that exact output through the local HTTP API into
+`D:\output\10minfinals\.work\{job_id}\clips\scene_{id}.mp4`; it does not scan or move unrelated shared output files.
+
+The controlled Windows restart script resolves the expected Easy Install paths, verifies that the process listening
+on port 8188 is the expected embedded Python executable, stops only that process, launches the unchanged
+`Start ComfyUI.bat` hidden, and waits for HTTP health. It is called only for fatal ComfyUI availability failures.
 
 ## Production profile
 
