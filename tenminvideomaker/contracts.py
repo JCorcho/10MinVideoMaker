@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import re
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 from urllib.parse import urlparse
 
 from .constants import MAX_SCENE_SECONDS, frame_count_for_seconds
@@ -22,6 +22,8 @@ class LoraSpec:
     name: str
     download_url: str
     weight: float
+    model_id: int | None = None
+    version_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -95,6 +97,19 @@ def _seed(value: Any, field: str) -> int:
     return value
 
 
+def _optional_positive_integer(
+    mapping: Mapping[str, Any],
+    field: str,
+    context: str,
+) -> int | None:
+    value = mapping.get(field)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ContractValidationError(f"{context}.{field} must be a positive integer when provided.")
+    return value
+
+
 def _https_url(value: Any, field: str) -> str:
     url = _string(value, field)
     parsed = urlparse(url)
@@ -108,10 +123,19 @@ def _lora(value: Any, context: str, *, weight_field: str = "weight") -> LoraSpec
     weight = _number(_required(data, weight_field, context), f"{context}.{weight_field}")
     if not -4.0 <= weight <= 4.0:
         raise ContractValidationError(f"{context}.{weight_field} must be between -4.0 and 4.0.")
+    download_url = _https_url(_required(data, "download_url", context), f"{context}.download_url")
+    version_id = _optional_positive_integer(data, "version_id", context)
+    url_version_id = civitai_version_id(download_url)
+    if version_id is not None and url_version_id is not None and version_id != url_version_id:
+        raise ContractValidationError(
+            f"{context}.version_id does not match the Civitai download URL."
+        )
     return LoraSpec(
         name=_string(_required(data, "name", context), f"{context}.name"),
-        download_url=_https_url(_required(data, "download_url", context), f"{context}.download_url"),
+        download_url=download_url,
         weight=weight,
+        model_id=_optional_positive_integer(data, "model_id", context),
+        version_id=version_id or url_version_id,
     )
 
 
@@ -182,14 +206,38 @@ def parse_job_payload(value: Any) -> JobPayload:
     )
 
 
-def effective_t2i_loras(scene: SceneSpec, character: CharacterSpec) -> tuple[LoraSpec, ...]:
-    """Inject the global character LoRA once, even when Grok repeats it per scene."""
-    ordered = (character.lora, *scene.t2i.loras)
+def civitai_version_id(download_url: str) -> int | None:
+    parsed = urlparse(download_url)
+    if parsed.hostname not in {"civitai.com", "www.civitai.com"}:
+        return None
+    match = re.fullmatch(r"/api/download/models/(\d+)/?", parsed.path)
+    return int(match.group(1)) if match else None
+
+
+def lora_identity(lora: LoraSpec) -> str:
+    """Return a stable asset identity independent of display-name differences."""
+    if lora.version_id is not None:
+        return f"civitai-version:{lora.version_id}"
+    parsed = urlparse(lora.download_url)
+    normalized_url = parsed._replace(
+        scheme=parsed.scheme.casefold(),
+        netloc=parsed.netloc.casefold(),
+        fragment="",
+    ).geturl()
+    return f"url:{normalized_url}"
+
+
+def unique_loras(loras: Iterable[LoraSpec]) -> tuple[LoraSpec, ...]:
     seen: set[str] = set()
-    effective: list[LoraSpec] = []
-    for lora in ordered:
-        key = lora.name.casefold()
+    result: list[LoraSpec] = []
+    for lora in loras:
+        key = lora_identity(lora)
         if key not in seen:
             seen.add(key)
-            effective.append(lora)
-    return tuple(effective)
+            result.append(lora)
+    return tuple(result)
+
+
+def effective_t2i_loras(scene: SceneSpec, character: CharacterSpec) -> tuple[LoraSpec, ...]:
+    """Inject the global character LoRA once, even when Grok repeats it per scene."""
+    return unique_loras((character.lora, *scene.t2i.loras))

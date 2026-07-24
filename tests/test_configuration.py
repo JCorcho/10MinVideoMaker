@@ -35,15 +35,20 @@ class ConfigurationTests(unittest.TestCase):
             store.save(
                 {
                     "TENMIN_GMAIL_APP_PASSWORD": "sixteencharacters",
+                    "TENMIN_CIVITAI_TOKEN": "civitai-secret",
                     "IGNORED": "not-allowed",
                 }
             )
             serialized = path.read_text(encoding="utf-8")
             self.assertNotIn("sixteencharacters", serialized)
+            self.assertNotIn("civitai-secret", serialized)
             self.assertNotIn("not-allowed", serialized)
             self.assertEqual(
                 store.load(),
-                {"TENMIN_GMAIL_APP_PASSWORD": "sixteencharacters"},
+                {
+                    "TENMIN_CIVITAI_TOKEN": "civitai-secret",
+                    "TENMIN_GMAIL_APP_PASSWORD": "sixteencharacters",
+                },
             )
 
     def test_env_file_round_trip_and_os_values_take_precedence(self) -> None:
@@ -85,6 +90,7 @@ class ConfigurationTests(unittest.TestCase):
                 "TENMIN_GMAIL_OAUTH_CLIENT_ID": "client-id",
                 "TENMIN_GMAIL_OAUTH_CLIENT_SECRET": "client-secret-value",
                 "TENMIN_GMAIL_OAUTH_REFRESH_TOKEN": "refresh-token-value",
+                "TENMIN_CIVITAI_TOKEN": "civitai-token-value",
             }
             save_project_environment(root, values)
             env_text = (root / ".env").read_text(encoding="utf-8")
@@ -92,9 +98,11 @@ class ConfigurationTests(unittest.TestCase):
             json.loads(secret_text)
             self.assertNotIn("client-secret-value", env_text + secret_text)
             self.assertNotIn("refresh-token-value", env_text + secret_text)
+            self.assertNotIn("civitai-token-value", env_text + secret_text)
             loaded = load_project_environment(root, base_environment={})
             self.assertEqual(loaded["TENMIN_GMAIL_OAUTH_CLIENT_SECRET"], "client-secret-value")
             self.assertEqual(loaded["TENMIN_GMAIL_OAUTH_REFRESH_TOKEN"], "refresh-token-value")
+            self.assertEqual(loaded["TENMIN_CIVITAI_TOKEN"], "civitai-token-value")
 
 
 if __name__ == "__main__":

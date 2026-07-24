@@ -4,7 +4,13 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from tenminvideomaker.assets import LocalLoraRequirement, LoraAssetManager, predictable_lora_filename
+from tenminvideomaker.assets import (
+    AssetAuthenticationRequired,
+    CivitaiLoraMetadata,
+    LocalLoraRequirement,
+    LoraAssetManager,
+    predictable_lora_filename,
+)
 from tenminvideomaker.contracts import LoraSpec
 
 
@@ -19,13 +25,14 @@ class AssetTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary_directory.cleanup()
 
-    def manager(self, downloader=None) -> LoraAssetManager:
+    def manager(self, downloader=None, **kwargs) -> LoraAssetManager:
         return LoraAssetManager(
             [self.lora_directory],
             self.manifest_path,
             retries=2,
             retry_delay_seconds=0,
             downloader=downloader,
+            **kwargs,
         )
 
     def test_predictable_filename_is_safe(self) -> None:
@@ -59,3 +66,102 @@ class AssetTests(unittest.TestCase):
         result = self.manager().require_local(LocalLoraRequirement("DMD.safetensors", 1.0))
         self.assertFalse(result.succeeded)
         self.assertIn("Required local LoRA is missing", result.error)
+
+    def test_civitai_metadata_finds_existing_canonical_filename(self) -> None:
+        canonical = self.lora_directory / "publisher-original-name.safetensors"
+        canonical.parent.mkdir(parents=True)
+        canonical.write_bytes(b"weights")
+        metadata = CivitaiLoraMetadata(
+            version_id=3184055,
+            model_id=2847192,
+            filename=canonical.name,
+            download_url="https://civitai.com/api/download/models/3184055",
+            sha256=None,
+            size_bytes=7,
+        )
+        lora = LoraSpec(
+            "Elsa Frozen Anima",
+            metadata.download_url,
+            0.85,
+            model_id=metadata.model_id,
+            version_id=metadata.version_id,
+        )
+        result = self.manager(
+            metadata_fetcher=lambda _lora: metadata,
+            visible_lora_names=(canonical.name,),
+        ).resolve_or_download(lora)
+        self.assertTrue(result.succeeded)
+        self.assertFalse(result.downloaded)
+        self.assertEqual(result.path, canonical)
+        self.assertEqual(result.local_filename, canonical.name)
+
+    def test_authentication_failure_is_not_retried(self) -> None:
+        calls = []
+
+        def downloader(_url: str, _destination: Path) -> None:
+            calls.append("attempt")
+            raise AssetAuthenticationRequired("token required")
+
+        result = self.manager(downloader).resolve_or_download(
+            LoraSpec("Private", "https://example.com/private", 1.0)
+        )
+        self.assertFalse(result.succeeded)
+        self.assertEqual(calls, ["attempt"])
+        self.assertEqual(result.error, "token required")
+
+    def test_hash_mismatch_removes_download_and_reports_failure(self) -> None:
+        def downloader(_url: str, destination: Path) -> None:
+            destination.write_bytes(b"not expected")
+
+        metadata = CivitaiLoraMetadata(
+            version_id=123,
+            model_id=456,
+            filename="source.safetensors",
+            download_url="https://civitai.com/api/download/models/123",
+            sha256="0" * 64,
+            size_bytes=None,
+        )
+        result = self.manager(
+            downloader,
+            metadata_fetcher=lambda _lora: metadata,
+        ).resolve_or_download(
+            LoraSpec("Hash Checked", metadata.download_url, 1.0, version_id=123)
+        )
+        self.assertFalse(result.succeeded)
+        self.assertIn("SHA-256 mismatch", result.error)
+        self.assertFalse((self.lora_directory / "Hash_Checked.safetensors").exists())
+
+    def test_civitai_token_is_added_only_to_civitai_downloads(self) -> None:
+        manager = self.manager(civitai_token="secret token")
+        authenticated = manager._authenticated_download_url(
+            "https://civitai.com/api/download/models/123?type=Model&token=old"
+        )
+        self.assertIn("token=secret+token", authenticated)
+        self.assertNotIn("token=old", authenticated)
+        other = "https://example.com/model.safetensors"
+        self.assertEqual(manager._authenticated_download_url(other), other)
+
+    def test_metadata_filename_cannot_escape_active_lora_root(self) -> None:
+        outside = self.root / "outside.safetensors"
+        outside.write_bytes(b"untrusted")
+
+        def downloader(_url: str, destination: Path) -> None:
+            destination.write_bytes(b"downloaded")
+
+        metadata = CivitaiLoraMetadata(
+            version_id=123,
+            model_id=456,
+            filename="../outside.safetensors",
+            download_url="https://civitai.com/api/download/models/123",
+            sha256=None,
+            size_bytes=None,
+        )
+        result = self.manager(
+            downloader,
+            metadata_fetcher=lambda _lora: metadata,
+        ).resolve_or_download(
+            LoraSpec("Safe Destination", metadata.download_url, 1.0, version_id=123)
+        )
+        self.assertTrue(result.succeeded)
+        self.assertTrue(result.downloaded)
+        self.assertEqual(result.path, self.lora_directory / "Safe_Destination.safetensors")

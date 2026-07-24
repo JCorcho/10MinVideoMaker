@@ -5,13 +5,20 @@ from __future__ import annotations
 import gc
 import json
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from .assembly import AssemblyError, FfmpegAssembler, probe_video, validate_video_profile
 from .artifacts import ArtifactError, save_scene_frame
 from .assets import LocalLoraRequirement, LoraAssetManager
+from .configuration import load_project_environment
 from .constants import MANDATORY_I2V_LORAS, PRODUCTION_FPS, PRODUCTION_HEIGHT, PRODUCTION_WIDTH
-from .contracts import ContractValidationError, JobPayload, effective_t2i_loras, parse_job_payload
+from .contracts import (
+    ContractValidationError,
+    JobPayload,
+    effective_t2i_loras,
+    parse_job_payload,
+    unique_loras,
+)
 from .mail import GmailClient, GmailPollingService, GmailSettings, MailConfigurationError, MailTransportError
 from .state_store import PipelineState, PipelineStateStore
 
@@ -33,17 +40,6 @@ def _job_from_json(job_json: str) -> JobPayload:
     except json.JSONDecodeError as error:
         raise ContractValidationError("job_json must contain valid JSON.") from error
     return parse_job_payload(raw)
-
-
-def _unique_loras(loras: Iterable) -> list:
-    seen: set[str] = set()
-    result = []
-    for lora in loras:
-        key = lora.name.casefold()
-        if key not in seen:
-            seen.add(key)
-            result.append(lora)
-    return result
 
 
 class _AlwaysRun:
@@ -180,8 +176,13 @@ class TenMinResolveLorasNode(_AlwaysRun):
         manager = LoraAssetManager(
             folder_paths.get_folder_paths("loras"),
             RUNTIME_ROOT / "asset_manifest.json",
+            visible_lora_names=folder_paths.get_filename_list("loras"),
+            civitai_token=load_project_environment(PROJECT_ROOT).get(
+                "TENMIN_CIVITAI_TOKEN",
+                "",
+            ),
         )
-        results = [*manager.resolve_many(_unique_loras(dynamic_loras))]
+        results = [*manager.resolve_many(unique_loras(dynamic_loras))]
         if stage in {"all", "i2v"}:
             results.extend(
                 manager.require_local(LocalLoraRequirement(filename, weight))
@@ -193,6 +194,7 @@ class TenMinResolveLorasNode(_AlwaysRun):
                 "path": str(result.path) if result.path else None,
                 "downloaded": result.downloaded,
                 "error": result.error,
+                "local_filename": result.local_filename,
             }
             for result in results
         ]

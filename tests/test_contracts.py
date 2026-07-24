@@ -3,7 +3,12 @@ from __future__ import annotations
 import unittest
 
 from tenminvideomaker.constants import frame_count_for_seconds, seconds_for_frame_count
-from tenminvideomaker.contracts import ContractValidationError, effective_t2i_loras, parse_job_payload
+from tenminvideomaker.contracts import (
+    ContractValidationError,
+    effective_t2i_loras,
+    lora_identity,
+    parse_job_payload,
+)
 
 
 def payload() -> dict:
@@ -66,6 +71,24 @@ class ContractTests(unittest.TestCase):
         job = parse_job_payload(payload())
         loras = effective_t2i_loras(job.scenes[0], job.character)
         self.assertEqual([lora.name for lora in loras], ["Elsa Frozen Anima"])
+
+    def test_same_civitai_version_deduplicates_even_when_names_differ(self) -> None:
+        data = payload()
+        data["scenes"][0]["t2i"]["loras"][0]["name"] = "Different display name"
+        data["scenes"][0]["t2i"]["loras"][0]["weight"] = 0.25
+        job = parse_job_payload(data)
+        loras = effective_t2i_loras(job.scenes[0], job.character)
+        self.assertEqual(len(loras), 1)
+        self.assertEqual(loras[0].name, "Elsa Frozen Anima")
+        self.assertEqual(loras[0].weight, 0.85)
+        self.assertEqual(loras[0].version_id, 3184055)
+        self.assertEqual(lora_identity(loras[0]), "civitai-version:3184055")
+
+    def test_explicit_civitai_version_must_match_download_url(self) -> None:
+        data = payload()
+        data["scenes"][0]["t2i"]["loras"][0]["version_id"] = 123
+        with self.assertRaisesRegex(ContractValidationError, "does not match"):
+            parse_job_payload(data)
 
     def test_non_https_asset_url_is_rejected(self) -> None:
         data = payload()

@@ -17,7 +17,14 @@ from .constants import (
     PRODUCTION_HEIGHT,
     PRODUCTION_WIDTH,
 )
-from .contracts import JobPayload, LoraSpec, SceneSpec, effective_t2i_loras
+from .contracts import (
+    JobPayload,
+    LoraSpec,
+    SceneSpec,
+    effective_t2i_loras,
+    lora_identity,
+    unique_loras,
+)
 
 ANIMA_UNET = "CyberRealistic_AnimaSemi_V6.0.safetensors"
 ANIMA_TEXT_ENCODER = "cyberrealisticAnima_v30_txt.safetensors"
@@ -70,18 +77,23 @@ def _scene_prefix(job_id: str, stage: str, scene_id: int) -> str:
 
 
 def _dynamic_i2v_loras(job: JobPayload, scene: SceneSpec) -> tuple[LoraSpec, ...]:
-    ordered = (
-        *((job.ltxv_character_lora,) if job.ltxv_character_lora else ()),
-        *scene.i2v.loras,
+    return unique_loras(
+        (
+            *((job.ltxv_character_lora,) if job.ltxv_character_lora else ()),
+            *scene.i2v.loras,
+        )
     )
-    seen: set[str] = set()
-    result: list[LoraSpec] = []
-    for lora in ordered:
-        key = lora.name.casefold()
-        if key not in seen:
-            seen.add(key)
-            result.append(lora)
-    return tuple(result)
+
+
+def _local_lora_filename(
+    lora: LoraSpec,
+    resolved_filenames: Mapping[str, str] | None,
+) -> str:
+    if resolved_filenames:
+        resolved = resolved_filenames.get(lora_identity(lora))
+        if resolved:
+            return resolved
+    return predictable_lora_filename(lora.name)
 
 
 def _apply_t2i_loras(
@@ -89,6 +101,7 @@ def _apply_t2i_loras(
     model: list[Any],
     clip: list[Any],
     loras: Iterable[LoraSpec],
+    resolved_filenames: Mapping[str, str] | None,
 ) -> tuple[list[Any], list[Any]]:
     for lora in loras:
         loader = graph.add(
@@ -96,7 +109,7 @@ def _apply_t2i_loras(
             f"T2I LoRA: {lora.name}",
             model=model,
             clip=clip,
-            lora_name=predictable_lora_filename(lora.name),
+            lora_name=_local_lora_filename(lora, resolved_filenames),
             strength_model=lora.weight,
             strength_clip=lora.weight,
         )
@@ -105,7 +118,11 @@ def _apply_t2i_loras(
     return model, clip
 
 
-def build_t2i_api_workflow(job: JobPayload, scene: SceneSpec) -> WorkflowBuild:
+def build_t2i_api_workflow(
+    job: JobPayload,
+    scene: SceneSpec,
+    resolved_lora_filenames: Mapping[str, str] | None = None,
+) -> WorkflowBuild:
     """Build the matching Anima or Pony workflow for one scene."""
     graph = _Graph()
     family = job.character.base_model.casefold()
@@ -144,6 +161,7 @@ def build_t2i_api_workflow(job: JobPayload, scene: SceneSpec) -> WorkflowBuild:
         model,
         clip,
         effective_t2i_loras(scene, job.character),
+        resolved_lora_filenames,
     )
     positive = graph.add(
         "CLIPTextEncode",
@@ -242,6 +260,7 @@ def _apply_i2v_loras(
     model: list[Any],
     job: JobPayload,
     scene: SceneSpec,
+    resolved_filenames: Mapping[str, str] | None,
 ) -> list[Any]:
     for filename, weight in MANDATORY_I2V_LORAS:
         loader = graph.add(
@@ -257,7 +276,7 @@ def _apply_i2v_loras(
             "LoraLoaderModelOnly",
             f"Scene I2V LoRA: {lora.name}",
             model=model,
-            lora_name=predictable_lora_filename(lora.name),
+            lora_name=_local_lora_filename(lora, resolved_filenames),
             strength_model=lora.weight,
         )
         model = graph.output(loader)
@@ -268,6 +287,7 @@ def build_i2v_api_workflow(
     job: JobPayload,
     scene: SceneSpec,
     cached_frame_path: str | Path,
+    resolved_lora_filenames: Mapping[str, str] | None = None,
 ) -> WorkflowBuild:
     """Build the two-pass LCM LTX 2.3 graph for one exact cached T2I frame."""
     frame_path = Path(cached_frame_path)
@@ -293,7 +313,13 @@ def build_i2v_api_workflow(
         ckpt_name=LTX_CHECKPOINT,
     )
 
-    model = _apply_i2v_loras(graph, graph.output(checkpoint, 0), job, scene)
+    model = _apply_i2v_loras(
+        graph,
+        graph.output(checkpoint, 0),
+        job,
+        scene,
+        resolved_lora_filenames,
+    )
     chunked = graph.add(
         "LTXVChunkFeedForward",
         "16 GB VRAM chunking",

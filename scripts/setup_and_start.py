@@ -35,8 +35,10 @@ from tenminvideomaker.oauth import (
     OAuthError,
     authorize_desktop_app,
 )
+from tenminvideomaker.state_store import PipelineState, PipelineStateStore, SceneState
 
 APP_PASSWORD_URL = "https://myaccount.google.com/apppasswords"
+CIVITAI_API_KEYS_URL = "https://civitai.com/user/account"
 
 
 @dataclass(frozen=True)
@@ -306,6 +308,33 @@ def configure_gmail(
         environment.pop("TENMIN_GMAIL_OAUTH2_TOKEN", None)
 
 
+def configure_civitai(
+    environment: dict[str, str],
+    *,
+    input_func: Callable[[str], str] = input,
+    secret_input: Callable[[str], str] = getpass,
+    open_url: Callable[[str], object] = webbrowser.open,
+) -> None:
+    print("\nCivitai download authentication")
+    print("-------------------------------")
+    print(
+        "Civitai model metadata is public, but the file endpoint currently requires "
+        "account authentication. The token is encrypted with Windows DPAPI."
+    )
+    print("Civitai account/API keys page:")
+    print(CIVITAI_API_KEYS_URL)
+    if _yes_no("Open the Civitai account page now?", default=True, input_func=input_func):
+        open_url(CIVITAI_API_KEYS_URL)
+    print(
+        "Sign in, open Account Settings, find API Keys, create a key, then paste it here. "
+        "Do not paste the token into chat."
+    )
+    token = secret_input("Paste the Civitai API token: ").strip()
+    if not token:
+        raise ConfigurationError("A non-empty Civitai API token is required.")
+    environment["TENMIN_CIVITAI_TOKEN"] = token
+
+
 def edit_optional_settings(
     environment: dict[str, str],
     *,
@@ -327,7 +356,14 @@ def edit_optional_settings(
             print(f"  {index:2}. {setting.label}: {current}")
             print(f"      {setting.description}")
         auth_index = len(OPTIONAL_SETTINGS) + 1
+        civitai_index = auth_index + 1
         print(f"  {auth_index:2}. Reconfigure Gmail authentication")
+        token_status = (
+            "configured"
+            if environment.get("TENMIN_CIVITAI_TOKEN", "").strip()
+            else "not configured"
+        )
+        print(f"  {civitai_index:2}. Configure/change Civitai API token ({token_status})")
         print("   0. Save and continue")
         choice = input_func("Choose a setting to change [0]: ").strip() or "0"
         if choice == "0":
@@ -344,6 +380,14 @@ def edit_optional_settings(
                 open_url=open_url,
                 oauth_authorize=oauth_authorize,
                 force_authentication=True,
+            )
+            continue
+        if number == civitai_index:
+            configure_civitai(
+                environment,
+                input_func=input_func,
+                secret_input=secret_input,
+                open_url=open_url,
             )
             continue
         if not 1 <= number <= len(OPTIONAL_SETTINGS):
@@ -430,6 +474,25 @@ def setup_environment(
             oauth_authorize=oauth_authorize,
         )
 
+    if environment.get("TENMIN_CIVITAI_TOKEN", "").strip():
+        print("Civitai API token is configured.")
+    else:
+        print(
+            "No Civitai API token is configured. It is needed when a job references "
+            "a LoRA that is not already installed."
+        )
+        if _yes_no(
+            "Configure a Civitai API token now?",
+            default=True,
+            input_func=input_func,
+        ):
+            configure_civitai(
+                environment,
+                input_func=input_func,
+                secret_input=secret_input,
+                open_url=open_url,
+            )
+
     if _yes_no(
         "Change optional environment settings before starting?",
         default=False,
@@ -452,6 +515,35 @@ def setup_environment(
     )
     save_project_environment(PROJECT_ROOT, environment)
     return environment
+
+
+def offer_saved_job_retry(
+    *,
+    input_func: Callable[[str], str] = input,
+) -> str | None:
+    store = PipelineStateStore(PROJECT_ROOT / "runtime" / "pipeline.sqlite3")
+    snapshot = store.snapshot()
+    if not snapshot.job_id or snapshot.state not in {
+        PipelineState.ERROR,
+        PipelineState.WAITING_FOR_GROK,
+    }:
+        return None
+    records = store.scene_records(snapshot.job_id)
+    unfinished = [record for record in records if record.state != SceneState.SUCCEEDED]
+    if not unfinished:
+        return None
+    print(
+        f"\nSaved job {snapshot.job_id} has {len(unfinished)} unfinished scene(s)."
+    )
+    if not _yes_no(
+        "Retry this saved job before accepting another email?",
+        default=True,
+        input_func=input_func,
+    ):
+        return None
+    store.retry_job(snapshot.job_id)
+    print(f"Saved job {snapshot.job_id} is queued for asset resolution.")
+    return snapshot.job_id
 
 
 def main() -> int:
@@ -490,6 +582,7 @@ def main() -> int:
             print("\nSetup is complete. The supervisor was not started.")
             return 0
         _ensure_comfyui(environment)
+        offer_saved_job_retry()
     except (
         ConfigurationError,
         MailConfigurationError,

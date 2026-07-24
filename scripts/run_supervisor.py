@@ -14,12 +14,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 COMFY_ROOT = PROJECT_ROOT.parents[1]
 EASY_INSTALL_ROOT = COMFY_ROOT.parent
 sys.path.insert(0, str(PROJECT_ROOT))
-sys.path.insert(0, str(COMFY_ROOT))
-
-import folder_paths
 
 from tenminvideomaker.assembly import FfmpegAssembler, probe_video
-from tenminvideomaker.assets import LoraAssetManager
+from tenminvideomaker.assets import ComfyLoraAssetClient
 from tenminvideomaker.comfy_http import ComfyHttpClient
 from tenminvideomaker.configuration import load_project_environment
 from tenminvideomaker.mail import GmailClient, GmailSettings
@@ -70,14 +67,12 @@ def build_supervisor(*, allow_restart: bool) -> PipelineSupervisor:
     comfy_url = os.environ.get("TENMIN_COMFY_URL", "http://127.0.0.1:8188")
     ffmpeg = os.environ.get("TENMIN_FFMPEG", "ffmpeg")
     ffprobe = os.environ.get("TENMIN_FFPROBE", "ffprobe")
+    comfy = ComfyHttpClient(comfy_url)
     return PipelineSupervisor(
         store=PipelineStateStore(runtime / "pipeline.sqlite3"),
         mail_client=GmailClient(GmailSettings.from_environment()),
-        asset_manager=LoraAssetManager(
-            folder_paths.get_folder_paths("loras"),
-            runtime / "asset_manifest.json",
-        ),
-        comfy=ComfyHttpClient(comfy_url),
+        asset_manager=ComfyLoraAssetClient(comfy),
+        comfy=comfy,
         assembler=FfmpegAssembler(ffmpeg_executable=ffmpeg),
         settings=SupervisorSettings.from_environment(),
         restart_comfy=restart_comfyui if allow_restart else None,

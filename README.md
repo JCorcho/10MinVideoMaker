@@ -7,7 +7,8 @@ An independent ComfyUI custom-node project for building a guided long-form video
 The durable job contract, SQLite state machine, Gmail transport, LoRA resolver, FFmpeg assembly service, eight
 interactive ComfyUI nodes, scene-specific Anima/Pony/LTX workflow builders, and unattended supervisor are
 implemented. A project-local one-click launcher now configures Gmail securely, validates SMTP/IMAP, starts ComfyUI
-when needed, and launches the supervisor. The supervisor has not been started and no production render has been run.
+when needed, configures Civitai downloads, and launches the supervisor. The first production job is preserved for
+retry; no production media has been rendered yet.
 
 ## One-click start
 
@@ -15,9 +16,11 @@ Double-click `Start 10MinVideoMaker.bat` in the repository root. On first run it
 
 1. Detects missing Gmail settings.
 2. Offers Google App Password or OAuth2 browser authorization.
-3. Saves non-secrets in the ignored `.env` file and secrets encrypted with Windows DPAPI in ignored `runtime/`.
-4. Shows the optional settings editor when requested.
-5. Validates Gmail without sending a message, performs a ComfyUI health check, and starts the supervisor.
+3. Opens Civitai Account Settings and securely collects an API token when missing.
+4. Saves non-secrets in the ignored `.env` file and secrets encrypted with Windows DPAPI in ignored `runtime/`.
+5. Shows the optional settings editor when requested.
+6. Validates Gmail without sending a message, performs a ComfyUI health check, offers to retry an unfinished saved
+   job, and starts the supervisor.
 
 On later runs, valid required settings are reused and the launcher asks whether to change optional settings before
 starting. See `docs/user-guide.md` for OAuth setup details and safe setup-only commands.
@@ -28,7 +31,8 @@ starting. See `docs/user-guide.md` for OAuth setup details and safe setup-only c
 - **Pipeline Status** — reads the durable pipeline state.
 - **Request Grok Job** — sends the exact request subject using environment-provided Gmail credentials.
 - **Poll Gmail Once** — performs one attachment-first IMAP poll; scheduling belongs to the supervisor.
-- **Resolve LoRAs** — checks local LoRA roots, resolves dynamic assets, and verifies mandatory I2V LoRAs.
+- **Resolve LoRAs** — uses the live ComfyUI process's active LoRA roots, resolves dynamic assets, and verifies
+  mandatory I2V LoRAs.
 - **Release Memory** — runs Python and CUDA cache cleanup.
 - **Save Scene Frame** — atomically caches a deterministic 704×1248 PNG for the matching scene.
 - **Stitch Clips** — verifies every clip is 704×1248 at 24 fps before FFmpeg concat.

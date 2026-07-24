@@ -110,6 +110,17 @@ class ComfyHttpClient:
             timeout=30,
         )
 
+    def resolve_lora_asset(self, payload: Mapping[str, Any]) -> Mapping[str, Any]:
+        response = self._json_request(
+            "POST",
+            "/10minvideomaker/assets/resolve",
+            payload,
+            timeout=1800,
+        )
+        if not isinstance(response, Mapping):
+            raise ComfyHttpError("ComfyUI returned an invalid LoRA asset response.")
+        return response
+
     def download_output(self, metadata: Mapping[str, Any], destination: str | Path) -> Path:
         filename = metadata.get("filename")
         if not isinstance(filename, str) or not filename:

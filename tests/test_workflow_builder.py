@@ -8,7 +8,7 @@ from tenminvideomaker.constants import (
     I2V_SPATIAL_UPSCALER,
     I2V_UPSCALE_PASS_SIGMAS,
 )
-from tenminvideomaker.contracts import parse_job_payload
+from tenminvideomaker.contracts import lora_identity, parse_job_payload
 from tenminvideomaker.workflow_builder import (
     I2V_BASE_HEIGHT,
     I2V_BASE_WIDTH,
@@ -106,6 +106,16 @@ class WorkflowBuilderTests(unittest.TestCase):
                 ("JoyAI-Echo-content_r256.safetensors", 0.5),
             ],
         )
+
+    def test_resolved_comfy_filename_is_used_for_dynamic_lora(self) -> None:
+        resolved_name = r"characters\Elsa-canonical.safetensors"
+        build = build_t2i_api_workflow(
+            self.job,
+            self.scene,
+            {lora_identity(self.job.character.lora): resolved_name},
+        )
+        lora = nodes_of_type(build.api, "LoraLoader")[0]
+        self.assertEqual(lora["inputs"]["lora_name"], resolved_name)
 
     def test_graph_validator_reports_dangling_references(self) -> None:
         errors = validate_api_graph(

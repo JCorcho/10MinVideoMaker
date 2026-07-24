@@ -384,3 +384,44 @@ class PipelineStateStore:
                 (SceneState.PENDING, _utc_now(), job_id, *resumable),
             )
         return [int(row["scene_id"]) for row in rows]
+
+    def retry_job(self, job_id: str) -> list[int]:
+        """Atomically resume a saved job without replacing completed scenes."""
+        self.initialize()
+        resumable = (
+            SceneState.PENDING,
+            SceneState.RUNNING,
+            SceneState.FAILED,
+            SceneState.CANCELLED,
+        )
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            exists = connection.execute(
+                "SELECT 1 FROM jobs WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+            if not exists:
+                raise StateTransitionError(f"Unknown job {job_id}.")
+            rows = connection.execute(
+                "SELECT scene_id FROM scenes WHERE job_id = ? AND state != ? ORDER BY scene_id",
+                (job_id, SceneState.SUCCEEDED),
+            ).fetchall()
+            if not rows:
+                raise StateTransitionError(f"Job {job_id} has no unfinished scenes.")
+            connection.execute(
+                """
+                UPDATE scenes
+                SET state = ?, error = NULL, prompt_id = NULL, updated_at = ?
+                WHERE job_id = ? AND state IN (?, ?, ?, ?)
+                """,
+                (SceneState.PENDING, _utc_now(), job_id, *resumable),
+            )
+            connection.execute(
+                """
+                UPDATE pipeline_state
+                SET state = ?, job_id = ?, active_scene_id = NULL, error = NULL, updated_at = ?
+                WHERE singleton = 1
+                """,
+                (PipelineState.DOWNLOADING_ASSETS, job_id, _utc_now()),
+            )
+        return [int(row["scene_id"]) for row in rows]

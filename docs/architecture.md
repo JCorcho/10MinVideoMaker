@@ -16,7 +16,18 @@ only the unfinished stage is retried. A timed-out prompt is deleted if pending o
 prompt ID is the running project prompt. On process recovery, succeeded scenes and their deterministic artifacts are
 left untouched.
 
-LoRA files are resolved independently and mapped to predictable safe `.safetensors` filenames. The manager first checks only ComfyUI-provided LoRA roots, then downloads a missing payload-provided HTTPS asset with redirect-following retries into the authorized LoRA destination. Each failed asset is reported independently so its scene can fail without cancelling the rest of the job. Mandatory DMD and JoyAI I2V LoRAs must already be installed because no trusted download URL was supplied for them.
+LoRA resolution runs through a loopback-only custom ComfyUI route so the standalone supervisor uses the active
+server process's exact `folder_paths` roots and selectable filenames. Dynamic assets are de-duplicated by Civitai
+version ID, falling back to normalized download URL, rather than display name. This prevents one version repeated
+under different JSON names from being downloaded or injected twice.
+
+For a missing Civitai asset, public model-version metadata confirms that it is a LoRA, selects a primary
+virus-scanned SafeTensor, obtains its canonical filename/size/hash, and performs a second local lookup before any
+transfer. Downloads use the DPAPI-protected project Civitai token, redirect-following retries, an atomic partial file,
+free-space preflight, and SHA-256 verification when supplied. The token is attached only to Civitai download URLs
+and is never returned to the supervisor or logs. Each failed asset is reported independently so a scene can fail
+without cancelling unrelated scenes. Mandatory DMD and JoyAI I2V LoRAs remain local-only because no trusted download
+URL was supplied for them.
 
 Before stitching, FFmpeg preflight verifies every successful clip is 704×1248 at 24 fps. The concat operation uses stream copy and emits `D:\output\10minfinals\{job_id}_final.mp4`; the folder is created only when a completed job is actually assembled.
 
@@ -34,6 +45,11 @@ live in ignored `runtime/secrets.json` after encryption with Windows DPAPI for t
 process environment variables take precedence over saved project values. OAuth uses a loopback desktop callback,
 PKCE, state validation, offline access, and the full Gmail IMAP/SMTP scope. `GmailClient` exchanges the stored refresh
 token for short-lived access tokens and caches them only in memory.
+
+If every scene fails asset preparation, the supervisor transitions to `error` and stops polling for replacement
+jobs. The one-click launcher detects that saved job and offers an atomic retry: unfinished scene errors and prompt IDs
+are cleared, succeeded scenes remain untouched, and attempt counters remain durable. A partial asset failure still
+allows successful scenes to render and stitch.
 
 ## Production profile
 
@@ -61,7 +77,9 @@ second pass lands exactly at the only production output size, 704×1248. No alte
 - `python -m compileall -q tenminvideomaker scripts __init__.py`
 - `python scripts/setup_and_start.py --help`
 - `git diff --check`
-- Restart ComfyUI, then query `/object_info/<node type>` for all seven `10MinVideoMaker_*` types.
+- Restart ComfyUI, then query `/object_info/<node type>` for all eight `10MinVideoMaker_*` types.
+- POST a local-only mandatory-LoRA lookup to `/10minvideomaker/assets/resolve`; this checks the live roots without
+  downloading or loading a model.
 - Queue `10MinVideoMaker_ReleaseMemory` alone as a harmless API smoke test. This verifies real execution without
   loading a model or generating media.
 - Run `python scripts/export_workflows.py --install-approved-shared-copies` while ComfyUI is healthy. Export refuses

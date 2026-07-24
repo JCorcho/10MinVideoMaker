@@ -32,6 +32,16 @@
   `/view` and writes the project clip under `D:\output\10minfinals\.work`; do not scan or move shared output folders.
 - Controlled restart must verify the port-8188 owner is the expected Easy Install embedded Python executable before
   stopping it. Never weaken that path check.
+- Standalone automation must resolve LoRAs through the loopback-only project route registered in the live ComfyUI
+  process. This makes `folder_paths.get_folder_paths("loras")` and `get_filename_list("loras")` authoritative; do
+  not reconstruct model paths in the supervisor process.
+- Dynamic LoRA identity is Civitai version ID when available, otherwise normalized download URL. Display names are
+  not asset identities. A repeated version keeps the first occurrence, so the global T2I character weight wins when
+  Grok repeats that asset in a scene.
+- Civitai metadata remains public and must be validated before a transfer. Store the Civitai API token with the other
+  DPAPI secrets, attach it only to Civitai download URLs, never log it, and verify the supplied SHA-256 when present.
+- An all-scene asset failure pauses the saved job in `error` and must not send a new request email. Manual retry
+  requeues only unfinished scenes while preserving completed scenes and attempt counters.
 
 ## Implementation and testing
 
@@ -197,3 +207,38 @@
 - Follow-up: record stronger recovery for the narrow interval after temporary VHS rendering completes but before
   the supervisor copies the clip to its deterministic D-drive path. The current runtime behavior is unchanged.
 - Verification command: `git diff --check`.
+
+### 2026-07-24 — live LoRA resolution, Civitai authentication, and saved-job retry
+
+- Changed files: `__init__.py`, `.env.example`, `scripts/run_supervisor.py`,
+  `scripts/setup_and_start.py`, `tenminvideomaker/assets.py`, `tenminvideomaker/comfy_http.py`,
+  `tenminvideomaker/configuration.py`, `tenminvideomaker/contracts.py`, `tenminvideomaker/nodes.py`,
+  `tenminvideomaker/server_api.py`, `tenminvideomaker/state_store.py`,
+  `tenminvideomaker/supervisor.py`, `tenminvideomaker/workflow_builder.py`,
+  `tests/test_assets.py`, `tests/test_comfy_http.py`, `tests/test_configuration.py`,
+  `tests/test_contracts.py`, `tests/test_server_api.py`, `tests/test_setup_and_start.py`,
+  `tests/test_state_store.py`, `tests/test_supervisor.py`, `tests/test_workflow_builder.py`,
+  `README.md`, `docs/architecture.md`, `docs/user-guide.md`, `AI_DEVELOPMENT_RULES.md`.
+- Cause: the external supervisor imported a separate `folder_paths` context, so it did not necessarily see the
+  running server's active LoRA roots. Civitai metadata was anonymous but file downloads redirected to account login.
+  Asset identity also used the JSON display name, allowing duplicate versions with different names.
+- Routing: the supervisor now calls a loopback-only ComfyUI route that resolves against the live process's roots and
+  selectable filenames. Dynamic assets use version/URL identity, public metadata validation, encrypted Civitai-token
+  downloads, canonical filename discovery, disk preflight, atomic transfer, and hash verification. Resolved live
+  filenames are injected into generated workflows.
+- Recovery: asset errors are printed immediately. An all-scene failure pauses in `error` without requesting another
+  job; the launcher offers to retry the saved job while preserving successes and attempt counters.
+- Reproduction:
+  - Double-click `Start 10MinVideoMaker.bat`, configure a Civitai API key from Account Settings when prompted, and
+    accept the saved-job retry.
+  - For no-render validation, restart ComfyUI and resolve the already-installed mandatory DMD/JoyAI files through
+    `POST /10minvideomaker/assets/resolve`.
+- Verification commands:
+  - `python -m unittest discover -s tests -v`
+  - `python -m compileall -q tenminvideomaker scripts __init__.py`
+  - `python scripts/setup_and_start.py --help`
+  - `python scripts/run_supervisor.py --help`
+  - `git diff --check`
+- Results: all 75 tests passed under system and Easy Install embedded Python. Live ComfyUI 0.27.1 registered all
+  eight project nodes, and its loopback route found both installed mandatory I2V LoRAs by their real selectable
+  filenames. No Gmail message was sent, no model was downloaded or loaded, and no media was rendered.

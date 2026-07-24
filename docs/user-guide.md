@@ -4,8 +4,8 @@
 
 The project can validate incoming jobs, poll/send Gmail, resolve LoRAs, build and queue per-scene generation graphs,
 cache the exact T2I frame, download the matching I2V clip, validate/stitch completed clips, request the next job, and
-recover unfinished scenes. The supervisor is implemented but has not been started because Gmail credentials are not
-configured. No media has been rendered during implementation.
+recover unfinished scenes. Gmail has been authenticated and the first received job remains durably saved for retry.
+No media has been rendered during implementation.
 
 ## Workflow templates
 
@@ -54,13 +54,32 @@ an external project left in **Testing** expire after seven days. A personal app 
 warning because this scope is restricted.
 
 Secrets are not written to `.env`, workflow JSON, or Git. The launcher encrypts App Passwords, OAuth client secrets,
-and OAuth refresh tokens with Windows DPAPI for the current Windows user and stores the ciphertext in the ignored
-`runtime/secrets.json`. Non-secret values are stored in the ignored project `.env`. Existing process environment
-variables override saved project values.
+OAuth refresh tokens, and the Civitai API token with Windows DPAPI for the current Windows user and stores the
+ciphertext in the ignored `runtime/secrets.json`. Non-secret values are stored in the ignored project `.env`.
+Existing process environment variables override saved project values.
 
 If all required values already exist, the launcher asks whether to change optional settings. Choosing yes displays
 the editable values and a Gmail reconfiguration option. Choosing no proceeds directly to validation and startup.
 Gmail validation authenticates to both SMTP and IMAP but sends no message.
+
+### Civitai API token
+
+Civitai's public API can describe a LoRA without a key, including adult/NSFW metadata, but the model file endpoint
+requires authenticated downloads on this machine. The launcher therefore asks for a Civitai API token when one is
+not already saved.
+
+1. Double-click `Start 10MinVideoMaker.bat`.
+2. Answer **yes** when asked to configure a Civitai token. The launcher opens
+   `https://civitai.com/user/account`.
+3. Sign in, open **Account Settings**, locate **API Keys**, and create a key.
+4. Paste the key only into the local hidden prompt. Do not paste it into chat.
+5. When the launcher reports the saved unfinished job, accept the default **yes** to retry it.
+
+The token is used only for `civitai.com` model-download URLs. Public metadata is checked first to confirm the version
+is a LoRA, select a virus-scanned SafeTensor, obtain its canonical filename and SHA-256 hash, and detect an existing
+local copy. The downloader follows redirects, verifies the hash when supplied, and never logs the token. There is no
+separate NSFW toggle in this project: adult assets remain governed by the signed-in Civitai account's own settings
+and permissions.
 
 To configure and validate without starting ComfyUI or the supervisor:
 
@@ -89,6 +108,7 @@ supervisor:
 - `TENMIN_GMAIL_OAUTH_CLIENT_ID`, `TENMIN_GMAIL_OAUTH_CLIENT_SECRET`, and
   `TENMIN_GMAIL_OAUTH_REFRESH_TOKEN` for persistent OAuth2
 - `TENMIN_GMAIL_OAUTH2_TOKEN` remains supported only as a legacy short-lived access-token override
+- `TENMIN_CIVITAI_TOKEN` for authenticated Civitai file downloads; the launcher stores it with DPAPI
 
 The exact request subject is `Run the LTX video pipeline`. A `.json` attachment takes precedence over the plain-text
 body. A malformed attachment is not silently replaced by body content.
@@ -128,6 +148,10 @@ can download LoRAs and begin generation. Use the no-render checks below instead.
 - A transient failed stage retries up to `TENMIN_MAX_STAGE_ATTEMPTS`.
 - A timed-out project prompt is removed from the pending queue or interrupted if it is the current running prompt.
 - A scene-specific LoRA failure marks only that scene failed; other scenes continue and can be stitched.
+- If asset preparation fails for every scene, the supervisor pauses in `error`, prints each cause in the console,
+  preserves the job, and does not request a replacement email.
+- Relaunching offers to retry unfinished scenes from the saved job; successful scenes and attempt counters remain
+  intact.
 - A server availability failure records `error`, runs the path-verified restart script, and requeues unfinished scenes.
 - VRAM/system cleanup runs after T2I, after each scene attempt, and after assembly.
 

@@ -69,6 +69,37 @@ class StateStoreTests(unittest.TestCase):
         self.assertEqual(record.prompt_id, "prompt-123")
         self.assertEqual(self.store.snapshot().active_scene_id, 1)
 
+    def test_retry_job_preserves_attempts_and_requeues_unfinished_scene(self) -> None:
+        self.store.claim_job(self.job)
+        self.store.begin_scene_stage(
+            self.job.job_id,
+            1,
+            PipelineState.RUNNING_T2I,
+        )
+        self.store.set_scene_prompt_id(self.job.job_id, 1, "prompt-123")
+        self.store.set_scene_state(
+            self.job.job_id,
+            1,
+            SceneState.FAILED,
+            error="authentication required",
+        )
+        self.store.transition(
+            PipelineState.ERROR,
+            job_id=self.job.job_id,
+            error="assets failed",
+        )
+
+        self.assertEqual(self.store.retry_job(self.job.job_id), [1])
+
+        snapshot = self.store.snapshot()
+        record = self.store.scene_records(self.job.job_id)[0]
+        self.assertEqual(snapshot.state, PipelineState.DOWNLOADING_ASSETS)
+        self.assertEqual(snapshot.job_id, self.job.job_id)
+        self.assertEqual(record.state, SceneState.PENDING)
+        self.assertIsNone(record.error)
+        self.assertIsNone(record.prompt_id)
+        self.assertEqual(record.t2i_attempts, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

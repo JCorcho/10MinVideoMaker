@@ -8,14 +8,20 @@ import logging
 import os
 from pathlib import Path
 import time
-from typing import Callable
+from typing import Any, Callable, Mapping
 
 from .artifacts import scene_clip_path, scene_frame_path
 from .assembly import FfmpegAssembler, probe_video, validate_video_profile
-from .assets import AssetResolution, LocalLoraRequirement, LoraAssetManager
+from .assets import AssetResolution, LocalLoraRequirement
 from .comfy_http import ComfyHttpClient, ComfyHttpError, find_video_output
 from .constants import MANDATORY_I2V_LORAS
-from .contracts import JobPayload, LoraSpec, SceneSpec, effective_t2i_loras
+from .contracts import (
+    JobPayload,
+    LoraSpec,
+    SceneSpec,
+    effective_t2i_loras,
+    lora_identity,
+)
 from .mail import GmailClient, GmailPollingService
 from .state_store import PipelineState, PipelineStateStore, SceneState
 from .workflow_builder import build_i2v_api_workflow, build_t2i_api_workflow
@@ -25,6 +31,12 @@ LOGGER = logging.getLogger("10MinVideoMaker.supervisor")
 
 class FatalPipelineError(RuntimeError):
     """Raised when a project job cannot continue without external recovery."""
+
+
+@dataclass(frozen=True)
+class AssetPreparation:
+    failures: dict[int, list[str]]
+    resolved_filenames: dict[str, str]
 
 
 @dataclass(frozen=True)
@@ -60,7 +72,7 @@ class PipelineSupervisor:
         *,
         store: PipelineStateStore,
         mail_client: GmailClient,
-        asset_manager: LoraAssetManager,
+        asset_manager: Any,
         comfy: ComfyHttpClient,
         assembler: FfmpegAssembler | None = None,
         settings: SupervisorSettings | None = None,
@@ -89,12 +101,23 @@ class PipelineSupervisor:
             self._request_next_job(previous_job_id=None, succeeded=None)
             return
         if snapshot.state == PipelineState.WAITING_FOR_GROK:
-            GmailPollingService(self.store, self.mail_client).poll_once()
+            payload = GmailPollingService(self.store, self.mail_client).poll_once()
+            if payload:
+                LOGGER.info(
+                    "Accepted Gmail job %s with %s scene(s).",
+                    payload.job_id,
+                    len(payload.scenes),
+                )
             return
         if not snapshot.job_id:
             raise FatalPipelineError(f"Pipeline state {snapshot.state} has no active job id.")
         if snapshot.state == PipelineState.ERROR:
-            self.store.requeue_unfinished_scenes(snapshot.job_id)
+            LOGGER.error(
+                "Pipeline is paused in error for job %s: %s",
+                snapshot.job_id,
+                snapshot.error or "manual retry required",
+            )
+            return
         self.process_job(self.store.load_job(snapshot.job_id))
 
     def run_forever(self) -> None:
@@ -113,15 +136,31 @@ class PipelineSupervisor:
             self._sleep(self.settings.poll_interval_seconds)
 
     def process_job(self, job: JobPayload) -> None:
+        LOGGER.info("Resolving assets for job %s.", job.job_id)
         self.store.transition(PipelineState.DOWNLOADING_ASSETS, job_id=job.job_id)
-        failures = self._resolve_assets(job)
-        for scene_id, errors in failures.items():
+        preparation = self._resolve_assets(job)
+        for scene_id, errors in preparation.failures.items():
             self.store.set_scene_state(
                 job.job_id,
                 scene_id,
                 SceneState.FAILED,
                 error="; ".join(errors),
             )
+            LOGGER.error(
+                "Job %s scene %s asset preparation failed: %s",
+                job.job_id,
+                scene_id,
+                "; ".join(errors),
+            )
+
+        if len(preparation.failures) == len(job.scenes):
+            error = (
+                f"Asset preparation failed for all {len(job.scenes)} scene(s); "
+                "correct the asset/authentication problem and retry the saved job."
+            )
+            self.store.transition(PipelineState.ERROR, job_id=job.job_id, error=error)
+            LOGGER.error("%s Job %s remains saved and was not replaced.", error, job.job_id)
+            return
 
         scene_by_id = {scene.scene_id: scene for scene in job.scenes}
         for record in self.store.scene_records(job.job_id):
@@ -130,29 +169,46 @@ class PipelineSupervisor:
                 continue
             if record.state == SceneState.FAILED:
                 continue
-            self._process_scene_with_retries(job, scene)
+            self._process_scene_with_retries(
+                job,
+                scene,
+                preparation.resolved_filenames,
+            )
 
         records = self.store.scene_records(job.job_id)
         successful = [
             record for record in records if record.state == SceneState.SUCCEEDED and record.video_path
         ]
         complete_success = len(successful) == len(records)
-        if successful:
-            self.store.transition(PipelineState.STITCHING, job_id=job.job_id)
-            streams = [self._video_probe(record.video_path) for record in successful]
-            validate_video_profile(streams)
-            self.assembler.stitch(
-                job.job_id,
-                [record.video_path for record in successful],
-                self.store.database_path.parent / "concat",
+        if not successful:
+            error = (
+                f"Job {job.job_id} produced no successful scenes; "
+                "the saved job is paused for manual retry."
             )
+            self.store.transition(PipelineState.ERROR, job_id=job.job_id, error=error)
+            LOGGER.error(error)
+            self._release_memory()
+            return
+        self.store.transition(PipelineState.STITCHING, job_id=job.job_id)
+        streams = [self._video_probe(record.video_path) for record in successful]
+        validate_video_profile(streams)
+        self.assembler.stitch(
+            job.job_id,
+            [record.video_path for record in successful],
+            self.store.database_path.parent / "concat",
+        )
         self._release_memory()
         self._request_next_job(previous_job_id=job.job_id, succeeded=complete_success)
 
-    def _process_scene_with_retries(self, job: JobPayload, scene: SceneSpec) -> None:
+    def _process_scene_with_retries(
+        self,
+        job: JobPayload,
+        scene: SceneSpec,
+        resolved_lora_filenames: Mapping[str, str],
+    ) -> None:
         while True:
             try:
-                self._process_scene(job, scene)
+                self._process_scene(job, scene, resolved_lora_filenames)
                 return
             except ComfyHttpError as error:
                 if not self.comfy.alive():
@@ -197,7 +253,12 @@ class PipelineSupervisor:
             finally:
                 self._release_memory()
 
-    def _process_scene(self, job: JobPayload, scene: SceneSpec) -> None:
+    def _process_scene(
+        self,
+        job: JobPayload,
+        scene: SceneSpec,
+        resolved_lora_filenames: Mapping[str, str],
+    ) -> None:
         record = next(
             item for item in self.store.scene_records(job.job_id) if item.scene_id == scene.scene_id
         )
@@ -215,7 +276,11 @@ class PipelineSupervisor:
             if record.t2i_attempts >= self.settings.max_stage_attempts:
                 raise ComfyHttpError("T2I attempt limit reached.")
             self.store.begin_scene_stage(job.job_id, scene.scene_id, PipelineState.RUNNING_T2I)
-            build = build_t2i_api_workflow(job, scene)
+            build = build_t2i_api_workflow(
+                job,
+                scene,
+                resolved_lora_filenames,
+            )
             prompt_id = self.comfy.queue_prompt(build.api)
             self.store.set_scene_prompt_id(job.job_id, scene.scene_id, prompt_id)
             self.comfy.wait_for_prompt(
@@ -253,7 +318,12 @@ class PipelineSupervisor:
             raise ComfyHttpError("I2V attempt limit reached.")
 
         self.store.begin_scene_stage(job.job_id, scene.scene_id, PipelineState.RUNNING_I2V)
-        build = build_i2v_api_workflow(job, scene, frame_path)
+        build = build_i2v_api_workflow(
+            job,
+            scene,
+            frame_path,
+            resolved_lora_filenames,
+        )
         prompt_id = self.comfy.queue_prompt(build.api)
         self.store.set_scene_prompt_id(job.job_id, scene.scene_id, prompt_id)
         history = self.comfy.wait_for_prompt(
@@ -270,32 +340,54 @@ class PipelineSupervisor:
             video_path=str(clip_path),
         )
 
-    def _resolve_assets(self, job: JobPayload) -> dict[int, list[str]]:
-        failures: dict[int, list[str]] = {scene.scene_id: [] for scene in job.scenes}
+    def _resolve_assets(self, job: JobPayload) -> AssetPreparation:
+        failures: dict[int, dict[str, str]] = {
+            scene.scene_id: {} for scene in job.scenes
+        }
         cache: dict[str, AssetResolution] = {}
+        resolved_filenames: dict[str, str] = {}
 
         def resolve(lora: LoraSpec) -> AssetResolution:
-            key = lora.name.casefold()
+            key = lora_identity(lora)
             if key not in cache:
                 cache[key] = self.asset_manager.resolve_or_download(lora)
+                result = cache[key]
+                if result.succeeded and result.local_filename:
+                    resolved_filenames[key] = result.local_filename
             return cache[key]
+
+        def record_failure(scene_id: int, key: str, message: str) -> None:
+            failures[scene_id][key] = message
 
         global_result = resolve(job.character.lora)
         if not global_result.succeeded:
-            for errors in failures.values():
-                errors.append(global_result.error or f"Missing {job.character.lora.name}")
+            key = lora_identity(job.character.lora)
+            for scene in job.scenes:
+                record_failure(
+                    scene.scene_id,
+                    key,
+                    global_result.error or f"Missing {job.character.lora.name}",
+                )
         if job.ltxv_character_lora:
             ltx_character = resolve(job.ltxv_character_lora)
             if not ltx_character.succeeded:
-                for errors in failures.values():
-                    errors.append(
-                        ltx_character.error or f"Missing {job.ltxv_character_lora.name}"
+                key = lora_identity(job.ltxv_character_lora)
+                for scene in job.scenes:
+                    record_failure(
+                        scene.scene_id,
+                        key,
+                        ltx_character.error
+                        or f"Missing {job.ltxv_character_lora.name}",
                     )
         for filename, weight in MANDATORY_I2V_LORAS:
             result = self.asset_manager.require_local(LocalLoraRequirement(filename, weight))
             if not result.succeeded:
-                for errors in failures.values():
-                    errors.append(result.error or f"Missing {filename}")
+                for scene in job.scenes:
+                    record_failure(
+                        scene.scene_id,
+                        f"required:{filename.casefold()}",
+                        result.error or f"Missing {filename}",
+                    )
 
         for scene in job.scenes:
             scene_loras = (
@@ -305,12 +397,27 @@ class PipelineSupervisor:
             for lora in scene_loras:
                 result = resolve(lora)
                 if not result.succeeded:
-                    failures[scene.scene_id].append(result.error or f"Missing {lora.name}")
-        return {scene_id: errors for scene_id, errors in failures.items() if errors}
+                    record_failure(
+                        scene.scene_id,
+                        lora_identity(lora),
+                        result.error or f"Missing {lora.name}",
+                    )
+        return AssetPreparation(
+            failures={
+                scene_id: list(errors.values())
+                for scene_id, errors in failures.items()
+                if errors
+            },
+            resolved_filenames=resolved_filenames,
+        )
 
     def _request_next_job(self, *, previous_job_id: str | None, succeeded: bool | None) -> None:
         self.mail_client.send_request(previous_job_id=previous_job_id, succeeded=succeeded)
         self.store.transition(PipelineState.WAITING_FOR_GROK, job_id=previous_job_id)
+        LOGGER.info(
+            "Requested the next Gmail job%s.",
+            f" after {previous_job_id}" if previous_job_id else "",
+        )
 
     def _release_memory(self) -> None:
         gc.collect()
@@ -330,6 +437,10 @@ class PipelineSupervisor:
         if self.restart_comfy and self.restart_comfy():
             if snapshot.job_id:
                 self.store.requeue_unfinished_scenes(snapshot.job_id)
+                self.store.transition(
+                    PipelineState.DOWNLOADING_ASSETS,
+                    job_id=snapshot.job_id,
+                )
             LOGGER.warning("ComfyUI restarted; unfinished scenes will resume.")
         else:
             LOGGER.error("Fatal pipeline error requires recovery: %s", error)

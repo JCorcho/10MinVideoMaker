@@ -27,10 +27,21 @@ class FakeMailClient:
 
 class FakeAssetManager:
     def resolve_or_download(self, lora):
-        return AssetResolution(lora.name, Path(f"{lora.name}.safetensors"), downloaded=False)
+        filename = f"installed/{lora.name}.safetensors"
+        return AssetResolution(
+            lora.name,
+            Path(filename),
+            downloaded=False,
+            local_filename=filename,
+        )
 
     def require_local(self, requirement):
-        return AssetResolution(requirement.filename, Path(requirement.filename), downloaded=False)
+        return AssetResolution(
+            requirement.filename,
+            Path(requirement.filename),
+            downloaded=False,
+            local_filename=requirement.filename,
+        )
 
 
 class OneMissingAssetManager(FakeAssetManager):
@@ -38,6 +49,20 @@ class OneMissingAssetManager(FakeAssetManager):
         if lora.name == "Missing Scene LoRA":
             return AssetResolution(lora.name, None, downloaded=False, error="download failed")
         return super().resolve_or_download(lora)
+
+
+class AllMissingAssetManager(FakeAssetManager):
+    def __init__(self):
+        self.resolve_calls = 0
+
+    def resolve_or_download(self, lora):
+        self.resolve_calls += 1
+        return AssetResolution(
+            lora.name,
+            None,
+            downloaded=False,
+            error="Civitai authentication required",
+        )
 
 
 class FakeComfy:
@@ -145,6 +170,15 @@ class SupervisorTests(unittest.TestCase):
                 "10MinVideoMaker_SaveSceneFrame",
                 {node["class_type"] for node in comfy.workflows[0].values()},
             )
+            t2i_lora = next(
+                node
+                for node in comfy.workflows[0].values()
+                if node["class_type"] == "LoraLoader"
+            )
+            self.assertEqual(
+                t2i_lora["inputs"]["lora_name"],
+                "installed/Elsa Frozen Anima.safetensors",
+            )
             image_loader = next(
                 node
                 for node in comfy.workflows[1].values()
@@ -234,6 +268,42 @@ class SupervisorTests(unittest.TestCase):
             self.assertIn("download failed", records[1].error)
             self.assertEqual(len(assembler.calls), 1)
             self.assertEqual(mail.requests, [(job.job_id, False)])
+
+    def test_all_asset_failures_pause_saved_job_without_requesting_another(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            job = parse_job_payload(payload())
+            store = PipelineStateStore(root / "pipeline.sqlite3")
+            store.claim_job(job)
+            mail = FakeMailClient()
+            assets = AllMissingAssetManager()
+            comfy = FakeComfy(root / "unused.png")
+            supervisor = PipelineSupervisor(
+                store=store,
+                mail_client=mail,
+                asset_manager=assets,
+                comfy=comfy,
+                assembler=FakeAssembler(root / "final.mp4"),
+                settings=SupervisorSettings(1, 10, 10, 2),
+            )
+
+            supervisor.process_job(job)
+
+            snapshot = store.snapshot()
+            self.assertEqual(snapshot.state, PipelineState.ERROR)
+            self.assertEqual(snapshot.job_id, job.job_id)
+            self.assertIn("Asset preparation failed for all", snapshot.error)
+            self.assertEqual(
+                store.scene_states(job.job_id),
+                {1: SceneState.FAILED},
+            )
+            self.assertEqual(mail.requests, [])
+            self.assertEqual(comfy.workflows, [])
+
+            calls_before_paused_tick = assets.resolve_calls
+            supervisor.tick()
+            self.assertEqual(assets.resolve_calls, calls_before_paused_tick)
+            self.assertEqual(mail.requests, [])
 
 
 if __name__ == "__main__":
