@@ -1,0 +1,29 @@
+# Python bytecode and test artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local environments and editor settings
+.venv/
+venv/
+.env
+.env.*
+.vscode/
+.idea/
+
+# Local ComfyUI runtime artifacts
+output/
+temp/
+input/
+web/extensions/10MinVideoMaker/
+
+# Packaged or generated media
+*.mp4
+*.webm
+*.mov
+*.avi
+*.gif
+*.wav
+*.mp3
