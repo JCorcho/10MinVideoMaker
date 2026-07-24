@@ -190,3 +190,10 @@
   - `git diff --check`
 - Results: all 8 focused mail tests and all 59 project tests passed under the Easy Install embedded Python; live
   OAuth SMTP envelope validation plus IMAP authentication succeeded without sending or reading email.
+
+### 2026-07-24 — durable I2V staging follow-up
+
+- Changed files: `TODO.md`, `AI_DEVELOPMENT_RULES.md`.
+- Follow-up: record stronger recovery for the narrow interval after temporary VHS rendering completes but before
+  the supervisor copies the clip to its deterministic D-drive path. The current runtime behavior is unchanged.
+- Verification command: `git diff --check`.
