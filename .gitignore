@@ -17,6 +17,7 @@ venv/
 output/
 temp/
 input/
+runtime/
 web/extensions/10MinVideoMaker/
 
 # Packaged or generated media

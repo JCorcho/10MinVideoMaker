@@ -6,6 +6,7 @@
 - This project is independent of other custom-node projects. Do not use their code, workflows, documentation, or Git history as implementation references.
 - Keep new code, tests, workflows, documentation, and test assets inside this repository.
 - Do not alter shared ComfyUI startup scripts, global model configuration, shared model files, or the running server unless a task explicitly authorizes that exact change.
+- Authorized exceptions for this project: read-only inspection of the three reference workflows in `C:\AI\ComfyUI\ComfyUI-Easy-Install\ComfyUI-Easy-Install\ComfyUI\user\default\workflows\10minvideomaker`; new project workflows in that same directory; and new project-owned output directories on `D:`. Preserve the existing reference workflows unchanged.
 
 ## Architecture decisions
 
@@ -13,6 +14,9 @@
 - Versioned, GUI-format ComfyUI workflows belong in `workflows/`. Pair them with API-format test fixtures only when a workflow must be run headlessly.
 - Nodes must share routing and validation logic across every user surface. Do not create divergent editor and Wizard/modal implementations.
 - Before coding any node or workflow, obtain the live input/output contract from the local ComfyUI API. Do not infer third-party node inputs or output slots.
+- Production video geometry is fixed at 704×1248 and 24 fps. LTX I2V clips use the `8n + 1` frame rule, a maximum duration of 32 seconds, LCM for both sampler passes, the verified first-pass and upscale sigma schedules, and the LTX spatial upscaler.
+- T2I retains the matching reference workflow sampler: Anima uses `er_sde` with `beta57`; Pony uses `res_5s_ode` then `res_3m_ode`, both with their reference values.
+- Gmail polling and ComfyUI restart supervision run outside ComfyUI node execution. Nodes and the supervisor share one service layer so that authentication, state transitions, and validation cannot diverge.
 
 ## Implementation and testing
 
@@ -39,3 +43,9 @@
   - `python -m py_compile __init__.py`
   - `git diff --check`
   - `git status --short --branch`
+
+### 2026-07-24 — resolved generation profile and durable core
+
+- Reference facts were read once from the approved workflow directory and will be rebuilt independently; no reference JSON will be modified or copied into this project.
+- T2I references: `CyberRealistic_AnimaSemi_V6.0.safetensors` with Anima's `er_sde`/`beta57` sampler; `cyberrealisticPony_v180Coreshift.safetensors` with the Pony two-pass sampler settings above.
+- I2V reference facts: LCM on both passes; first-pass sigmas `1.0, 0.99375, 0.9875, 0.98125, 0.975, 0.909375, 0.725, 0.421875, 0.0`; upscale sigmas `0.909375, 0.725, 0.421875, 0.0`; spatial upscaler `ltx-2.3-spatial-upscaler-x2-1.1.safetensors`; DMD `LTX2.3_DMD_reshaped_r256.safetensors` at 1.0; JoyAI `JoyAI-Echo-content_r256.safetensors` at 0.5.
