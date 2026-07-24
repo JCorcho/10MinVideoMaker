@@ -156,3 +156,18 @@
   help entry points succeeded; the local ComfyUI `/system_stats` health check succeeded.
 - Side-effect boundary: validation did not send mail, open OAuth, start the supervisor, download assets, load models,
   or render media.
+
+### 2026-07-24 — SMTP XOAUTH2 callback compatibility
+
+- Changed files: `tenminvideomaker/mail.py`, `tests/test_mail.py`, `AI_DEVELOPMENT_RULES.md`.
+- Cause: `smtplib.SMTP.auth()` requests its initial response by calling the authentication callback with zero
+  arguments. The OAuth callback required one positional challenge argument, so credential validation failed before
+  Gmail received the XOAUTH2 payload.
+- Fix: SMTP and IMAP OAuth callbacks accept an optional challenge argument. The regression fake deliberately invokes
+  the SMTP callback with zero arguments and verifies the generated XOAUTH2 response.
+- Verification commands:
+  - `python -m unittest discover -s tests -v`
+  - `python -m compileall -q tenminvideomaker scripts __init__.py`
+  - `git diff --check`
+- Results: all 8 focused mail tests and all 59 project tests passed; embedded-Python compilation passed; live
+  OAuth refresh plus SMTP/IMAP authentication succeeded without sending or reading email.

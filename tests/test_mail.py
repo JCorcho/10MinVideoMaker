@@ -105,6 +105,29 @@ class MailTests(unittest.TestCase):
             refresh_token="refresh-token",
         )
 
+    def test_smtp_oauth_callback_accepts_initial_zero_argument_call(self) -> None:
+        settings = GmailSettings(
+            username="owner@example.com",
+            recipient="owner@example.com",
+            allowed_senders=frozenset({"owner@example.com"}),
+            auth_mode="oauth2",
+            secret="access-token",
+        )
+
+        class FakeSmtp:
+            mechanism = ""
+            initial_response = ""
+
+            def auth(self, mechanism, authobject):
+                self.mechanism = mechanism
+                self.initial_response = authobject()
+
+        smtp = FakeSmtp()
+        GmailClient(settings)._authenticate_smtp(smtp)
+        self.assertEqual(smtp.mechanism, "XOAUTH2")
+        self.assertIn("user=owner@example.com", smtp.initial_response)
+        self.assertIn("auth=Bearer access-token", smtp.initial_response)
+
 
 if __name__ == "__main__":
     unittest.main()

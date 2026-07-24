@@ -246,14 +246,17 @@ class GmailClient:
             smtp.login(self.settings.username, self.settings.secret)
             return
         token = f"user={self.settings.username}\x01auth=Bearer {self._oauth_access_token()}\x01\x01"
-        smtp.auth("XOAUTH2", lambda _: token)
+        smtp.auth("XOAUTH2", lambda _challenge=None: token)
 
     def _authenticate_imap(self, client: imaplib.IMAP4_SSL) -> None:
         if self.settings.auth_mode == "app_password":
             status, _ = client.login(self.settings.username, self.settings.secret)
         else:
             token = f"user={self.settings.username}\x01auth=Bearer {self._oauth_access_token()}\x01\x01"
-            status, _ = client.authenticate("XOAUTH2", lambda _: token.encode("utf-8"))
+            status, _ = client.authenticate(
+                "XOAUTH2",
+                lambda _challenge=None: token.encode("utf-8"),
+            )
         if status != "OK":
             raise MailTransportError("Gmail authentication failed.")
 
