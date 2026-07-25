@@ -34,6 +34,10 @@ Double-click `Start 10MinVideoMaker.bat` in the repository root. On first run it
 On later runs, valid required settings are reused and the launcher asks whether to change optional settings before
 starting. See `docs/user-guide.md` for OAuth setup details and safe setup-only commands.
 
+Run `powershell -ExecutionPolicy Bypass -File scripts\install_windows_shortcuts.ps1` to install the project icon
+and launcher shortcut on the current user's Desktop and Start Menu. The shortcut can then be pinned through
+Windows' context menu.
+
 ## Available nodes
 
 - **Validate Job** — validates and normalizes the exact Grok JSON contract.

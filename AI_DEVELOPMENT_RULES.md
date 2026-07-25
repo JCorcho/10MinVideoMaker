@@ -366,3 +366,23 @@
   - `git diff --check`
 - Results: all 96 tests passed under system and Easy Install embedded Python; compilation and
   `git diff --check` passed. No Gmail message was sent, no media was rendered, and no model was loaded.
+
+### 2026-07-24 — Windows launcher shortcut and project icon
+
+- Changed files: `assets/10MinVideoMaker-icon.png`, `assets/10MinVideoMaker-icon.ico`,
+  `scripts/install_windows_shortcuts.ps1`, `README.md`, `docs/user-guide.md`, `AI_DEVELOPMENT_RULES.md`.
+- User surface: the installer creates current-user Desktop and Start Menu Programs shortcuts that invoke the
+  existing `Start 10MinVideoMaker.bat` through `cmd.exe`, set the repository as the working directory, and use the
+  project-owned multi-resolution icon. It does not start the launcher while installing.
+- Reproduction:
+  `powershell -ExecutionPolicy Bypass -File scripts\install_windows_shortcuts.ps1`.
+- Icon source: generated with the built-in image-generation tool as a compact navy play/timer badge on a removable
+  chroma-key background, converted to transparent PNG, and packaged as a 16/24/32/48/64/128/256-pixel ICO.
+- Verification:
+  - inspect both `.lnk` files through `WScript.Shell` without launching them;
+  - confirm the icon contains all intended ICO sizes and its PNG has transparent corners;
+  - `python -m unittest discover -s tests -v`;
+  - `git diff --check`.
+- Results: both shortcuts resolve to the project batch file through `cmd.exe`, with the repository working
+  directory and project icon. All 96 tests passed under system and Easy Install embedded Python; no shortcut was
+  launched, no Gmail message was sent, and no media was rendered.

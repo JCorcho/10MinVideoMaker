@@ -51,6 +51,20 @@ from each horizontal edge.
 Double-click `Start 10MinVideoMaker.bat` in the project root. Do not use the shared ComfyUI start scripts for this
 project setup.
 
+### Windows shortcut
+
+The repository includes a project icon and a repeatable shortcut installer:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\install_windows_shortcuts.ps1
+```
+
+It creates `10MinVideoMaker.lnk` on the current user's Desktop and in Start Menu Programs. Both shortcuts launch
+the existing project batch file through `cmd.exe`, use the repository as their working directory, and retain the
+custom icon. To pin it, right-click the Desktop or Start Menu shortcut and choose **Pin to Start** or
+**Pin to taskbar**; on Windows 11, the taskbar command may be under **Show more options**. Running the installer
+again refreshes these two project-owned shortcuts.
+
 On the first run, the launcher detects missing Gmail settings and offers:
 
 - **Google App Password**: opens Google's App Password page when requested, then securely prompts for the
