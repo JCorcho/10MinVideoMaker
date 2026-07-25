@@ -174,10 +174,15 @@ class SupervisorTests(unittest.TestCase):
             },
             clear=True,
         ):
-            self.assertEqual(
-                SupervisorSettings.from_environment().status_interval_seconds,
-                9,
-            )
+            settings = SupervisorSettings.from_environment()
+            self.assertEqual(settings.status_interval_seconds, 9)
+            self.assertFalse(settings.require_human_review)
+        with patch.dict(
+            os.environ,
+            {"TENMIN_REQUIRE_HUMAN_REVIEW": "true"},
+            clear=True,
+        ):
+            self.assertTrue(SupervisorSettings.from_environment().require_human_review)
         with self.assertRaisesRegex(ValueError, "status_interval_seconds"):
             SupervisorSettings(status_interval_seconds=0)
 

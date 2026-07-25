@@ -16,8 +16,9 @@ outside the node classes, so this registration choice does not fork the automati
 
 `D:\LTX_Supervisor_Storage\state\pipeline.sqlite3` is the durable state store. It records the singleton pipeline,
 job history, scene state, immutable source payloads, editable scene revisions, cross-job remake batches, and each
-revision's media paths. New Gmail jobs enter `awaiting_review` and cannot render until explicitly approved.
-Completed artifacts remain intact when unfinished scenes are re-queued.
+revision's media paths. New Gmail jobs auto-queue and render in the normal GUI session. A GUI launched with
+`--hold-new-jobs-for-review` instead claims them as `awaiting_review` until explicitly approved. Completed artifacts
+remain intact when unfinished scenes are re-queued.
 
 Every scene revision is stored below
 `D:\LTX_Supervisor_Storage\jobs\{job_id}\scenes\scene_{id}\revisions\{revision}` with `frame.png`,

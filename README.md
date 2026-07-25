@@ -7,8 +7,8 @@ An independent ComfyUI custom-node project for building a guided long-form video
 The durable job contract, SQLite state machine, Gmail/Google Drive transport, LoRA resolver, FFmpeg assembly
 service, interactive ComfyUI nodes, scene-specific Anima/Pony/LTX workflow builders, and supervisor are
 implemented. The supervisor now runs behind a loopback-only FastAPI browser UI at
-`http://127.0.0.1:8765/`. New Grok jobs wait for approval, and historical complete, partial, failed, and cancelled
-jobs can be reviewed without displaying raw JSON.
+`http://127.0.0.1:8765/`. New Grok jobs start automatically for unattended operation, while historical complete,
+partial, failed, and cancelled jobs can be reviewed without displaying raw JSON.
 
 All new persistent runtime data lives under `D:\LTX_Supervisor_Storage`: settings and encrypted secrets, SQLite
 state, source payloads, versioned frames and clips, generation manifests, finals, logs, and temporary assembly
@@ -47,7 +47,7 @@ Double-click `Start 10MinVideoMaker.bat` in the repository root. On first run it
 5. Securely collects the Discord Patreon-delivery webhook when missing.
 6. Shows the optional settings editor when requested, including a Discord webhook replacement action.
 7. Validates Gmail and configured Drive access without sending a message, performs a ComfyUI health check, and
-   launches the human-review GUI plus its single supervisor worker.
+   launches the edit-and-review GUI plus its single supervisor worker.
 
 On later runs, valid required settings are reused and the launcher asks whether to change optional settings before
 starting. See `docs/user-guide.md` for OAuth setup details and safe setup-only commands.
@@ -58,6 +58,10 @@ workflow, and version history. Mark any number of scenes across jobs, choose **V
 If an automated render is active, the UI asks whether to queue edits afterward or cancel only this project's
 current prompts and run the edits immediately. Project cards use the readable
 `Character · MM/DD/YYYY` label, and the project and scene columns scroll independently.
+
+For a testing or review-only launch, run `Start 10MinVideoMaker.bat --hold-new-jobs-for-review`. In that session,
+new Gmail handoffs enter **Awaiting review** and require **Approve & Queue Job**. The normal launcher always
+auto-starts incoming jobs.
 
 Run `powershell -ExecutionPolicy Bypass -File scripts\install_windows_shortcuts.ps1` to install the project icon
 and launcher shortcut on the current user's Desktop and Start Menu. The shortcut can then be pinned through

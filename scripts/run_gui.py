@@ -1,4 +1,4 @@
-"""Launch the loopback human-review GUI and its single supervisor worker."""
+"""Launch the loopback supervisor GUI and its single supervisor worker."""
 
 from __future__ import annotations
 
@@ -98,7 +98,7 @@ def _take_over_idle_legacy_supervisor(process_ids: tuple[int, ...]) -> None:
     raise OwnershipError("The idle legacy supervisor did not stop within ten seconds.")
 
 
-def main() -> int:
+def argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
@@ -112,7 +112,19 @@ def main() -> int:
         action="store_true",
         help="Refuse to stop an idle legacy run_supervisor.py process.",
     )
-    args = parser.parse_args()
+    parser.add_argument(
+        "--hold-new-jobs-for-review",
+        action="store_true",
+        help=(
+            "Hold new Gmail jobs for manual Approve & Queue instead of starting "
+            "them automatically. Intended for testing and review sessions."
+        ),
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = argument_parser().parse_args(argv)
     if args.host not in {"127.0.0.1", "localhost"}:
         raise SystemExit("The supervisor GUI may bind only to loopback.")
     if not 1 <= args.port <= 65535:
@@ -141,7 +153,11 @@ def main() -> int:
         _ensure_current_node_contract(ComfyHttpClient())
         supervisor = build_supervisor(
             allow_restart=True,
-            require_human_review=True,
+            require_human_review=args.hold_new_jobs_for_review,
+        )
+        LOGGER.info(
+            "New Gmail jobs will %s.",
+            "wait for manual review" if args.hold_new_jobs_for_review else "start automatically",
         )
         controller = SupervisorController(supervisor, storage)
         app = create_gui_app(controller, storage, PROJECT_ROOT)

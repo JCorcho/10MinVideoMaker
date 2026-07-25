@@ -132,6 +132,7 @@ class SupervisorController:
             "comfyui_running": running,
             "comfyui_pending": pending,
             "active_render": snapshot.state in ACTIVE_RENDER_STATES,
+            "hold_new_jobs_for_review": self.supervisor.settings.require_human_review,
         }
 
     def _worker(self) -> None:

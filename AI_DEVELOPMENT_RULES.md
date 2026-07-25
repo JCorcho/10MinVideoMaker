@@ -19,9 +19,10 @@
   detailer; Pony uses 30-step `res_3m_ode` then 30-step `res_5s_ode`, followed by the reference
   `bbox/face_yolov8m.pt` detector and `FaceDetailer` settings.
 - Gmail polling and ComfyUI restart supervision run outside ComfyUI node execution. Nodes and the supervisor share one service layer so that authentication, state transitions, and validation cannot diverge.
-- The supported supervisor surface is a loopback-only FastAPI browser GUI plus one worker. New Gmail jobs must enter
-  `awaiting_review` and require explicit approval. A cross-process project lock must prevent the legacy console
-  supervisor and GUI worker from owning the state machine simultaneously.
+- The supported supervisor surface is a loopback-only FastAPI browser GUI plus one worker. New Gmail jobs
+  auto-start by default for 24/7 operation. The `--hold-new-jobs-for-review` GUI launch option enters jobs in
+  `awaiting_review` for testing and requires explicit approval. A cross-process project lock must prevent the
+  legacy console supervisor and GUI worker from owning the state machine simultaneously.
 - All persistent runtime data belongs under `D:\LTX_Supervisor_Storage`: configuration, DPAPI secrets, SQLite,
   source payloads, versioned scene frames/clips/manifests, finals, logs, and temporary files. C: remains source and
   model-loading storage only. A custom `TENMIN_STORAGE_ROOT` must still resolve to D:.
@@ -570,7 +571,8 @@
 - Persistence: new runtime state is rooted at `D:\LTX_Supervisor_Storage`. The one-time migration uses SQLite
   backup and file copies, materializes source payloads, rewrites only the migrated database paths, and leaves old
   state/media untouched.
-- Review/routing: Gmail claims enter `awaiting_review`. The UI exposes human-readable source context, prompts,
+- Review/routing: Gmail claims auto-queue in normal GUI sessions; the explicit GUI review-hold launch option enters
+  `awaiting_review`. The UI exposes human-readable source context, prompts,
   large seeds, effective LoRAs, both model-specific T2I passes, Pony detailer, both I2V samplers/sigmas, CFG and
   conditioning controls, chunking, upscaler, and locked production invariants. Edits are reparsed through the exact
   job contract and use the existing workflow builders through explicit overrides.
@@ -585,6 +587,22 @@
   and leaves active work untouched.
 - Reproduction: launch `Start 10MinVideoMaker.bat`, select a historical job/scene, mark multiple scenes, edit a seed
   or prompt, choose a supported remake mode, and submit. Do not submit during no-render validation.
+- Verification commands:
+  - `python -m unittest discover -s tests -q`
+  - Easy Install embedded-Python full unit suite with the repository inserted into `sys.path`
+  - `python -m compileall -q tenminvideomaker scripts tests`
+  - `node --check web/app.js`
+  - `git diff --check`
+
+### 2026-07-25 — unattended-first GUI intake
+
+- Changed files: `scripts/run_gui.py`, `tenminvideomaker/gui_service.py`, `web/app.js`, `.env.example`,
+  `README.md`, `docs/user-guide.md`, this file, and focused supervisor/GUI tests.
+- Intake policy: the standard GUI launch explicitly overrides legacy review configuration and starts every valid
+  Gmail handoff automatically. `Start 10MinVideoMaker.bat --hold-new-jobs-for-review` is the opt-in testing mode;
+  only that session claims new jobs as `awaiting_review` and exposes **Approve & Queue Job**.
+- Reproduction: launch the normal batch file and send a valid `LTX_JOB_COMPLETE` handoff; it proceeds without
+  approval. Relaunch with `--hold-new-jobs-for-review` to verify the approval control appears instead.
 - Verification commands:
   - `python -m unittest discover -s tests -q`
   - Easy Install embedded-Python full unit suite with the repository inserted into `sys.path`

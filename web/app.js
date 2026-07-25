@@ -391,7 +391,10 @@ async function submitPendingBatch(policy) {
 function updateStatus(status) {
   state.status = status;
   const element = $("#status");
-  element.textContent = `${humanize(status.pipeline_state)}${status.job_id ? ` · ${status.job_id}` : ""} · Comfy ${status.comfyui_running}/${status.comfyui_pending}`;
+  const intake = typeof status.hold_new_jobs_for_review === "boolean"
+    ? (status.hold_new_jobs_for_review ? "review hold" : "auto-start")
+    : "intake unknown";
+  element.textContent = `${humanize(status.pipeline_state)}${status.job_id ? ` · ${status.job_id}` : ""} · ${intake} · Comfy ${status.comfyui_running}/${status.comfyui_pending}`;
   element.className = `status-pill ${!status.comfyui_healthy || status.pipeline_error ? "error" : status.active_render ? "busy" : "healthy"}`;
   $("#approve-job").classList.toggle("hidden", status.pipeline_state !== "awaiting_review" || status.job_id !== state.selectedJob);
 }

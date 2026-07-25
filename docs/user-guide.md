@@ -4,8 +4,9 @@
 
 The project can validate incoming jobs, poll/send Gmail, resolve LoRAs, build and queue per-scene generation graphs,
 cache the exact T2I frame, download the matching I2V clip, validate/stitch completed clips, request the next job, and
-recover unfinished scenes. Its loopback browser GUI adds required human approval, a historical job library,
-human-readable parameter editing, versioned previews, and multi-scene remake batches.
+recover unfinished scenes. Its loopback browser GUI adds a historical job library, human-readable parameter editing,
+versioned previews, and multi-scene remake batches. Incoming jobs auto-start by default; manual approval is an
+optional test/review launch mode.
 
 Persistent data is rooted at `D:\LTX_Supervisor_Storage`. Nothing new is written to the C: drive except the
 version-controlled custom-node source already in this repository.
@@ -20,7 +21,9 @@ Double-click `Start 10MinVideoMaker.bat`. After the existing credential checks, 
    library and scene list each scroll independently when they contain more rows than fit on screen.
 2. Review the source frame, generated video, prompts, seeds, character and stage LoRAs, T2I passes, Pony face
    detailer, I2V samplers and sigma schedules, chunking, upscaler, and fixed production profile.
-3. For a newly received job, click **Approve & Queue Job** to start its normal scene pipeline.
+3. New Gmail handoffs start automatically. To test an incoming payload before it starts, launch with
+   `Start 10MinVideoMaker.bat --hold-new-jobs-for-review`; that session shows **Approve & Queue Job** for each
+   newly claimed handoff.
 4. To revise a scene, enable **Mark for remake** and choose:
    - **Video Only** to reuse that revision's existing cached frame and run only I2V.
    - **Image + Video** to generate a new frame and force the matching I2V workflow to use it.
@@ -248,7 +251,10 @@ Optional environment variables:
 - `TENMIN_LOG_LEVEL` (default `INFO`)
 - `TENMIN_STORAGE_ROOT` (default and required drive:
   `D:\LTX_Supervisor_Storage`; alternate project-owned folders must still be on D:)
-- `TENMIN_REQUIRE_HUMAN_REVIEW` (the GUI forces this on)
+- `TENMIN_REQUIRE_HUMAN_REVIEW` (legacy console supervisor only; default `false`)
+
+The GUI auto-starts incoming jobs even when a legacy review setting remains in the saved environment. Use
+`Start 10MinVideoMaker.bat --hold-new-jobs-for-review` for a launch where new jobs must wait for explicit approval.
 
 This machine currently exposes both FFmpeg and FFprobe on `PATH`.
 

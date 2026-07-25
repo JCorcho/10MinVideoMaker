@@ -39,6 +39,15 @@ class GuiStaticAssetTests(unittest.TestCase):
 
 @unittest.skipUnless(TestClient is not None, "FastAPI is supplied by the embedded Python")
 class GuiAppTests(unittest.TestCase):
+    def test_gui_review_hold_flag_is_opt_in(self) -> None:
+        from scripts.run_gui import argument_parser
+
+        parser = argument_parser()
+        self.assertFalse(parser.parse_args([]).hold_new_jobs_for_review)
+        self.assertTrue(
+            parser.parse_args(["--hold-new-jobs-for-review"]).hold_new_jobs_for_review
+        )
+
     def test_launcher_restarts_only_for_stale_contract_and_empty_queue(self) -> None:
         from scripts.run_gui import _ensure_current_node_contract
         from tenminvideomaker.ownership import OwnershipError
