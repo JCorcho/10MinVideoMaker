@@ -57,16 +57,23 @@ allows successful scenes to render and stitch.
 - Frame rate: 24 fps.
 - LTX frame count: `8n + 1`, derived by rounding up to cover a scene's requested duration.
 - Maximum LTX scene duration: 32 seconds.
-- T2I: Anima and Pony each keep their verified reference sampler path.
+- T2I Anima: one 30-step `er_sde`/`beta57` pass at CFG 4.5; no face detailer.
+- T2I Pony: 30-step `res_3m_ode` followed by 30-step `res_5s_ode` at CFG 6, then
+  `UltralyticsDetectorProvider` (`bbox/face_yolov8m.pt`) and the reference `FaceDetailer` settings.
 - I2V: two LCM sampling passes, with separate verified sigma schedules and the LTX spatial upscaler.
 
 The workflow templates will be rebuilt independently from live node contracts. The approved reference workflows are never written to or copied into this repository.
 
 Scene workflows are built dynamically from the validated job rather than mutating user-owned workflow JSON. The T2I
 builder selects Anima or Pony from `character.lora.base`, applies the character LoRA once, adds any scene LoRAs, and
-uses the exact family sampler route. The I2V builder consumes the deterministic PNG produced by the matching T2I
+uses the exact family sampler route. Pony's decoded image is face-detailed before it reaches the deterministic frame
+saver; Anima bypasses the detector/detailer entirely. The I2V builder consumes the deterministic PNG produced by the matching T2I
 scene, adds DMD and JoyAI before dynamic model-only LoRAs, enables feed-forward chunking, and uses separate LCM
 samplers and sigma schedules around the tiled spatial upscaler.
+
+GUI workflow export inserts ComfyUI's separate `fixed` seed-control widget after sampler and face-detailer seeds.
+That widget is not part of the API input contract, but it is required in `widgets_values`; omitting it shifts every
+later canvas field and can display CFG as the step count.
 
 The x2 spatial upscaler requires a half-resolution first-pass latent. Its internal dimensions are 352×624 so the
 requested production dimensions are represented at half scale. However, `EmptyLTXVLatentVideo` quantizes each

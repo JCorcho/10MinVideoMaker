@@ -86,7 +86,7 @@
   "7": {
     "class_type": "KSamplerAdvanced",
     "_meta": {
-      "title": "Pony pass 1: res_5s_ode"
+      "title": "Pony pass 1: res_3m_ode"
     },
     "inputs": {
       "model": [
@@ -97,7 +97,7 @@
       "noise_seed": 2472348977,
       "steps": 30,
       "cfg": 6.0,
-      "sampler_name": "res_5s_ode",
+      "sampler_name": "res_3m_ode",
       "scheduler": "karras",
       "positive": [
         "4",
@@ -119,7 +119,7 @@
   "8": {
     "class_type": "KSamplerAdvanced",
     "_meta": {
-      "title": "Pony pass 2: res_3m_ode"
+      "title": "Pony pass 2: res_5s_ode"
     },
     "inputs": {
       "model": [
@@ -130,7 +130,7 @@
       "noise_seed": 2472348977,
       "steps": 30,
       "cfg": 6.0,
-      "sampler_name": "res_3m_ode",
+      "sampler_name": "res_5s_ode",
       "scheduler": "karras",
       "positive": [
         "4",
@@ -166,13 +166,86 @@
     }
   },
   "10": {
+    "class_type": "UltralyticsDetectorProvider",
+    "_meta": {
+      "title": "Pony face bbox detector"
+    },
+    "inputs": {
+      "model_name": "bbox/face_yolov8m.pt"
+    }
+  },
+  "11": {
+    "class_type": "FaceDetailer",
+    "_meta": {
+      "title": "Pony bbox face detailer"
+    },
+    "inputs": {
+      "image": [
+        "9",
+        0
+      ],
+      "model": [
+        "3",
+        0
+      ],
+      "clip": [
+        "3",
+        1
+      ],
+      "vae": [
+        "1",
+        2
+      ],
+      "guide_size": 512,
+      "guide_size_for": true,
+      "max_size": 1024,
+      "seed": 2472348977,
+      "steps": 20,
+      "cfg": 5.0,
+      "sampler_name": "dpmpp_2m_sde",
+      "scheduler": "karras",
+      "positive": [
+        "4",
+        0
+      ],
+      "negative": [
+        "5",
+        0
+      ],
+      "denoise": 0.38,
+      "feather": 5,
+      "noise_mask": true,
+      "force_inpaint": true,
+      "bbox_threshold": 0.5,
+      "bbox_dilation": 10,
+      "bbox_crop_factor": 3.0,
+      "sam_detection_hint": "center-1",
+      "sam_dilation": 0,
+      "sam_threshold": 0.93,
+      "sam_bbox_expansion": 0,
+      "sam_mask_hint_threshold": 0.7,
+      "sam_mask_hint_use_negative": "False",
+      "drop_size": 120,
+      "bbox_detector": [
+        "10",
+        0
+      ],
+      "wildcard": "",
+      "cycle": 1,
+      "inpaint_model": false,
+      "noise_mask_feather": 20,
+      "tiled_encode": false,
+      "tiled_decode": false
+    }
+  },
+  "12": {
     "class_type": "10MinVideoMaker_SaveSceneFrame",
     "_meta": {
       "title": "Cache deterministic scene frame"
     },
     "inputs": {
       "images": [
-        "9",
+        "11",
         0
       ],
       "job_id": "example-20260724-1610",

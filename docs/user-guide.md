@@ -30,8 +30,14 @@ Do not queue the example workflows for a real render without replacing the examp
 - Frame count: smallest `8n + 1` value covering the requested duration.
 - Maximum scene length: 32 seconds.
 - Anima T2I: 30 steps, CFG 4.5, `er_sde`, `beta57`.
-- Pony T2I: 30 steps, CFG 6, `res_5s_ode` then `res_3m_ode`, `karras`.
+- Pony T2I: 30 steps per pass, CFG 6, `res_3m_ode` then `res_5s_ode`, `karras`.
+- Pony post-process: `bbox/face_yolov8m.pt` bbox detection followed by the reference `FaceDetailer` settings
+  (20 detailer steps, CFG 5, `dpmpp_2m_sde`, `karras`, denoise 0.38). Anima does not use this detailer.
 - LTX I2V: LCM on both passes, verified distinct sigma lists, x2 tiled spatial upscaler, DMD 1.0, JoyAI 0.5.
+
+The GUI templates store a separate `fixed` seed-control value after each sampler/detailer seed. This keeps the
+canvas widgets aligned, so the Pony samplers visibly show 30 steps rather than incorrectly displaying CFG 6 in the
+steps field.
 
 The first LTX pass uses an internal 352×624 latent only because the mandated spatial model is x2. The decoded and
 saved production clip is always 704×1248. Because half of 1248 is 624, which is not on LTX's required 32-pixel

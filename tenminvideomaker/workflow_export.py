@@ -12,6 +12,7 @@ _MIN_NODE_HEIGHT = 220
 _COLUMN_GAP = 160
 _ROW_GAP = 80
 _GROUP_PADDING = 80
+_SEED_CONTROL_WIDGET_NODES = frozenset({"KSampler", "KSamplerAdvanced", "FaceDetailer"})
 
 
 class WorkflowExportError(ValueError):
@@ -137,6 +138,12 @@ def api_to_gui_workflow(
                 links.append([link_id, int(value[0]), value[1], int(node_id), len(gui_inputs), None])
             else:
                 widgets.append(value)
+                if name in {"seed", "noise_seed"} and class_type in _SEED_CONTROL_WIDGET_NODES:
+                    # ComfyUI serializes a separate control-after-generate widget
+                    # immediately after sampler seed widgets. It is not an API
+                    # input, so omitting it shifts every following value on the
+                    # canvas (for example, CFG 6 appears as six steps).
+                    widgets.append("fixed")
             gui_inputs.append(gui_input)
 
         output_names = info.get("output_name") or [

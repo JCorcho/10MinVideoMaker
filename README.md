@@ -13,6 +13,10 @@ scenes successfully; its geometry recovery and final assembly are documented bel
 The first completed master is `D:\output\10minfinals\20260724-2249_final.mp4`: 704×1248, 24 fps, stereo AAC,
 3,848 frames, and 160.35 seconds.
 
+T2I routing is model-specific: Anima uses its 30-step `er_sde`/`beta57` reference path without a detailer. Pony
+uses 30-step `res_3m_ode` followed by 30-step `res_5s_ode`, then the reference YOLO face bbox detector and
+`FaceDetailer` before caching the scene frame.
+
 ## One-click start
 
 Double-click `Start 10MinVideoMaker.bat` in the repository root. On first run it:

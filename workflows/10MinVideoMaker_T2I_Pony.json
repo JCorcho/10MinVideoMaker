@@ -1,6 +1,6 @@
 {
-  "last_node_id": 10,
-  "last_link_id": 17,
+  "last_node_id": 12,
+  "last_link_id": 24,
   "nodes": [
     {
       "id": 1,
@@ -48,7 +48,8 @@
           "name": "VAE",
           "type": "VAE",
           "links": [
-            16
+            16,
+            20
           ],
           "slot_index": 2
         }
@@ -361,7 +362,8 @@
           "type": "MODEL",
           "links": [
             7,
-            11
+            11,
+            18
           ],
           "slot_index": 0
         },
@@ -370,7 +372,8 @@
           "type": "CLIP",
           "links": [
             5,
-            6
+            6,
+            19
           ],
           "slot_index": 1
         }
@@ -417,7 +420,8 @@
           "type": "CONDITIONING",
           "links": [
             8,
-            12
+            12,
+            21
           ],
           "slot_index": 0
         }
@@ -462,7 +466,8 @@
           "type": "CONDITIONING",
           "links": [
             9,
-            13
+            13,
+            22
           ],
           "slot_index": 0
         }
@@ -711,15 +716,16 @@
       "widgets_values": [
         "enable",
         2472348977,
+        "fixed",
         30,
         6.0,
-        "res_5s_ode",
+        "res_3m_ode",
         "karras",
         0,
         30,
         "disable"
       ],
-      "title": "Pony pass 1: res_5s_ode"
+      "title": "Pony pass 1: res_3m_ode"
     },
     {
       "id": 8,
@@ -906,15 +912,16 @@
       "widgets_values": [
         "enable",
         2472348977,
+        "fixed",
         30,
         6.0,
-        "res_3m_ode",
+        "res_5s_ode",
         "karras",
         0,
         30,
         "disable"
       ],
-      "title": "Pony pass 2: res_3m_ode"
+      "title": "Pony pass 2: res_5s_ode"
     },
     {
       "id": 9,
@@ -960,10 +967,10 @@
     },
     {
       "id": 10,
-      "type": "10MinVideoMaker_SaveSceneFrame",
+      "type": "UltralyticsDetectorProvider",
       "pos": [
-        3640,
-        0
+        0,
+        600
       ],
       "size": [
         360,
@@ -974,9 +981,430 @@
       "mode": 0,
       "inputs": [
         {
-          "name": "images",
+          "name": "model_name",
+          "type": [
+            "bbox/face_yolov8m.pt",
+            "bbox/hand_yolov8s.pt",
+            "segm/face_yolov8m-seg_60.pt",
+            "segm/person_yolov8m-seg.pt"
+          ],
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "BBOX_DETECTOR",
+          "type": "BBOX_DETECTOR",
+          "links": [
+            23
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "SEGM_DETECTOR",
+          "type": "SEGM_DETECTOR",
+          "links": [],
+          "slot_index": 1
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "UltralyticsDetectorProvider"
+      },
+      "widgets_values": [
+        "bbox/face_yolov8m.pt"
+      ],
+      "title": "Pony face bbox detector"
+    },
+    {
+      "id": 11,
+      "type": "FaceDetailer",
+      "pos": [
+        3640,
+        0
+      ],
+      "size": [
+        360,
+        1090
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
           "type": "IMAGE",
           "link": 17
+        },
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 18
+        },
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 19
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 20
+        },
+        {
+          "name": "guide_size",
+          "type": "FLOAT",
+          "link": null
+        },
+        {
+          "name": "guide_size_for",
+          "type": "BOOLEAN",
+          "link": null
+        },
+        {
+          "name": "max_size",
+          "type": "FLOAT",
+          "link": null
+        },
+        {
+          "name": "seed",
+          "type": "INT",
+          "link": null
+        },
+        {
+          "name": "steps",
+          "type": "INT",
+          "link": null
+        },
+        {
+          "name": "cfg",
+          "type": "FLOAT",
+          "link": null
+        },
+        {
+          "name": "sampler_name",
+          "type": [
+            "euler",
+            "euler_cfg_pp",
+            "euler_ancestral",
+            "euler_ancestral_cfg_pp",
+            "heun",
+            "heunpp2",
+            "exp_heun_2_x0",
+            "exp_heun_2_x0_sde",
+            "dpm_2",
+            "dpm_2_ancestral",
+            "lms",
+            "dpm_fast",
+            "dpm_adaptive",
+            "dpmpp_2s_ancestral",
+            "dpmpp_2s_ancestral_cfg_pp",
+            "dpmpp_sde",
+            "dpmpp_sde_gpu",
+            "dpmpp_2m",
+            "dpmpp_2m_cfg_pp",
+            "dpmpp_2m_sde",
+            "dpmpp_2m_sde_gpu",
+            "dpmpp_2m_sde_heun",
+            "dpmpp_2m_sde_heun_gpu",
+            "dpmpp_3m_sde",
+            "dpmpp_3m_sde_gpu",
+            "ddpm",
+            "lcm",
+            "ipndm",
+            "ipndm_v",
+            "deis",
+            "res_multistep",
+            "res_multistep_cfg_pp",
+            "res_multistep_ancestral",
+            "res_multistep_ancestral_cfg_pp",
+            "gradient_estimation",
+            "gradient_estimation_cfg_pp",
+            "er_sde",
+            "seeds_2",
+            "seeds_3",
+            "sa_solver",
+            "sa_solver_pece",
+            "ddim",
+            "uni_pc",
+            "uni_pc_bh2",
+            "legacy_rk",
+            "rk",
+            "rk_beta",
+            "deis_3m_ode",
+            "deis_2m_ode",
+            "deis_3m",
+            "deis_2m",
+            "res_6s_ode",
+            "res_5s_ode",
+            "res_3s_ode",
+            "res_2s_ode",
+            "res_3m_ode",
+            "res_2m_ode",
+            "res_6s",
+            "res_5s",
+            "res_3s",
+            "res_2s",
+            "res_3m",
+            "res_2m"
+          ],
+          "link": null
+        },
+        {
+          "name": "scheduler",
+          "type": [
+            "simple",
+            "sgm_uniform",
+            "karras",
+            "exponential",
+            "ddim_uniform",
+            "beta",
+            "normal",
+            "linear_quadratic",
+            "kl_optimal",
+            "ays",
+            "ays+",
+            "ays_30",
+            "ays_30+",
+            "gits",
+            "beta_1_1",
+            "bong_tangent",
+            "beta57",
+            "AYS SDXL",
+            "AYS SD1",
+            "AYS SVD",
+            "GITS[coeff=1.2]",
+            "LTXV[default]",
+            "OSS FLUX",
+            "OSS Wan",
+            "OSS Chroma"
+          ],
+          "link": null
+        },
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "link": 21
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "link": 22
+        },
+        {
+          "name": "denoise",
+          "type": "FLOAT",
+          "link": null
+        },
+        {
+          "name": "feather",
+          "type": "INT",
+          "link": null
+        },
+        {
+          "name": "noise_mask",
+          "type": "BOOLEAN",
+          "link": null
+        },
+        {
+          "name": "force_inpaint",
+          "type": "BOOLEAN",
+          "link": null
+        },
+        {
+          "name": "bbox_threshold",
+          "type": "FLOAT",
+          "link": null
+        },
+        {
+          "name": "bbox_dilation",
+          "type": "INT",
+          "link": null
+        },
+        {
+          "name": "bbox_crop_factor",
+          "type": "FLOAT",
+          "link": null
+        },
+        {
+          "name": "sam_detection_hint",
+          "type": [
+            "center-1",
+            "horizontal-2",
+            "vertical-2",
+            "rect-4",
+            "diamond-4",
+            "mask-area",
+            "mask-points",
+            "mask-point-bbox",
+            "none"
+          ],
+          "link": null
+        },
+        {
+          "name": "sam_dilation",
+          "type": "INT",
+          "link": null
+        },
+        {
+          "name": "sam_threshold",
+          "type": "FLOAT",
+          "link": null
+        },
+        {
+          "name": "sam_bbox_expansion",
+          "type": "INT",
+          "link": null
+        },
+        {
+          "name": "sam_mask_hint_threshold",
+          "type": "FLOAT",
+          "link": null
+        },
+        {
+          "name": "sam_mask_hint_use_negative",
+          "type": [
+            "False",
+            "Small",
+            "Outter"
+          ],
+          "link": null
+        },
+        {
+          "name": "drop_size",
+          "type": "INT",
+          "link": null
+        },
+        {
+          "name": "bbox_detector",
+          "type": "BBOX_DETECTOR",
+          "link": 23
+        },
+        {
+          "name": "wildcard",
+          "type": "STRING",
+          "link": null
+        },
+        {
+          "name": "cycle",
+          "type": "INT",
+          "link": null
+        },
+        {
+          "name": "inpaint_model",
+          "type": "BOOLEAN",
+          "link": null
+        },
+        {
+          "name": "noise_mask_feather",
+          "type": "INT",
+          "link": null
+        },
+        {
+          "name": "tiled_encode",
+          "type": "BOOLEAN",
+          "link": null
+        },
+        {
+          "name": "tiled_decode",
+          "type": "BOOLEAN",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "links": [
+            24
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "cropped_refined",
+          "type": "IMAGE",
+          "links": [],
+          "slot_index": 1
+        },
+        {
+          "name": "cropped_enhanced_alpha",
+          "type": "IMAGE",
+          "links": [],
+          "slot_index": 2
+        },
+        {
+          "name": "mask",
+          "type": "MASK",
+          "links": [],
+          "slot_index": 3
+        },
+        {
+          "name": "detailer_pipe",
+          "type": "DETAILER_PIPE",
+          "links": [],
+          "slot_index": 4
+        },
+        {
+          "name": "cnet_images",
+          "type": "IMAGE",
+          "links": [],
+          "slot_index": 5
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "FaceDetailer"
+      },
+      "widgets_values": [
+        512,
+        true,
+        1024,
+        2472348977,
+        "fixed",
+        20,
+        5.0,
+        "dpmpp_2m_sde",
+        "karras",
+        0.38,
+        5,
+        true,
+        true,
+        0.5,
+        10,
+        3.0,
+        "center-1",
+        0,
+        0.93,
+        0,
+        0.7,
+        "False",
+        120,
+        "",
+        1,
+        false,
+        20,
+        false,
+        false
+      ],
+      "title": "Pony bbox face detailer"
+    },
+    {
+      "id": 12,
+      "type": "10MinVideoMaker_SaveSceneFrame",
+      "pos": [
+        4160,
+        0
+      ],
+      "size": [
+        360,
+        220
+      ],
+      "flags": {},
+      "order": 11,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 24
         },
         {
           "name": "job_id",
@@ -1140,7 +1568,63 @@
       17,
       9,
       0,
+      11,
+      0,
+      "IMAGE"
+    ],
+    [
+      18,
+      3,
+      0,
+      11,
+      1,
+      "MODEL"
+    ],
+    [
+      19,
+      3,
+      1,
+      11,
+      2,
+      "CLIP"
+    ],
+    [
+      20,
+      1,
+      2,
+      11,
+      3,
+      "VAE"
+    ],
+    [
+      21,
+      4,
+      0,
+      11,
+      12,
+      "CONDITIONING"
+    ],
+    [
+      22,
+      5,
+      0,
+      11,
+      13,
+      "CONDITIONING"
+    ],
+    [
+      23,
       10,
+      0,
+      11,
+      28,
+      "BBOX_DETECTOR"
+    ],
+    [
+      24,
+      11,
+      0,
+      12,
       0,
       "IMAGE"
     ]
@@ -1152,8 +1636,8 @@
       "bounding": [
         -80,
         -80,
-        4160,
-        680
+        4680,
+        1250
       ],
       "color": "#2b6f8a",
       "font_size": 28,

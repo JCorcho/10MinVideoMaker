@@ -15,7 +15,9 @@
 - Nodes must share routing and validation logic across every user surface. Do not create divergent editor and Wizard/modal implementations.
 - Before coding any node or workflow, obtain the live input/output contract from the local ComfyUI API. Do not infer third-party node inputs or output slots.
 - Production video geometry is fixed at 704×1248 and 24 fps. LTX I2V clips use the `8n + 1` frame rule, a maximum duration of 32 seconds, LCM for both sampler passes, the verified first-pass and upscale sigma schedules, and the LTX spatial upscaler.
-- T2I retains the matching reference workflow sampler: Anima uses `er_sde` with `beta57`; Pony uses `res_5s_ode` then `res_3m_ode`, both with their reference values.
+- T2I retains the matching reference workflow sampler: Anima uses one 30-step `er_sde`/`beta57` pass and no
+  detailer; Pony uses 30-step `res_3m_ode` then 30-step `res_5s_ode`, followed by the reference
+  `bbox/face_yolov8m.pt` detector and `FaceDetailer` settings.
 - Gmail polling and ComfyUI restart supervision run outside ComfyUI node execution. Nodes and the supervisor share one service layer so that authentication, state transitions, and validation cannot diverge.
 - One-click setup remains project-local. Store non-secrets in ignored `.env`; encrypt App Passwords, OAuth client
   secrets, and refresh tokens with current-user Windows DPAPI in ignored `runtime/secrets.json`. Process environment
@@ -272,3 +274,25 @@
     `D:\output\10minfinals\20260724-2249_final.mp4` (704×1248, 24 fps, 3,848 frames, 160.35 seconds, stereo AAC),
     transitioned to `waiting_for_grok`, and sent the next-job request email. The continuous supervisor was left
     stopped after the one-tick recovery.
+
+### 2026-07-24 — corrected Pony passes and restored face detailing
+
+- Changed files: `tenminvideomaker/workflow_builder.py`, `tenminvideomaker/workflow_export.py`,
+  `tests/test_workflow_builder.py`, `tests/test_workflow_export.py`, regenerated
+  `workflows/10MinVideoMaker_T2I_*.json`, `README.md`, `docs/architecture.md`, `docs/user-guide.md`,
+  `AI_DEVELOPMENT_RULES.md`.
+- Routing: Pony now executes `res_3m_ode` first and `res_5s_ode` second, both at 30 steps and CFG 6, then sends
+  the decoded image through `UltralyticsDetectorProvider` using `bbox/face_yolov8m.pt` and the approved reference
+  `FaceDetailer` settings before the deterministic scene-frame saver. The detailer uses the scene seed in fixed mode.
+  Anima remains one 30-step `er_sde`/`beta57` pass at CFG 4.5 with no face detailer.
+- GUI serialization: sampler/detailer seed controls now emit ComfyUI's separate `fixed` control widget. Without it,
+  later values shifted left in the canvas, making Pony CFG 6 appear as a six-step sampler even though the API graph
+  contained 30 steps.
+- Reproduction: run `python scripts\export_workflows.py --install-approved-shared-copies`, refresh the ComfyUI
+  Workflows sidebar, and open `10MinVideoMaker_T2I_Pony.json`.
+- Verification:
+  - `python -m unittest discover -s tests -v`
+  - embedded-Python unit tests and compilation
+  - live `/object_info` export validation
+  - `git diff --check`
+  - no media rendered and no model loaded.

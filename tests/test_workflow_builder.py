@@ -39,6 +39,8 @@ class WorkflowBuilderTests(unittest.TestCase):
         latent = nodes_of_type(build.api, "EmptySD3LatentImage")[0]["inputs"]
         self.assertEqual((latent["width"], latent["height"]), (704, 1248))
         self.assertFalse(nodes_of_type(build.api, "KSamplerSelect"))
+        self.assertFalse(nodes_of_type(build.api, "FaceDetailer"))
+        self.assertFalse(nodes_of_type(build.api, "UltralyticsDetectorProvider"))
         self.assertEqual(build.api[build.output_node_id]["class_type"], "10MinVideoMaker_SaveSceneFrame")
 
     def test_pony_uses_both_exact_reference_sampler_passes(self) -> None:
@@ -49,10 +51,64 @@ class WorkflowBuilderTests(unittest.TestCase):
         samplers = nodes_of_type(build.api, "KSamplerAdvanced")
         self.assertEqual(
             [(node["inputs"]["sampler_name"], node["inputs"]["scheduler"]) for node in samplers],
-            [("res_5s_ode", "karras"), ("res_3m_ode", "karras")],
+            [("res_3m_ode", "karras"), ("res_5s_ode", "karras")],
         )
         self.assertTrue(all(node["inputs"]["steps"] == 30 for node in samplers))
         self.assertTrue(all(node["inputs"]["cfg"] == 6.0 for node in samplers))
+        first_id = next(
+            node_id
+            for node_id, node in build.api.items()
+            if node is samplers[0]
+        )
+        self.assertEqual(samplers[1]["inputs"]["latent_image"], [first_id, 0])
+        detector = nodes_of_type(build.api, "UltralyticsDetectorProvider")[0]
+        self.assertEqual(detector["inputs"]["model_name"], "bbox/face_yolov8m.pt")
+        detailer = nodes_of_type(build.api, "FaceDetailer")[0]["inputs"]
+        self.assertEqual(
+            {
+                "guide_size": detailer["guide_size"],
+                "guide_size_for": detailer["guide_size_for"],
+                "max_size": detailer["max_size"],
+                "seed": detailer["seed"],
+                "steps": detailer["steps"],
+                "cfg": detailer["cfg"],
+                "sampler_name": detailer["sampler_name"],
+                "scheduler": detailer["scheduler"],
+                "denoise": detailer["denoise"],
+                "bbox_threshold": detailer["bbox_threshold"],
+                "bbox_dilation": detailer["bbox_dilation"],
+                "bbox_crop_factor": detailer["bbox_crop_factor"],
+                "drop_size": detailer["drop_size"],
+            },
+            {
+                "guide_size": 512,
+                "guide_size_for": True,
+                "max_size": 1024,
+                "seed": job.scenes[0].t2i.seed,
+                "steps": 20,
+                "cfg": 5.0,
+                "sampler_name": "dpmpp_2m_sde",
+                "scheduler": "karras",
+                "denoise": 0.38,
+                "bbox_threshold": 0.5,
+                "bbox_dilation": 10,
+                "bbox_crop_factor": 3.0,
+                "drop_size": 120,
+            },
+        )
+        detector_id = next(
+            node_id
+            for node_id, node in build.api.items()
+            if node is detector
+        )
+        self.assertEqual(detailer["bbox_detector"], [detector_id, 0])
+        detailer_id = next(
+            node_id
+            for node_id, node in build.api.items()
+            if node["class_type"] == "FaceDetailer"
+        )
+        saver = build.api[build.output_node_id]
+        self.assertEqual(saver["inputs"]["images"], [detailer_id, 0])
         self.assertEqual(validate_api_graph(build.api), ())
 
     def test_i2v_has_two_lcm_passes_verified_sigmas_upscaler_and_chunking(self) -> None:
