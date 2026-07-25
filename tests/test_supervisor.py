@@ -137,6 +137,48 @@ class RetryOnceComfy(FakeComfy):
         return super().wait_for_prompt("prompt-2", timeout_seconds=timeout_seconds)
 
 
+class StageRecordingComfy(FakeComfy):
+    def __init__(self, frame_paths: list[Path]):
+        super().__init__(frame_paths[0])
+        self._frame_paths = iter(frame_paths)
+        self.stages: list[str] = []
+        self._stages_by_prompt: dict[str, str] = {}
+
+    def queue_prompt(self, workflow):
+        prompt_id = super().queue_prompt(workflow)
+        stage = (
+            "t2i"
+            if any(
+                node["class_type"] == "10MinVideoMaker_SaveSceneFrame"
+                for node in workflow.values()
+            )
+            else "i2v"
+        )
+        self.stages.append(stage)
+        self._stages_by_prompt[prompt_id] = stage
+        return prompt_id
+
+    def wait_for_prompt(self, prompt_id, *, timeout_seconds):
+        if self._stages_by_prompt[prompt_id] == "t2i":
+            frame = next(self._frame_paths)
+            frame.parent.mkdir(parents=True, exist_ok=True)
+            frame.write_bytes(b"png")
+            return {"outputs": {}}
+        return {
+            "outputs": {
+                "36": {
+                    "gifs": [
+                        {
+                            "filename": "scene.mp4",
+                            "subfolder": "10MinVideoMaker/test",
+                            "type": "temp",
+                        }
+                    ]
+                }
+            }
+        }
+
+
 class SupervisorTests(unittest.TestCase):
     def test_status_heartbeat_logs_redacted_pipeline_and_queue_counts(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -249,6 +291,51 @@ class SupervisorTests(unittest.TestCase):
             self.assertEqual(mail.requests, [(job.job_id, True)])
             self.assertEqual(len(assembler.calls), 1)
             self.assertGreaterEqual(comfy.free_calls, 3)
+
+    def test_process_job_batches_all_t2i_before_i2v(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            raw = payload()
+            second = copy.deepcopy(raw["scenes"][0])
+            second["id"] = 2
+            second["title"] = "Second batched scene"
+            second["t2i"]["seed"] += 1
+            second["i2v"]["seed"] += 1
+            raw["scenes"].append(second)
+            job = parse_job_payload(raw)
+            store = PipelineStateStore(root / "pipeline.sqlite3")
+            store.claim_job(job)
+            frames = [
+                root / "frames" / "scene_0001.png",
+                root / "frames" / "scene_0002.png",
+            ]
+            comfy = StageRecordingComfy(frames)
+            supervisor = PipelineSupervisor(
+                store=store,
+                mail_client=FakeMailClient(),
+                asset_manager=FakeAssetManager(),
+                comfy=comfy,
+                assembler=FakeAssembler(root / "final.mp4"),
+                settings=SupervisorSettings(1, 10, 10, 2),
+                frame_path_factory=lambda _job, scene_id: root
+                / "frames"
+                / f"scene_{scene_id:04d}.png",
+                clip_path_factory=lambda _job, scene_id: root
+                / "clips"
+                / f"scene_{scene_id:04d}.mp4",
+                video_probe=lambda path: VideoStreamInfo(
+                    Path(path), 704, 1248, Fraction(24, 1)
+                ),
+            )
+
+            supervisor.process_job(job)
+
+            self.assertEqual(comfy.stages, ["t2i", "t2i", "i2v", "i2v"])
+            self.assertEqual(comfy.free_calls, 3)
+            self.assertEqual(
+                [record.state for record in store.scene_records(job.job_id)],
+                [SceneState.SUCCEEDED, SceneState.SUCCEEDED],
+            )
 
     def test_transient_comfy_failure_retries_only_the_unfinished_stage(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

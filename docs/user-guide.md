@@ -37,6 +37,14 @@ Double-click `Start 10MinVideoMaker.bat`. After the existing credential checks, 
 There is intentionally no image-only choice: a changed starting image always requires a new video. Every submitted
 edit creates a new numbered revision; prior frames, clips, parameters, and manifests remain available in history.
 
+### Efficient render ordering
+
+The supervisor avoids swapping the image and LTX models between individual scenes. For a normal job, it makes all
+uncached T2I starting frames, releases the image model once, then renders all remaining I2V clips from those exact
+frames. For a remake batch, all **Image + Video** frame remakes happen first (Anima and Pony frames are grouped when
+needed), followed by every batch item's I2V render, including **Video Only** remakes. This is deliberate for the
+16 GB GPU: it avoids repeatedly unloading and reloading the multi-gigabyte models.
+
 ## Workflow templates
 
 The repository and the approved ComfyUI workflow folder contain three independently rebuilt GUI workflows:

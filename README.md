@@ -34,6 +34,11 @@ H.264 with generated audio at quality 65 and 24 fps. Both DiscordSendSave nodes 
 workflow JSON, CDN logging, and GitHub updates disabled. Clean cached frames and deterministic scene clips remain
 unwatermarked for I2V reuse and master assembly.
 
+To avoid model-reload thrash on the 16 GB GPU, an automatic job has two sequential model-residency phases: it creates
+every required T2I frame first, unloads the image model once, then creates every required LTX clip. A multi-scene
+remake batch follows the same policy—its image+video edits create frames first (grouped by Anima/Pony family when
+mixed), then every successful remake, including video-only edits, runs through one LTX video pass.
+
 ## One-click start
 
 Double-click `Start 10MinVideoMaker.bat` in the repository root. On first run it:

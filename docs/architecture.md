@@ -20,6 +20,13 @@ revision's media paths. New Gmail jobs auto-queue and render in the normal GUI s
 `--hold-new-jobs-for-review` instead claims them as `awaiting_review` until explicitly approved. Completed artifacts
 remain intact when unfinished scenes are re-queued.
 
+Automatic jobs are stage-batched for model residency: asset preparation, every necessary T2I frame, one model
+release, every necessary LTX I2V clip, then final assembly. The scene state and exact frame path remain durable after
+each individual prompt, so a restart can resume unfinished work without rebuilding completed frames. Remake batches
+preflight all selected revisions, render image+video frames first (grouped by T2I family), and only then render the
+entire eligible set of LTX clips. The ComfyUI free-memory endpoint is called at phase boundaries, never between
+scenes in the same model family.
+
 Every scene revision is stored below
 `D:\LTX_Supervisor_Storage\jobs\{job_id}\scenes\scene_{id}\revisions\{revision}` with `frame.png`,
 `video.mp4`, and a human-readable `generation-manifest.json`. Source Grok payloads live in each job's `source`

@@ -29,6 +29,11 @@
 - Scene edits must use the same typed contract and workflow builders as automatic jobs. Store each edit as a new
   immutable revision. Video-only revisions require an existing frame; image-only remake must not exist in the API,
   state enum, or UI. Preserve unsigned 64-bit seeds as strings across the browser boundary.
+- Render scheduling is model-residency aware on the 16 GB GPU. For each automatic job, complete every required T2I
+  frame before one intentional model release, then complete every required LTX I2V clip before releasing LTX.
+  Remake batches must preflight selected revisions, group image+video remakes by Anima/Pony family, render all of
+  those frames, then run every eligible video (including video-only remakes) as one LTX phase. Never call
+  ComfyUI's free-memory endpoint between scenes in the same phase.
 - Collision choices are `after_current` and `interrupt_current`. Interrupt may cancel only prompts carrying this
   project's ComfyUI client ID, then atomically preserve/abandon the active job before a remake batch runs. Never
   clear the global ComfyUI queue or restart a healthy server for this action.
@@ -608,6 +613,24 @@
   - Easy Install embedded-Python full unit suite with the repository inserted into `sys.path`
   - `python -m compileall -q tenminvideomaker scripts tests`
   - `node --check web/app.js`
+  - `git diff --check`
+
+### 2026-07-25 — stage-batched model residency
+
+- Changed files: `tenminvideomaker/supervisor.py`, `tenminvideomaker/gui_service.py`,
+  `tests/test_supervisor.py`, `tests/test_gui_service.py`, `README.md`, `docs/architecture.md`,
+  `docs/user-guide.md`, and this file.
+- Routing: normal jobs now execute all required T2I frames before the LTX I2V pass. GUI remake batches preflight
+  every selected revision, generate all image+video frames first (grouped by T2I family), then render all
+  successful image+video and video-only revisions through LTX. The free-memory call remains only at phase/job
+  boundaries.
+- Reproduction: submit a two-scene job and verify the prompt order is T2I scene 1, T2I scene 2, I2V scene 1,
+  I2V scene 2. Submit a five-item remake batch with four image+video items and one video-only item; all four
+  frames must complete before any of the five I2V prompts begin.
+- Verification commands:
+  - `python -m unittest discover -s tests -q`
+  - Easy Install embedded-Python full unit suite with the repository inserted into sys.path
+  - `python -m compileall -q tenminvideomaker scripts tests`
   - `git diff --check`
 
 ### 2026-07-25 — production configuration isolation repair

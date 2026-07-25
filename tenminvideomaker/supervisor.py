@@ -295,23 +295,29 @@ class PipelineSupervisor:
             LOGGER.error("%s Job %s remains saved and was not replaced.", error, job.job_id)
             return
 
-        for record in self.store.scene_records(job.job_id):
-            scene = scene_by_id[record.scene_id]
-            if record.state == SceneState.SUCCEEDED and record.video_path and Path(record.video_path).is_file():
-                continue
-            if record.state == SceneState.FAILED:
-                continue
-            self._process_scene_with_retries(
+        try:
+            if not self._process_t2i_batch(
                 job,
-                scene,
+                scene_by_id,
                 preparation.resolved_filenames,
-            )
-            if self.store.snapshot().job_id != job.job_id:
-                LOGGER.info(
-                    "Job %s left the active pipeline after a controlled cancellation.",
-                    job.job_id,
-                )
+            ):
                 return
+        finally:
+            # Keep the image model resident until every required frame is complete,
+            # then deliberately unload it before the LTX stage.
+            self._release_memory()
+
+        try:
+            if not self._process_i2v_batch(
+                job,
+                scene_by_id,
+                preparation.resolved_filenames,
+            ):
+                return
+        finally:
+            # Do not unload LTX between clips. Release it only after this job's
+            # complete video stage has finished.
+            self._release_memory()
 
         records = self.store.scene_records(job.job_id)
         successful = [
@@ -364,45 +370,119 @@ class PipelineSupervisor:
         self._release_memory()
         self._request_next_job(previous_job_id=job.job_id, succeeded=complete_success)
 
-    def _process_scene_with_retries(
+    def _process_t2i_batch(
+        self,
+        job: JobPayload,
+        scene_by_id: Mapping[int, SceneSpec],
+        resolved_lora_filenames: Mapping[str, str],
+    ) -> bool:
+        LOGGER.info(
+            "Job %s: generating all required T2I frames before loading LTX.",
+            job.job_id,
+        )
+        for record in self.store.scene_records(job.job_id):
+            if record.state in {SceneState.FAILED, SceneState.CANCELLED}:
+                continue
+            if (
+                record.state == SceneState.SUCCEEDED
+                and record.video_path
+                and Path(record.video_path).is_file()
+            ):
+                continue
+            scene = scene_by_id[record.scene_id]
+            self._process_scene_stage_with_retries(
+                job,
+                scene,
+                PipelineState.RUNNING_T2I,
+                resolved_lora_filenames,
+            )
+            if self.store.snapshot().job_id != job.job_id:
+                LOGGER.info(
+                    "Job %s left the active pipeline after a controlled cancellation.",
+                    job.job_id,
+                )
+                return False
+        return True
+
+    def _process_i2v_batch(
+        self,
+        job: JobPayload,
+        scene_by_id: Mapping[int, SceneSpec],
+        resolved_lora_filenames: Mapping[str, str],
+    ) -> bool:
+        LOGGER.info(
+            "Job %s: generating all required I2V clips from cached frames.",
+            job.job_id,
+        )
+        for record in self.store.scene_records(job.job_id):
+            if record.state in {SceneState.FAILED, SceneState.CANCELLED}:
+                continue
+            if (
+                record.state == SceneState.SUCCEEDED
+                and record.video_path
+                and Path(record.video_path).is_file()
+            ):
+                continue
+            scene = scene_by_id[record.scene_id]
+            self._process_scene_stage_with_retries(
+                job,
+                scene,
+                PipelineState.RUNNING_I2V,
+                resolved_lora_filenames,
+            )
+            if self.store.snapshot().job_id != job.job_id:
+                LOGGER.info(
+                    "Job %s left the active pipeline after a controlled cancellation.",
+                    job.job_id,
+                )
+                return False
+        return True
+
+    def _process_scene_stage_with_retries(
         self,
         job: JobPayload,
         scene: SceneSpec,
+        pipeline_state: PipelineState,
         resolved_lora_filenames: Mapping[str, str],
     ) -> None:
+        stage = "T2I" if pipeline_state == PipelineState.RUNNING_T2I else "I2V"
         while True:
             try:
-                self._process_scene(job, scene, resolved_lora_filenames)
+                if pipeline_state == PipelineState.RUNNING_T2I:
+                    self._process_t2i_stage(job, scene, resolved_lora_filenames)
+                else:
+                    self._process_i2v_stage(job, scene, resolved_lora_filenames)
                 return
             except ComfyHttpError as error:
                 if not self.comfy.alive():
                     raise FatalPipelineError(str(error)) from error
                 snapshot = self.store.snapshot()
-                current_record = next(
+                record = next(
                     item
                     for item in self.store.scene_records(job.job_id)
                     if item.scene_id == scene.scene_id
                 )
                 if (
                     snapshot.job_id != job.job_id
-                    or current_record.state == SceneState.CANCELLED
+                    or record.state == SceneState.CANCELLED
                 ):
                     LOGGER.info(
-                        "Job %s scene %s stopped after a controlled user cancellation.",
+                        "Job %s scene %s %s stopped after a controlled user cancellation.",
                         job.job_id,
                         scene.scene_id,
+                        stage,
                     )
                     return
-                record = next(
-                    item
-                    for item in self.store.scene_records(job.job_id)
-                    if item.scene_id == scene.scene_id
+                attempts = (
+                    record.t2i_attempts
+                    if pipeline_state == PipelineState.RUNNING_T2I
+                    else record.i2v_attempts
                 )
-                attempts = record.i2v_attempts if record.frame_path else record.t2i_attempts
                 if attempts < self.settings.max_stage_attempts:
                     LOGGER.warning(
-                        "Retrying scene %s after attempt %s: %s",
+                        "Retrying scene %s %s after attempt %s: %s",
                         scene.scene_id,
+                        stage,
                         attempts,
                         error,
                     )
@@ -425,7 +505,12 @@ class PipelineSupervisor:
                     state=SceneState.FAILED,
                     error=str(error),
                 )
-                LOGGER.error("Scene %s exhausted its retry budget: %s", scene.scene_id, error)
+                LOGGER.error(
+                    "Scene %s %s exhausted its retry budget: %s",
+                    scene.scene_id,
+                    stage,
+                    error,
+                )
                 return
             except Exception as error:
                 self.store.set_scene_state(
@@ -440,12 +525,14 @@ class PipelineSupervisor:
                     state=SceneState.FAILED,
                     error=str(error),
                 )
-                LOGGER.exception("Scene %s failed with a non-ComfyUI error.", scene.scene_id)
+                LOGGER.exception(
+                    "Scene %s %s failed with a non-ComfyUI error.",
+                    scene.scene_id,
+                    stage,
+                )
                 return
-            finally:
-                self._release_memory()
 
-    def _process_scene(
+    def _process_t2i_stage(
         self,
         job: JobPayload,
         scene: SceneSpec,
@@ -533,11 +620,25 @@ class PipelineSupervisor:
                 job.job_id,
                 scene.scene_id,
             )
-            self._release_memory()
 
+    def _process_i2v_stage(
+        self,
+        job: JobPayload,
+        scene: SceneSpec,
+        resolved_lora_filenames: Mapping[str, str],
+    ) -> None:
         record = next(
             item for item in self.store.scene_records(job.job_id) if item.scene_id == scene.scene_id
         )
+        frame_path = (
+            Path(record.frame_path)
+            if record.frame_path and Path(record.frame_path).is_file()
+            else self._frame_path(job.job_id, scene.scene_id)
+        )
+        if not frame_path.is_file():
+            raise ComfyHttpError(
+                f"I2V requires a cached T2I frame for scene {scene.scene_id}."
+            )
         clip_path = self._clip_path(job.job_id, scene.scene_id)
         if record.video_path and Path(record.video_path).is_file():
             self.store.set_scene_state(job.job_id, scene.scene_id, SceneState.SUCCEEDED)
@@ -800,6 +901,10 @@ class PipelineSupervisor:
             "Requested the next Gmail job%s.",
             f" after {previous_job_id}" if previous_job_id else "",
         )
+
+    def release_memory(self) -> None:
+        """Release ComfyUI models only at a deliberate pipeline boundary."""
+        self._release_memory()
 
     def _release_memory(self) -> None:
         gc.collect()
