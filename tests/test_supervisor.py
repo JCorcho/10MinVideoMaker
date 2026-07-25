@@ -26,7 +26,7 @@ class FakeMailClient:
 
 
 class FakeAssetManager:
-    def resolve_or_download(self, lora):
+    def resolve_or_download(self, lora, *, expected_base_model=None):
         filename = f"installed/{lora.name}.safetensors"
         return AssetResolution(
             lora.name,
@@ -45,17 +45,20 @@ class FakeAssetManager:
 
 
 class OneMissingAssetManager(FakeAssetManager):
-    def resolve_or_download(self, lora):
+    def resolve_or_download(self, lora, *, expected_base_model=None):
         if lora.name == "Missing Scene LoRA":
             return AssetResolution(lora.name, None, downloaded=False, error="download failed")
-        return super().resolve_or_download(lora)
+        return super().resolve_or_download(
+            lora,
+            expected_base_model=expected_base_model,
+        )
 
 
 class AllMissingAssetManager(FakeAssetManager):
     def __init__(self):
         self.resolve_calls = 0
 
-    def resolve_or_download(self, lora):
+    def resolve_or_download(self, lora, *, expected_base_model=None):
         self.resolve_calls += 1
         return AssetResolution(
             lora.name,

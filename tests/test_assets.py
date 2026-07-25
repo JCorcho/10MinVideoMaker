@@ -95,6 +95,50 @@ class AssetTests(unittest.TestCase):
         self.assertEqual(result.path, canonical)
         self.assertEqual(result.local_filename, canonical.name)
 
+    def test_existing_anima_lora_is_blocked_from_ltx_resolution(self) -> None:
+        installed = self.lora_directory / "Character_Anima.safetensors"
+        installed.parent.mkdir(parents=True)
+        installed.write_bytes(b"weights")
+        metadata = CivitaiLoraMetadata(
+            version_id=123,
+            model_id=456,
+            filename=installed.name,
+            download_url="https://civitai.com/api/download/models/123",
+            sha256=None,
+            size_bytes=7,
+            base_model="Anima",
+        )
+        result = self.manager(
+            metadata_fetcher=lambda _lora: metadata,
+        ).resolve_or_download(
+            LoraSpec("Character Anima", metadata.download_url, 0.8, version_id=123),
+            expected_base_model="LTXV 2.3",
+        )
+        self.assertFalse(result.succeeded)
+        self.assertIn("Anima LoRA, not LTXV 2.3", result.error)
+
+    def test_existing_ltxv_23_lora_passes_family_validation(self) -> None:
+        installed = self.lora_directory / "Motion.safetensors"
+        installed.parent.mkdir(parents=True)
+        installed.write_bytes(b"weights")
+        metadata = CivitaiLoraMetadata(
+            version_id=123,
+            model_id=456,
+            filename=installed.name,
+            download_url="https://civitai.com/api/download/models/123",
+            sha256=None,
+            size_bytes=7,
+            base_model="LTXV 2.3",
+        )
+        result = self.manager(
+            metadata_fetcher=lambda _lora: metadata,
+        ).resolve_or_download(
+            LoraSpec("Motion", metadata.download_url, 0.8, version_id=123),
+            expected_base_model="LTXV 2.3",
+        )
+        self.assertTrue(result.succeeded)
+        self.assertEqual(result.base_model, "LTXV 2.3")
+
     def test_authentication_failure_is_not_retried(self) -> None:
         calls = []
 

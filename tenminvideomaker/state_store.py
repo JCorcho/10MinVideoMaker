@@ -426,6 +426,41 @@ class PipelineStateStore:
             )
         return [int(row["scene_id"]) for row in rows]
 
+    def requeue_i2v_for_job(self, job_id: str) -> list[int]:
+        """Invalidate every scene clip while preserving deterministic T2I frames."""
+        self.initialize()
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            exists = connection.execute(
+                "SELECT 1 FROM jobs WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+            if not exists:
+                raise StateTransitionError(f"Unknown job {job_id}.")
+            rows = connection.execute(
+                "SELECT scene_id FROM scenes WHERE job_id = ? ORDER BY scene_id",
+                (job_id,),
+            ).fetchall()
+            connection.execute(
+                """
+                UPDATE scenes
+                SET state = ?, video_path = NULL, error = NULL,
+                    i2v_attempts = 0, prompt_id = NULL, updated_at = ?
+                WHERE job_id = ?
+                """,
+                (SceneState.PENDING, _utc_now(), job_id),
+            )
+            connection.execute(
+                """
+                UPDATE pipeline_state
+                SET state = ?, job_id = ?, active_scene_id = NULL,
+                    error = NULL, updated_at = ?
+                WHERE singleton = 1
+                """,
+                (PipelineState.DOWNLOADING_ASSETS, job_id, _utc_now()),
+            )
+        return [int(row["scene_id"]) for row in rows]
+
     def abandon_job(
         self,
         job_id: str,

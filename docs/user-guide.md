@@ -36,6 +36,18 @@ Do not queue the example workflows for a real render without replacing the examp
   (20 detailer steps, CFG 5, `dpmpp_2m_sde`, `karras`, denoise 0.38). Anima does not use this detailer.
 - LTX I2V: LCM on both passes, verified distinct sigma lists, x2 tiled spatial upscaler, DMD 1.0, JoyAI 0.5.
 
+### LoRA stage boundary
+
+- `character.lora` and `scenes[].t2i.loras[]` are Anima/Pony T2I assets only.
+- The same asset is ignored if Grok repeats or aliases it in `scenes[].i2v.loras[]`.
+- `ltxv_character_lora` and every remaining `scenes[].i2v.loras[]` item must report Civitai base model
+  `LTXV 2.3`. A different or unverifiable base is rejected before the LTX workflow is queued, even if the file
+  already exists locally.
+- Mandatory DMD 1.0 and JoyAI 0.5 are applied separately and are not sourced from scene JSON.
+
+This means Grok should list only genuine LTXV 2.3 motion/character LoRAs in I2V fields. It should never repeat an
+Anima, Pony, SDXL, Flux, or other image-model LoRA there.
+
 The GUI templates store a separate `fixed` seed-control value after each sampler/detailer seed. This keeps the
 canvas widgets aligned, so the Pony samplers visibly show 30 steps rather than incorrectly displaying CFG 6 in the
 steps field.
@@ -204,6 +216,8 @@ can download LoRAs and begin generation. Use the no-render checks below instead.
 - A transient failed stage retries up to `TENMIN_MAX_STAGE_ATTEMPTS`.
 - A timed-out project prompt is removed from the pending queue or interrupted if it is the current running prompt.
 - A scene-specific LoRA failure marks only that scene failed; other scenes continue and can be stitched.
+- If an I2V routing defect invalidates completed clips, the project can requeue I2V for the whole saved job while
+  retaining each deterministic cached T2I frame; invalid clips must be quarantined before resuming.
 - If asset preparation fails for every scene, the supervisor pauses in `error`, prints each cause in the console,
   preserves the job, and does not request a replacement email.
 - Relaunching offers to retry unfinished scenes from the saved job; successful scenes and attempt counters remain

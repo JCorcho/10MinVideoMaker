@@ -241,3 +241,27 @@ def unique_loras(loras: Iterable[LoraSpec]) -> tuple[LoraSpec, ...]:
 def effective_t2i_loras(scene: SceneSpec, character: CharacterSpec) -> tuple[LoraSpec, ...]:
     """Inject the global character LoRA once, even when Grok repeats it per scene."""
     return unique_loras((character.lora, *scene.t2i.loras))
+
+
+def effective_i2v_loras(job: JobPayload, scene: SceneSpec) -> tuple[LoraSpec, ...]:
+    """Return I2V-only LoRAs, quarantining every asset also used by T2I.
+
+    Display names are not trusted for this decision. Civitai version identity (or
+    the normalized download URL for non-Civitai assets) prevents an aliased
+    Anima/Pony character LoRA from crossing into the LTX model chain.
+    """
+    t2i_identities = {
+        lora_identity(lora)
+        for lora in effective_t2i_loras(scene, job.character)
+    }
+    candidates = unique_loras(
+        (
+            *((job.ltxv_character_lora,) if job.ltxv_character_lora else ()),
+            *scene.i2v.loras,
+        )
+    )
+    return tuple(
+        lora
+        for lora in candidates
+        if lora_identity(lora) not in t2i_identities
+    )

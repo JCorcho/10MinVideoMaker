@@ -11,10 +11,17 @@ from .assembly import AssemblyError, FfmpegAssembler, probe_video, validate_vide
 from .artifacts import ArtifactError, save_scene_frame
 from .assets import LocalLoraRequirement, LoraAssetManager
 from .configuration import load_project_environment
-from .constants import MANDATORY_I2V_LORAS, PRODUCTION_FPS, PRODUCTION_HEIGHT, PRODUCTION_WIDTH
+from .constants import (
+    I2V_DYNAMIC_BASE_MODEL,
+    MANDATORY_I2V_LORAS,
+    PRODUCTION_FPS,
+    PRODUCTION_HEIGHT,
+    PRODUCTION_WIDTH,
+)
 from .contracts import (
     ContractValidationError,
     JobPayload,
+    effective_i2v_loras,
     effective_t2i_loras,
     parse_job_payload,
     unique_loras,
@@ -161,17 +168,20 @@ class TenMinResolveLorasNode(_AlwaysRun):
         import folder_paths
 
         payload = _job_from_json(job_json)
-        dynamic_loras = []
+        t2i_loras = []
+        i2v_loras = []
         if stage in {"all", "t2i"}:
-            dynamic_loras.extend(
+            t2i_loras.extend(
                 lora
                 for scene in payload.scenes
                 for lora in effective_t2i_loras(scene, payload.character)
             )
         if stage in {"all", "i2v"}:
-            if payload.ltxv_character_lora:
-                dynamic_loras.append(payload.ltxv_character_lora)
-            dynamic_loras.extend(lora for scene in payload.scenes for lora in scene.i2v.loras)
+            i2v_loras.extend(
+                lora
+                for scene in payload.scenes
+                for lora in effective_i2v_loras(payload, scene)
+            )
 
         manager = LoraAssetManager(
             folder_paths.get_folder_paths("loras"),
@@ -182,7 +192,13 @@ class TenMinResolveLorasNode(_AlwaysRun):
                 "",
             ),
         )
-        results = [*manager.resolve_many(unique_loras(dynamic_loras))]
+        results = [*manager.resolve_many(unique_loras(t2i_loras))]
+        results.extend(
+            manager.resolve_many(
+                unique_loras(i2v_loras),
+                expected_base_model=I2V_DYNAMIC_BASE_MODEL,
+            )
+        )
         if stage in {"all", "i2v"}:
             results.extend(
                 manager.require_local(LocalLoraRequirement(filename, weight))
@@ -195,6 +211,7 @@ class TenMinResolveLorasNode(_AlwaysRun):
                 "downloaded": result.downloaded,
                 "error": result.error,
                 "local_filename": result.local_filename,
+                "base_model": result.base_model,
             }
             for result in results
         ]

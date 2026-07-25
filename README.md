@@ -18,6 +18,11 @@ T2I routing is model-specific: Anima uses its 30-step `er_sde`/`beta57` referenc
 uses 30-step `res_3m_ode` followed by 30-step `res_5s_ode`, then the reference YOLO face bbox detector and
 `FaceDetailer` before caching the scene frame.
 
+LoRA routing is stage-safe. Anima/Pony character and scene LoRAs are T2I-only and can never enter the LTX model
+chain. Dynamic I2V LoRAs must be verified from Civitai metadata as `LTXV 2.3` before workflow construction; an
+unverifiable or different-base LoRA is rejected even when its file is already installed. DMD 1.0 and JoyAI 0.5
+remain the two mandatory local LTX LoRAs.
+
 ## One-click start
 
 Double-click `Start 10MinVideoMaker.bat` in the repository root. On first run it:
@@ -48,8 +53,8 @@ Windows' context menu.
 - **Poll Gmail Once** — searches unread mail for the exact completion subject `LTX_JOB_COMPLETE`, then performs
   attachment-first extraction and accepts body JSON or a Google Drive file link; scheduling belongs to the
   supervisor. Private-file sign-in redirects fall back to the authenticated Drive API.
-- **Resolve LoRAs** — uses the live ComfyUI process's active LoRA roots, resolves dynamic assets, and verifies
-  mandatory I2V LoRAs.
+- **Resolve LoRAs** — uses the live ComfyUI process's active LoRA roots, resolves dynamic assets, verifies mandatory
+  I2V LoRAs, and blocks non-LTXV-2.3 dynamic LoRAs from I2V.
 - **Release Memory** — runs Python and CUDA cache cleanup.
 - **Save Scene Frame** — atomically caches a deterministic 704×1248 PNG for the matching scene.
 - **Stitch Clips** — verifies every clip is 704×1248 at 24 fps before FFmpeg concat.

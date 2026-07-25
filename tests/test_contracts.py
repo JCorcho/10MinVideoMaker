@@ -5,6 +5,7 @@ import unittest
 from tenminvideomaker.constants import frame_count_for_seconds, seconds_for_frame_count
 from tenminvideomaker.contracts import (
     ContractValidationError,
+    effective_i2v_loras,
     effective_t2i_loras,
     lora_identity,
     parse_job_payload,
@@ -83,6 +84,24 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(loras[0].weight, 0.85)
         self.assertEqual(loras[0].version_id, 3184055)
         self.assertEqual(lora_identity(loras[0]), "civitai-version:3184055")
+
+    def test_t2i_lora_alias_is_quarantined_from_i2v_candidates(self) -> None:
+        data = payload()
+        data["scenes"][0]["i2v"]["loras"] = [
+            {
+                "name": "Character alias accidentally repeated for video",
+                "download_url": "https://civitai.com/api/download/models/3184055",
+                "weight": 0.8,
+            },
+            {
+                "name": "Actual LTX motion",
+                "download_url": "https://civitai.com/api/download/models/3082662",
+                "weight": 0.7,
+            },
+        ]
+        job = parse_job_payload(data)
+        loras = effective_i2v_loras(job, job.scenes[0])
+        self.assertEqual([lora.name for lora in loras], ["Actual LTX motion"])
 
     def test_explicit_civitai_version_must_match_download_url(self) -> None:
         data = payload()

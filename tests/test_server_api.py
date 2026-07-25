@@ -10,10 +10,12 @@ from tenminvideomaker.server_api import resolve_asset_request
 class FakeManager:
     def __init__(self) -> None:
         self.dynamic = None
+        self.expected_base_model = None
         self.required = None
 
-    def resolve_or_download(self, lora):
+    def resolve_or_download(self, lora, *, expected_base_model=None):
         self.dynamic = lora
+        self.expected_base_model = expected_base_model
         return AssetResolution(
             lora.name,
             Path(r"C:\models\loras\canonical.safetensors"),
@@ -50,6 +52,22 @@ class ServerApiTests(unittest.TestCase):
         self.assertEqual(manager.dynamic.model_id, 2847192)
         self.assertEqual(result["local_filename"], "canonical.safetensors")
         self.assertTrue(result["succeeded"])
+
+    def test_dynamic_request_forwards_ltx_base_requirement(self) -> None:
+        manager = FakeManager()
+        resolve_asset_request(
+            {
+                "kind": "dynamic",
+                "expected_base_model": "LTXV 2.3",
+                "lora": {
+                    "name": "LTX motion",
+                    "download_url": "https://civitai.com/api/download/models/3082662",
+                    "weight": 0.8,
+                },
+            },
+            manager,
+        )
+        self.assertEqual(manager.expected_base_model, "LTXV 2.3")
 
     def test_required_request_never_becomes_a_download(self) -> None:
         manager = FakeManager()

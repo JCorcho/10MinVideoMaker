@@ -100,6 +100,32 @@ class StateStoreTests(unittest.TestCase):
         self.assertIsNone(record.prompt_id)
         self.assertEqual(record.t2i_attempts, 1)
 
+    def test_i2v_requeue_preserves_frame_and_clears_contaminated_clip(self) -> None:
+        self.store.claim_job(self.job)
+        self.store.begin_scene_stage(
+            self.job.job_id,
+            1,
+            PipelineState.RUNNING_I2V,
+        )
+        self.store.set_scene_state(
+            self.job.job_id,
+            1,
+            SceneState.SUCCEEDED,
+            frame_path="frame.png",
+            video_path="contaminated.mp4",
+        )
+
+        self.assertEqual(self.store.requeue_i2v_for_job(self.job.job_id), [1])
+
+        snapshot = self.store.snapshot()
+        record = self.store.scene_records(self.job.job_id)[0]
+        self.assertEqual(snapshot.state, PipelineState.DOWNLOADING_ASSETS)
+        self.assertEqual(record.state, SceneState.PENDING)
+        self.assertEqual(record.frame_path, "frame.png")
+        self.assertIsNone(record.video_path)
+        self.assertEqual(record.i2v_attempts, 0)
+        self.assertIsNone(record.prompt_id)
+
     def test_abandon_job_cancels_unfinished_scene_and_releases_pipeline(self) -> None:
         self.store.claim_job(self.job)
         self.store.begin_scene_stage(

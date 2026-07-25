@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 
 from .assets import AssetResolution, LocalLoraRequirement, LoraAssetManager
 from .configuration import load_project_environment
+from .constants import I2V_DYNAMIC_BASE_MODEL
 from .contracts import LoraSpec, civitai_version_id
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -25,6 +26,7 @@ def _asset_resolution_mapping(result: AssetResolution) -> dict[str, Any]:
         "downloaded": result.downloaded,
         "error": result.error,
         "local_filename": result.local_filename,
+        "base_model": result.base_model,
         "succeeded": result.succeeded,
     }
 
@@ -72,7 +74,15 @@ def resolve_asset_request(
 ) -> dict[str, Any]:
     kind = document.get("kind")
     if kind == "dynamic":
-        result = manager.resolve_or_download(_lora_from_request(document.get("lora")))
+        expected_base_model = document.get("expected_base_model")
+        if expected_base_model is not None and expected_base_model != I2V_DYNAMIC_BASE_MODEL:
+            raise ValueError(
+                f"expected_base_model must be {I2V_DYNAMIC_BASE_MODEL} when provided."
+            )
+        result = manager.resolve_or_download(
+            _lora_from_request(document.get("lora")),
+            expected_base_model=expected_base_model,
+        )
     elif kind == "required":
         filename = document.get("filename")
         weight = document.get("weight")

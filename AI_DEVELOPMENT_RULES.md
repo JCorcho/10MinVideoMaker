@@ -45,6 +45,11 @@
 - Dynamic LoRA identity is Civitai version ID when available, otherwise normalized download URL. Display names are
   not asset identities. A repeated version keeps the first occurrence, so the global T2I character weight wins when
   Grok repeats that asset in a scene.
+- T2I and I2V LoRA eligibility is strictly separated. Exclude every effective T2I LoRA from I2V by stable asset
+  identity. Require Civitai `baseModel` `LTXV 2.3` for all remaining dynamic I2V LoRAs before accepting any manifest
+  or installed file, and key their resolved filenames with the I2V validation context. The workflow builder must
+  fail closed when that validation-specific key is absent. Exact mandatory DMD/JoyAI local files are the only
+  dynamic-metadata exception.
 - Civitai metadata remains public and must be validated before a transfer. Store the Civitai API token with the other
   DPAPI secrets, attach it only to Civitai download URLs, never log it, and verify the supplied SHA-256 when present.
 - An all-scene asset failure pauses the saved job in `error` and must not send a new request email. Manual retry
@@ -410,3 +415,28 @@
 - Live recovery: job `20260725-0115` was atomically abandoned with all eight unfinished scenes marked `cancelled`.
   The already-running supervisor observed `idle` on its next scheduled tick, successfully sent a fresh request,
   and transitioned to `waiting_for_grok` without restarting ComfyUI or the supervisor.
+
+### 2026-07-24 — strict LTXV 2.3 LoRA stage isolation
+
+- Changed files: `tenminvideomaker/constants.py`, `contracts.py`, `assets.py`, `server_api.py`, `nodes.py`,
+  `supervisor.py`, `workflow_builder.py`, `state_store.py`; focused tests in `tests/test_assets.py`,
+  `test_contracts.py`, `test_server_api.py`, `test_state_store.py`, `test_supervisor.py`, and
+  `test_workflow_builder.py`; revalidated workflow exports; `README.md`, `docs/architecture.md`,
+  `docs/user-guide.md`, and this file.
+- Cause: Grok repeated an Anima character LoRA under a scene I2V alias, and the prior router attached every
+  `scenes[].i2v.loras[]` item to the LTX model without checking model family. The installed file bypassed public
+  metadata lookup, contaminating completed clips.
+- Routing: effective I2V LoRAs exclude all effective T2I identities. Remaining dynamic I2V assets must be verified
+  by Civitai as `LTXV 2.3` before local lookup or download. Validated filenames use an `i2v:` context key, and
+  workflow construction refuses an unvalidated dynamic I2V mapping. Mandatory DMD and JoyAI remain exact local
+  constants.
+- Recovery: `requeue_i2v_for_job` atomically preserves cached frame paths, clears clip paths and I2V attempts, and
+  returns the saved job to asset resolution. Move contaminated clips to a project-owned quarantine directory before
+  invoking it.
+- Reproduction: provide one Civitai version in both `character.lora` and a differently named scene I2V entry, plus
+  one actual LTXV 2.3 scene LoRA. The generated I2V graph must contain DMD, JoyAI, and only the verified LTX asset.
+- Verification commands:
+  - `python -m compileall -q tenminvideomaker tests scripts __init__.py`
+  - `python -m unittest discover -s tests -v`
+  - `python scripts/export_workflows.py --install-approved-shared-copies`
+  - `git diff --check`

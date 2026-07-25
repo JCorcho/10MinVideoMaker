@@ -15,6 +15,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 from urllib.request import Request, urlopen
 
+from .constants import I2V_DYNAMIC_BASE_MODEL
 from .contracts import LoraSpec, civitai_version_id, lora_identity
 
 _FILENAME_UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
@@ -42,6 +43,7 @@ class AssetResolution:
     downloaded: bool
     error: str | None = None
     local_filename: str | None = None
+    base_model: str | None = None
 
     @property
     def succeeded(self) -> bool:
@@ -56,6 +58,7 @@ class CivitaiLoraMetadata:
     download_url: str
     sha256: str | None
     size_bytes: int | None
+    base_model: str | None = None
 
 
 def predictable_lora_filename(name: str) -> str:
@@ -86,6 +89,7 @@ def asset_resolution_from_mapping(value: Mapping[str, Any]) -> AssetResolution:
         local_filename=(
             str(value["local_filename"]) if value.get("local_filename") else None
         ),
+        base_model=str(value["base_model"]) if value.get("base_model") else None,
     )
 
 
@@ -95,9 +99,18 @@ class ComfyLoraAssetClient:
     def __init__(self, comfy_client: Any):
         self.comfy_client = comfy_client
 
-    def resolve_or_download(self, lora: LoraSpec) -> AssetResolution:
+    def resolve_or_download(
+        self,
+        lora: LoraSpec,
+        *,
+        expected_base_model: str | None = None,
+    ) -> AssetResolution:
         response = self.comfy_client.resolve_lora_asset(
-            {"kind": "dynamic", "lora": lora_to_mapping(lora)}
+            {
+                "kind": "dynamic",
+                "lora": lora_to_mapping(lora),
+                "expected_base_model": expected_base_model,
+            }
         )
         return asset_resolution_from_mapping(response)
 
@@ -140,20 +153,44 @@ class LoraAssetManager:
         self._downloader = downloader or self._download_with_urllib
         self._metadata_fetcher = metadata_fetcher or self._fetch_civitai_metadata
 
-    def resolve_or_download(self, lora: LoraSpec) -> AssetResolution:
+    def resolve_or_download(
+        self,
+        lora: LoraSpec,
+        *,
+        expected_base_model: str | None = None,
+    ) -> AssetResolution:
         filename = predictable_lora_filename(lora.name)
-        existing = self._find_existing(lora, (filename,))
-        if existing:
-            path, local_filename = existing
-            return AssetResolution(
-                lora.name,
-                path,
-                downloaded=False,
-                local_filename=local_filename,
-            )
-
         try:
-            metadata = self._metadata_fetcher(lora)
+            metadata = None
+            if expected_base_model is not None:
+                if expected_base_model != I2V_DYNAMIC_BASE_MODEL:
+                    raise AssetDownloadError(
+                        f"Unsupported required LoRA base model: {expected_base_model}."
+                    )
+                metadata = self._metadata_fetcher(lora)
+                if metadata is None or not metadata.base_model:
+                    raise AssetDownloadError(
+                        f"{lora.name} cannot be verified as an {expected_base_model} LoRA; "
+                        "dynamic I2V LoRAs must have Civitai version metadata."
+                    )
+                if not _base_models_match(metadata.base_model, expected_base_model):
+                    raise AssetDownloadError(
+                        f"{lora.name} is a {metadata.base_model} LoRA, not "
+                        f"{expected_base_model}; it was blocked from the LTX video model."
+                    )
+            else:
+                existing = self._find_existing(lora, (filename,))
+                if existing:
+                    path, local_filename = existing
+                    return AssetResolution(
+                        lora.name,
+                        path,
+                        downloaded=False,
+                        local_filename=local_filename,
+                    )
+
+            if metadata is None:
+                metadata = self._metadata_fetcher(lora)
             alternatives = (metadata.filename,) if metadata else ()
             existing = self._find_existing(lora, (filename, *alternatives))
             if existing:
@@ -164,6 +201,7 @@ class LoraAssetManager:
                     path,
                     downloaded=False,
                     local_filename=local_filename,
+                    base_model=metadata.base_model if metadata else None,
                 )
 
             destination = self.lora_directories[0] / filename
@@ -180,6 +218,7 @@ class LoraAssetManager:
                 destination,
                 downloaded=True,
                 local_filename=self._local_filename(destination),
+                base_model=metadata.base_model if metadata else None,
             )
         except (AssetDownloadError, OSError) as error:
             return AssetResolution(
@@ -189,8 +228,19 @@ class LoraAssetManager:
                 error=str(error),
             )
 
-    def resolve_many(self, loras: Iterable[LoraSpec]) -> tuple[AssetResolution, ...]:
-        return tuple(self.resolve_or_download(lora) for lora in loras)
+    def resolve_many(
+        self,
+        loras: Iterable[LoraSpec],
+        *,
+        expected_base_model: str | None = None,
+    ) -> tuple[AssetResolution, ...]:
+        return tuple(
+            self.resolve_or_download(
+                lora,
+                expected_base_model=expected_base_model,
+            )
+            for lora in loras
+        )
 
     def require_local(self, requirement: LocalLoraRequirement) -> AssetResolution:
         placeholder = LoraSpec(
@@ -475,6 +525,12 @@ class LoraAssetManager:
             download_url=download_url,
             sha256=sha256 if isinstance(sha256, str) and sha256 else None,
             size_bytes=size_bytes,
+            base_model=(
+                str(document["baseModel"]).strip()
+                if isinstance(document.get("baseModel"), str)
+                and str(document["baseModel"]).strip()
+                else None
+            ),
         )
 
 
@@ -484,6 +540,21 @@ def _sha256(path: Path) -> str:
         while chunk := handle.read(1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _base_models_match(actual: str, expected: str) -> bool:
+    """Compare the small set of known Civitai labels for the same LTX 2.3 family."""
+    aliases = {
+        "ltxv23": I2V_DYNAMIC_BASE_MODEL,
+        "ltxvideo23": I2V_DYNAMIC_BASE_MODEL,
+        "ltx23": I2V_DYNAMIC_BASE_MODEL,
+    }
+
+    def canonical(value: str) -> str:
+        normalized = re.sub(r"[^a-z0-9]+", "", value.casefold())
+        return aliases.get(normalized, normalized)
+
+    return canonical(actual) == canonical(expected)
 
 
 def _is_civitai_login_url(url: str) -> bool:

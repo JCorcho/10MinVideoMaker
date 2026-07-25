@@ -8,6 +8,7 @@ from typing import Any, Iterable, Mapping
 
 from .assets import predictable_lora_filename
 from .constants import (
+    I2V_DYNAMIC_BASE_MODEL,
     I2V_FIRST_PASS_SIGMAS,
     I2V_SAMPLER,
     I2V_SPATIAL_UPSCALER,
@@ -21,9 +22,9 @@ from .contracts import (
     JobPayload,
     LoraSpec,
     SceneSpec,
+    effective_i2v_loras,
     effective_t2i_loras,
     lora_identity,
-    unique_loras,
 )
 
 ANIMA_UNET = "CyberRealistic_AnimaSemi_V6.0.safetensors"
@@ -76,15 +77,6 @@ def _scene_prefix(job_id: str, stage: str, scene_id: int) -> str:
     return f"10MinVideoMaker/{job_id}/{stage}/scene_{scene_id:04d}"
 
 
-def _dynamic_i2v_loras(job: JobPayload, scene: SceneSpec) -> tuple[LoraSpec, ...]:
-    return unique_loras(
-        (
-            *((job.ltxv_character_lora,) if job.ltxv_character_lora else ()),
-            *scene.i2v.loras,
-        )
-    )
-
-
 def _local_lora_filename(
     lora: LoraSpec,
     resolved_filenames: Mapping[str, str] | None,
@@ -94,6 +86,20 @@ def _local_lora_filename(
         if resolved:
             return resolved
     return predictable_lora_filename(lora.name)
+
+
+def _validated_i2v_lora_filename(
+    lora: LoraSpec,
+    resolved_filenames: Mapping[str, str] | None,
+) -> str:
+    key = f"i2v:{lora_identity(lora)}"
+    resolved = resolved_filenames.get(key) if resolved_filenames else None
+    if not resolved:
+        raise WorkflowBuildError(
+            f"Dynamic I2V LoRA {lora.name} has not been verified as "
+            f"{I2V_DYNAMIC_BASE_MODEL}; refusing to attach it to the LTX model."
+        )
+    return resolved
 
 
 def _apply_t2i_loras(
@@ -318,12 +324,12 @@ def _apply_i2v_loras(
             strength_model=weight,
         )
         model = graph.output(loader)
-    for lora in _dynamic_i2v_loras(job, scene):
+    for lora in effective_i2v_loras(job, scene):
         loader = graph.add(
             "LoraLoaderModelOnly",
             f"Scene I2V LoRA: {lora.name}",
             model=model,
-            lora_name=_local_lora_filename(lora, resolved_filenames),
+            lora_name=_validated_i2v_lora_filename(lora, resolved_filenames),
             strength_model=lora.weight,
         )
         model = graph.output(loader)

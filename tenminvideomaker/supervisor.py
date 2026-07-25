@@ -14,11 +14,12 @@ from .artifacts import scene_clip_path, scene_frame_path
 from .assembly import AssemblyError, FfmpegAssembler, probe_video, validate_video_profile
 from .assets import AssetResolution, LocalLoraRequirement
 from .comfy_http import ComfyHttpClient, ComfyHttpError, find_video_output
-from .constants import MANDATORY_I2V_LORAS
+from .constants import I2V_DYNAMIC_BASE_MODEL, MANDATORY_I2V_LORAS
 from .contracts import (
     JobPayload,
     LoraSpec,
     SceneSpec,
+    effective_i2v_loras,
     effective_t2i_loras,
     lora_identity,
 )
@@ -358,17 +359,30 @@ class PipelineSupervisor:
         failures: dict[int, dict[str, str]] = {
             scene.scene_id: {} for scene in job.scenes
         }
-        cache: dict[str, AssetResolution] = {}
+        cache: dict[tuple[str, str | None], AssetResolution] = {}
         resolved_filenames: dict[str, str] = {}
 
-        def resolve(lora: LoraSpec) -> AssetResolution:
-            key = lora_identity(lora)
-            if key not in cache:
-                cache[key] = self.asset_manager.resolve_or_download(lora)
-                result = cache[key]
+        def resolve(
+            lora: LoraSpec,
+            *,
+            expected_base_model: str | None = None,
+        ) -> AssetResolution:
+            identity = lora_identity(lora)
+            cache_key = (identity, expected_base_model)
+            if cache_key not in cache:
+                cache[cache_key] = self.asset_manager.resolve_or_download(
+                    lora,
+                    expected_base_model=expected_base_model,
+                )
+                result = cache[cache_key]
                 if result.succeeded and result.local_filename:
-                    resolved_filenames[key] = result.local_filename
-            return cache[key]
+                    filename_key = (
+                        f"i2v:{identity}"
+                        if expected_base_model == I2V_DYNAMIC_BASE_MODEL
+                        else identity
+                    )
+                    resolved_filenames[filename_key] = result.local_filename
+            return cache[cache_key]
 
         def record_failure(scene_id: int, key: str, message: str) -> None:
             failures[scene_id][key] = message
@@ -382,17 +396,6 @@ class PipelineSupervisor:
                     key,
                     global_result.error or f"Missing {job.character.lora.name}",
                 )
-        if job.ltxv_character_lora:
-            ltx_character = resolve(job.ltxv_character_lora)
-            if not ltx_character.succeeded:
-                key = lora_identity(job.ltxv_character_lora)
-                for scene in job.scenes:
-                    record_failure(
-                        scene.scene_id,
-                        key,
-                        ltx_character.error
-                        or f"Missing {job.ltxv_character_lora.name}",
-                    )
         for filename, weight in MANDATORY_I2V_LORAS:
             result = self.asset_manager.require_local(LocalLoraRequirement(filename, weight))
             if not result.succeeded:
@@ -404,16 +407,23 @@ class PipelineSupervisor:
                     )
 
         for scene in job.scenes:
-            scene_loras = (
-                *effective_t2i_loras(scene, job.character),
-                *scene.i2v.loras,
-            )
-            for lora in scene_loras:
+            for lora in effective_t2i_loras(scene, job.character):
                 result = resolve(lora)
                 if not result.succeeded:
                     record_failure(
                         scene.scene_id,
                         lora_identity(lora),
+                        result.error or f"Missing {lora.name}",
+                    )
+            for lora in effective_i2v_loras(job, scene):
+                result = resolve(
+                    lora,
+                    expected_base_model=I2V_DYNAMIC_BASE_MODEL,
+                )
+                if not result.succeeded:
+                    record_failure(
+                        scene.scene_id,
+                        f"i2v:{lora_identity(lora)}",
                         result.error or f"Missing {lora.name}",
                     )
         return AssetPreparation(

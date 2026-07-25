@@ -21,6 +21,13 @@ server process's exact `folder_paths` roots and selectable filenames. Dynamic as
 version ID, falling back to normalized download URL, rather than display name. This prevents one version repeated
 under different JSON names from being downloaded or injected twice.
 
+T2I and I2V use separate eligibility sets. The global character LoRA and every scene T2I LoRA are excluded from
+I2V by stable asset identity, including aliases with different display names. Every remaining dynamic I2V candidate
+is resolved with an expected base of `LTXV 2.3`; Civitai `baseModel` metadata is checked before manifest or local-file
+acceptance, so an installed Anima/Pony file cannot bypass the guard. The supervisor stores validated I2V filenames
+under an I2V-specific key, and the workflow builder fails closed if that key is absent. Mandatory local DMD and JoyAI
+are the only exceptions because their exact filenames and weights are project constants.
+
 For a missing Civitai asset, public model-version metadata confirms that it is a LoRA, selects a primary
 virus-scanned SafeTensor, obtains its canonical filename/size/hash, and performs a second local lookup before any
 transfer. Downloads use the DPAPI-protected project Civitai token, redirect-following retries, an atomic partial file,

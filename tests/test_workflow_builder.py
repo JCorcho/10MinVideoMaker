@@ -12,6 +12,7 @@ from tenminvideomaker.contracts import lora_identity, parse_job_payload
 from tenminvideomaker.workflow_builder import (
     I2V_BASE_HEIGHT,
     I2V_BASE_WIDTH,
+    WorkflowBuildError,
     build_i2v_api_workflow,
     build_t2i_api_workflow,
     validate_against_object_info,
@@ -190,6 +191,59 @@ class WorkflowBuilderTests(unittest.TestCase):
                 ("JoyAI-Echo-content_r256.safetensors", 0.5),
             ],
         )
+
+    def test_i2v_quarantines_t2i_alias_and_loads_only_validated_dynamic_ltx(self) -> None:
+        raw = payload()
+        raw["scenes"][0]["i2v"]["loras"] = [
+            {
+                "name": "Character alias",
+                "download_url": "https://civitai.com/api/download/models/3184055",
+                "weight": 0.8,
+            },
+            {
+                "name": "LTX motion",
+                "download_url": "https://civitai.com/api/download/models/3082662",
+                "weight": 0.7,
+            },
+        ]
+        job = parse_job_payload(raw)
+        motion = job.scenes[0].i2v.loras[1]
+        build = build_i2v_api_workflow(
+            job,
+            job.scenes[0],
+            Path(r"D:\output\10minfinals\.work\job\frames\scene_0001.png"),
+            {f"i2v:{lora_identity(motion)}": "ltx/Motion.safetensors"},
+        )
+        loras = nodes_of_type(build.api, "LoraLoaderModelOnly")
+        self.assertEqual(
+            [node["inputs"]["lora_name"] for node in loras],
+            [
+                "LTX2.3_DMD_reshaped_r256.safetensors",
+                "JoyAI-Echo-content_r256.safetensors",
+                "ltx/Motion.safetensors",
+            ],
+        )
+        self.assertNotIn(
+            "Character",
+            " ".join(node["_meta"]["title"] for node in loras),
+        )
+
+    def test_i2v_refuses_unvalidated_dynamic_lora_mapping(self) -> None:
+        raw = payload()
+        raw["scenes"][0]["i2v"]["loras"] = [
+            {
+                "name": "Unvalidated motion",
+                "download_url": "https://civitai.com/api/download/models/3082662",
+                "weight": 0.7,
+            }
+        ]
+        job = parse_job_payload(raw)
+        with self.assertRaisesRegex(WorkflowBuildError, "has not been verified"):
+            build_i2v_api_workflow(
+                job,
+                job.scenes[0],
+                Path(r"D:\output\10minfinals\.work\job\frames\scene_0001.png"),
+            )
 
     def test_resolved_comfy_filename_is_used_for_dynamic_lora(self) -> None:
         resolved_name = r"characters\Elsa-canonical.safetensors"
