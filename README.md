@@ -10,6 +10,9 @@ implemented. A project-local one-click launcher now configures Gmail securely, v
 when needed, configures Civitai downloads, and launches the supervisor. The first production job rendered all eight
 scenes successfully; its geometry recovery and final assembly are documented below.
 
+The first completed master is `D:\output\10minfinals\20260724-2249_final.mp4`: 704×1248, 24 fps, stereo AAC,
+3,848 frames, and 160.35 seconds.
+
 ## One-click start
 
 Double-click `Start 10MinVideoMaker.bat` in the repository root. On first run it:

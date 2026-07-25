@@ -5,7 +5,8 @@
 The project can validate incoming jobs, poll/send Gmail, resolve LoRAs, build and queue per-scene generation graphs,
 cache the exact T2I frame, download the matching I2V clip, validate/stitch completed clips, request the next job, and
 recover unfinished scenes. Gmail has been authenticated and the first received job remains durably saved for retry.
-No media has been rendered during implementation.
+Job `20260724-2249` completed at `D:\output\10minfinals\20260724-2249_final.mp4`; the supervisor requested the next
+job and was then intentionally left stopped so the next reply cannot begin rendering without the user.
 
 ## Workflow templates
 

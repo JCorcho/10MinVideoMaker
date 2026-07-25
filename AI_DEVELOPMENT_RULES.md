@@ -268,3 +268,7 @@
   - Live `/object_info` validation accepted the regenerated workflows; all have zero overlaps and no nodes outside
     their group.
   - FFprobe confirmed all eight repaired clips are 704×1248 at 24 fps with audio and unchanged frame counts.
+  - The one-tick supervisor recovery stream-copied the eight clips into
+    `D:\output\10minfinals\20260724-2249_final.mp4` (704×1248, 24 fps, 3,848 frames, 160.35 seconds, stereo AAC),
+    transitioned to `waiting_for_grok`, and sent the next-job request email. The continuous supervisor was left
+    stopped after the one-tick recovery.
