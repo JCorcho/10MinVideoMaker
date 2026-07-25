@@ -115,29 +115,50 @@ class AssetTests(unittest.TestCase):
             expected_base_model="LTXV 2.3",
         )
         self.assertFalse(result.succeeded)
-        self.assertIn("Anima LoRA, not LTXV 2.3", result.error)
+        self.assertIn("Anima LoRA, which is not compatible with LTXV 2.3", result.error)
 
-    def test_existing_ltxv_23_lora_passes_family_validation(self) -> None:
+    def test_existing_ltx_2_family_loras_pass_family_validation(self) -> None:
         installed = self.lora_directory / "Motion.safetensors"
         installed.parent.mkdir(parents=True)
         installed.write_bytes(b"weights")
+        for base_model in ("LTXV2", "LTXV 2.0", "LTX Video 2.2", "LTXV 2.3"):
+            with self.subTest(base_model=base_model):
+                metadata = CivitaiLoraMetadata(
+                    version_id=123,
+                    model_id=456,
+                    filename=installed.name,
+                    download_url="https://civitai.com/api/download/models/123",
+                    sha256=None,
+                    size_bytes=7,
+                    base_model=base_model,
+                )
+                result = self.manager(
+                    metadata_fetcher=lambda _lora, value=metadata: value,
+                ).resolve_or_download(
+                    LoraSpec("Motion", metadata.download_url, 0.8, version_id=123),
+                    expected_base_model="LTXV 2.3",
+                )
+                self.assertTrue(result.succeeded)
+                self.assertEqual(result.base_model, base_model)
+
+    def test_ltxv_1_family_lora_is_blocked_from_ltxv_23(self) -> None:
         metadata = CivitaiLoraMetadata(
             version_id=123,
             model_id=456,
-            filename=installed.name,
+            filename="Legacy.safetensors",
             download_url="https://civitai.com/api/download/models/123",
             sha256=None,
             size_bytes=7,
-            base_model="LTXV 2.3",
+            base_model="LTXV 1.9",
         )
         result = self.manager(
             metadata_fetcher=lambda _lora: metadata,
         ).resolve_or_download(
-            LoraSpec("Motion", metadata.download_url, 0.8, version_id=123),
+            LoraSpec("Legacy", metadata.download_url, 0.8, version_id=123),
             expected_base_model="LTXV 2.3",
         )
-        self.assertTrue(result.succeeded)
-        self.assertEqual(result.base_model, "LTXV 2.3")
+        self.assertFalse(result.succeeded)
+        self.assertIn("not compatible with LTXV 2.3", result.error)
 
     def test_authentication_failure_is_not_retried(self) -> None:
         calls = []

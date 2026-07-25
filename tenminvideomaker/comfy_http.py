@@ -102,6 +102,29 @@ class ComfyHttpClient:
         if any(_queue_prompt_id(item) == prompt_id for item in running):
             self._json_request("POST", "/interrupt", {}, timeout=10)
 
+    def cancel_project_prompts(self) -> tuple[str, ...]:
+        """Cancel queued/running prompts owned by this project client only."""
+        queue = self._json_request("GET", "/queue", timeout=10)
+        pending = queue.get("queue_pending", []) if isinstance(queue, Mapping) else []
+        running = queue.get("queue_running", []) if isinstance(queue, Mapping) else []
+        pending_ids = [
+            prompt_id
+            for item in pending
+            if _queue_client_id(item) == self.client_id
+            if (prompt_id := _queue_prompt_id(item)) is not None
+        ]
+        running_ids = [
+            prompt_id
+            for item in running
+            if _queue_client_id(item) == self.client_id
+            if (prompt_id := _queue_prompt_id(item)) is not None
+        ]
+        if pending_ids:
+            self._json_request("POST", "/queue", {"delete": pending_ids}, timeout=10)
+        if running_ids:
+            self._json_request("POST", "/interrupt", {}, timeout=10)
+        return tuple(dict.fromkeys((*pending_ids, *running_ids)))
+
     def free_memory(self) -> None:
         self._json_request(
             "POST",
@@ -151,6 +174,17 @@ class ComfyHttpClient:
 def _queue_prompt_id(item: Any) -> str | None:
     if isinstance(item, list) and len(item) > 1 and isinstance(item[1], str):
         return item[1]
+    return None
+
+
+def _queue_client_id(item: Any) -> str | None:
+    if (
+        isinstance(item, list)
+        and len(item) > 3
+        and isinstance(item[3], Mapping)
+        and isinstance(item[3].get("client_id"), str)
+    ):
+        return item[3]["client_id"]
     return None
 
 

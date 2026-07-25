@@ -19,9 +19,10 @@ uses 30-step `res_3m_ode` followed by 30-step `res_5s_ode`, then the reference Y
 `FaceDetailer` before caching the scene frame.
 
 LoRA routing is stage-safe. Anima/Pony character and scene LoRAs are T2I-only and can never enter the LTX model
-chain. Dynamic I2V LoRAs must be verified from Civitai metadata as `LTXV 2.3` before workflow construction; an
-unverifiable or different-base LoRA is rejected even when its file is already installed. DMD 1.0 and JoyAI 0.5
-remain the two mandatory local LTX LoRAs.
+chain. Dynamic I2V LoRAs must be verified from Civitai metadata as part of the LTX 2.x family (`LTXV2`,
+`LTXV 2.0`–`LTXV 2.3`, and equivalent labels) before workflow construction; an unverifiable, LTX 1.x, or
+image-model LoRA is rejected even when its file is already installed. DMD 1.0 and JoyAI 0.5 remain the two
+mandatory local LTX LoRAs.
 
 Every newly generated scene also has a metadata-free Patreon delivery branch. The exact approved `wm.png`
 watermark is applied only to Discord media: images are sent as lossless PNG at quality 100, and videos are sent as
@@ -40,9 +41,10 @@ Double-click `Start 10MinVideoMaker.bat` in the repository root. On first run it
 4. Saves non-secrets in the ignored `.env` file and secrets encrypted with Windows DPAPI in ignored `runtime/`.
 5. Securely collects the Discord Patreon-delivery webhook when missing.
 6. Shows the optional settings editor when requested, including a Discord webhook replacement action.
-7. Validates Gmail and configured Drive access without sending a message, performs a ComfyUI health check, offers to
-   retry an unfinished saved job, and starts the supervisor. Declining the retry marks unfinished scenes cancelled,
-   preserves the saved audit history, and releases the pipeline to accept a new email.
+7. Validates Gmail and configured Drive access without sending a message, performs a ComfyUI health check, and
+   offers to resume or abandon any active saved job before starting the supervisor. Declining cancels only this
+   project's queued/running ComfyUI prompts, marks unfinished scenes cancelled, preserves the saved audit history,
+   and releases the pipeline to accept a new email.
 
 On later runs, valid required settings are reused and the launcher asks whether to change optional settings before
 starting. See `docs/user-guide.md` for OAuth setup details and safe setup-only commands.
@@ -61,7 +63,7 @@ Windows' context menu.
   attachment-first extraction and accepts body JSON or a Google Drive file link; scheduling belongs to the
   supervisor. Private-file sign-in redirects fall back to the authenticated Drive API.
 - **Resolve LoRAs** — uses the live ComfyUI process's active LoRA roots, resolves dynamic assets, verifies mandatory
-  I2V LoRAs, and blocks non-LTXV-2.3 dynamic LoRAs from I2V.
+  I2V LoRAs, accepts verified LTX 2.x dynamic LoRAs for LTX 2.3, and blocks LTX 1.x and image-model LoRAs from I2V.
 - **Release Memory** — runs Python and CUDA cache cleanup.
 - **Save Scene Frame** — atomically caches a deterministic 704×1248 PNG for the matching scene.
 - **Stitch Clips** — verifies every clip is 704×1248 at 24 fps before FFmpeg concat.

@@ -40,13 +40,13 @@ Do not queue the example workflows for a real render without replacing the examp
 
 - `character.lora` and `scenes[].t2i.loras[]` are Anima/Pony T2I assets only.
 - The same asset is ignored if Grok repeats or aliases it in `scenes[].i2v.loras[]`.
-- `ltxv_character_lora` and every remaining `scenes[].i2v.loras[]` item must report Civitai base model
-  `LTXV 2.3`. A different or unverifiable base is rejected before the LTX workflow is queued, even if the file
-  already exists locally.
+- `ltxv_character_lora` and every remaining `scenes[].i2v.loras[]` item must report a Civitai LTX 2.x base model.
+  Compact `LTXV2` and versioned labels such as `LTXV 2.0`, `LTXV 2.2`, and `LTXV 2.3` are accepted for LTX 2.3.
+  LTX 1.x, image-model, and unverifiable bases are rejected before the workflow is queued, even if the file exists.
 - Mandatory DMD 1.0 and JoyAI 0.5 are applied separately and are not sourced from scene JSON.
 
-This means Grok should list only genuine LTXV 2.3 motion/character LoRAs in I2V fields. It should never repeat an
-Anima, Pony, SDXL, Flux, or other image-model LoRA there.
+This means Grok may list genuine LTX 2.x motion/character LoRAs in I2V fields. It should never repeat an Anima,
+Pony, SDXL, Flux, or other image-model LoRA there.
 
 ### Patreon Discord delivery
 
@@ -237,10 +237,10 @@ can download LoRAs and begin generation. Use the no-render checks below instead.
   retaining each deterministic cached T2I frame; invalid clips must be quarantined before resuming.
 - If asset preparation fails for every scene, the supervisor pauses in `error`, prints each cause in the console,
   preserves the job, and does not request a replacement email.
-- Relaunching offers to retry unfinished scenes from the saved job; successful scenes and attempt counters remain
-  intact. Answering **no** abandons that saved job: unfinished scenes become `cancelled`, its payload and diagnostic
-  history remain in SQLite, and the active pipeline returns to `idle` so the supervisor can request and accept a
-  different job.
+- Relaunching offers to resume or abandon any active saved job, including one stopped during asset resolution,
+  T2I, I2V, or stitching. Successful scenes and attempt counters remain intact. Answering **no** first cancels only
+  queued/running prompts owned by the `10MinVideoMaker-supervisor` ComfyUI client, then marks unfinished scenes
+  `cancelled`; the payload and diagnostic history remain in SQLite, and the pipeline returns to `idle`.
 - A clip geometry or FFmpeg assembly failure pauses in `error`, preserves every completed clip, and prints the exact
   mismatch rather than retrying the stitch forever.
 - A server availability failure records `error`, runs the path-verified restart script, and requeues unfinished scenes.

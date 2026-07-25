@@ -600,34 +600,44 @@ def setup_environment(
 def offer_saved_job_retry(
     *,
     input_func: Callable[[str], str] = input,
+    comfy_client: ComfyHttpClient | None = None,
 ) -> str | None:
     store = PipelineStateStore(PROJECT_ROOT / "runtime" / "pipeline.sqlite3")
     snapshot = store.snapshot()
-    if not snapshot.job_id or snapshot.state not in {
-        PipelineState.ERROR,
-        PipelineState.WAITING_FOR_GROK,
-    }:
+    if not snapshot.job_id or snapshot.state == PipelineState.IDLE:
         return None
     records = store.scene_records(snapshot.job_id)
     unfinished = [record for record in records if record.state != SceneState.SUCCEEDED]
-    if not unfinished:
+    if not unfinished and snapshot.state == PipelineState.WAITING_FOR_GROK:
         return None
     print(
-        f"\nSaved job {snapshot.job_id} has {len(unfinished)} unfinished scene(s)."
+        f"\nSaved job {snapshot.job_id} is in {snapshot.state.value} "
+        f"with {len(unfinished)} unfinished scene(s)."
     )
     if not _yes_no(
-        "Retry this saved job before accepting another email?",
+        "Resume this saved job before accepting another email?",
         default=True,
         input_func=input_func,
     ):
+        if comfy_client is not None:
+            cancelled_prompts = comfy_client.cancel_project_prompts()
+            if cancelled_prompts:
+                print(
+                    f"Cancelled {len(cancelled_prompts)} active ComfyUI prompt(s) "
+                    "owned by 10MinVideoMaker."
+                )
         store.abandon_job(snapshot.job_id)
         print(
             f"Saved job {snapshot.job_id} was abandoned. Its audit history was preserved, "
             "and the pipeline can now accept a new job."
         )
         return None
-    store.retry_job(snapshot.job_id)
-    print(f"Saved job {snapshot.job_id} is queued for asset resolution.")
+    if unfinished:
+        store.retry_job(snapshot.job_id)
+        print(f"Saved job {snapshot.job_id} is queued for asset resolution.")
+    else:
+        store.transition(PipelineState.DOWNLOADING_ASSETS, job_id=snapshot.job_id)
+        print(f"Saved job {snapshot.job_id} is queued to finish final assembly.")
     return snapshot.job_id
 
 
@@ -667,7 +677,11 @@ def main() -> int:
             print("\nSetup is complete. The supervisor was not started.")
             return 0
         _ensure_comfyui(environment)
-        offer_saved_job_retry()
+        offer_saved_job_retry(
+            comfy_client=ComfyHttpClient(
+                environment.get("TENMIN_COMFY_URL", "http://127.0.0.1:8188")
+            )
+        )
     except (
         ConfigurationError,
         MailConfigurationError,

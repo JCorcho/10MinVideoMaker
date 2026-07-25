@@ -47,16 +47,18 @@
   not asset identities. A repeated version keeps the first occurrence, so the global T2I character weight wins when
   Grok repeats that asset in a scene.
 - T2I and I2V LoRA eligibility is strictly separated. Exclude every effective T2I LoRA from I2V by stable asset
-  identity. Require Civitai `baseModel` `LTXV 2.3` for all remaining dynamic I2V LoRAs before accepting any manifest
-  or installed file, and key their resolved filenames with the I2V validation context. The workflow builder must
-  fail closed when that validation-specific key is absent. Exact mandatory DMD/JoyAI local files are the only
-  dynamic-metadata exception.
+  identity. Require a verified Civitai LTX 2.x `baseModel` for all remaining dynamic I2V LoRAs before accepting any
+  manifest or installed file; accept compact `LTXV2` and versioned 2.x labels for the LTX 2.3 target, but reject LTX
+  1.x, image-model, and unverifiable assets. Key resolved filenames with the I2V validation context. The workflow
+  builder must fail closed when that validation-specific key is absent. Exact mandatory DMD/JoyAI local files are
+  the only dynamic-metadata exception.
 - Civitai metadata remains public and must be validated before a transfer. Store the Civitai API token with the other
   DPAPI secrets, attach it only to Civitai download URLs, never log it, and verify the supplied SHA-256 when present.
 - An all-scene asset failure pauses the saved job in `error` and must not send a new request email. Manual retry
   requeues only unfinished scenes while preserving completed scenes and attempt counters.
-- Declining a saved-job retry must atomically mark unfinished scenes cancelled, preserve the job and scene audit
-  history, and clear the active pipeline pointer to `idle`; returning `None` without a state transition is invalid.
+- The launcher must offer resume/abandon for every active saved state, not only `error`. Declining must cancel only
+  ComfyUI prompts carrying the project client ID, atomically mark unfinished scenes cancelled, preserve job/scene
+  audit history, and clear the active pipeline pointer to `idle`; returning without a state transition is invalid.
 - Assembly/profile failures must also transition to `error` and preserve successful scenes instead of escaping the
   supervisor tick in `stitching`.
 - Patreon delivery is a parallel output branch. Preserve clean cached frames and clean deterministic clips as the
@@ -468,4 +470,26 @@
   - `python -m unittest discover -s tests -v`
   - live `/object_info` validation of both delivery graphs
   - `python scripts/export_workflows.py --install-approved-shared-copies`
+  - `git diff --check`
+
+### 2026-07-25 — LTX 2.x compatibility and active-job cancellation
+
+- Changed files: `tenminvideomaker/assets.py`, `tenminvideomaker/comfy_http.py`,
+  `scripts/setup_and_start.py`, focused tests in `tests/test_assets.py`, `tests/test_comfy_http.py`, and
+  `tests/test_setup_and_start.py`, plus `README.md`, `docs/architecture.md`, `docs/user-guide.md`, and this file.
+- Cause: Civitai reports some compatible LTX 2 LoRAs with the compact `LTXV2` base label, which the exact
+  `LTXV 2.3` comparison rejected. The launcher also offered its saved-job choice only from `error` or the uncommon
+  unfinished `waiting_for_grok` state, so restarting during T2I/I2V silently resumed the saved batch.
+- Routing: the I2V gate now accepts verified LTX 2.x family labels for the LTX 2.3 target while retaining rejection
+  of LTX 1.x and image-model LoRAs. The launcher prompts for every active saved state, can resume an assembly-only
+  job, and on abandonment cancels pending/running ComfyUI prompts only when their queue metadata matches the
+  `10MinVideoMaker-supervisor` client ID.
+- Live recovery: supervisor PID 10896 and its scene prompt were stopped/interrupted; job `20260725-0505` was
+  abandoned with five successful scenes preserved and fifteen unfinished scenes marked `cancelled`. No artifacts
+  were deleted.
+- Verification commands:
+  - `python -m unittest discover -s tests -v`
+  - `python -m compileall -q tenminvideomaker tests scripts __init__.py`
+  - embedded-Python unit tests and compilation
+  - live no-render resolution of an existing Civitai `LTXV2` LoRA through the loopback route
   - `git diff --check`

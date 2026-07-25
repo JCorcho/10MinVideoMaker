@@ -37,6 +37,54 @@ class ComfyHttpTests(unittest.TestCase):
         )
         self.assertTrue(response["succeeded"])
 
+    def test_cancel_project_prompts_leaves_other_clients_untouched(self) -> None:
+        client = ComfyHttpClient(client_id="10MinVideoMaker-supervisor")
+        queue = {
+            "queue_pending": [
+                [1, "project-pending", {}, {"client_id": client.client_id}, []],
+                [2, "other-pending", {}, {"client_id": "another-client"}, []],
+            ],
+            "queue_running": [
+                [3, "project-running", {}, {"client_id": client.client_id}, []],
+                [4, "other-running", {}, {"client_id": "another-client"}, []],
+            ],
+        }
+        with patch.object(
+            client,
+            "_json_request",
+            side_effect=[queue, {}, {}],
+        ) as request:
+            cancelled = client.cancel_project_prompts()
+
+        self.assertEqual(cancelled, ("project-pending", "project-running"))
+        self.assertEqual(
+            request.call_args_list,
+            [
+                unittest.mock.call("GET", "/queue", timeout=10),
+                unittest.mock.call(
+                    "POST",
+                    "/queue",
+                    {"delete": ["project-pending"]},
+                    timeout=10,
+                ),
+                unittest.mock.call("POST", "/interrupt", {}, timeout=10),
+            ],
+        )
+
+    def test_cancel_project_prompts_does_nothing_for_other_clients(self) -> None:
+        client = ComfyHttpClient(client_id="10MinVideoMaker-supervisor")
+        queue = {
+            "queue_pending": [
+                [1, "other-pending", {}, {"client_id": "another-client"}, []]
+            ],
+            "queue_running": [
+                [2, "other-running", {}, {"client_id": "another-client"}, []]
+            ],
+        }
+        with patch.object(client, "_json_request", return_value=queue) as request:
+            self.assertEqual(client.cancel_project_prompts(), ())
+        request.assert_called_once_with("GET", "/queue", timeout=10)
+
 
 if __name__ == "__main__":
     unittest.main()

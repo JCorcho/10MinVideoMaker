@@ -175,8 +175,9 @@ class LoraAssetManager:
                     )
                 if not _base_models_match(metadata.base_model, expected_base_model):
                     raise AssetDownloadError(
-                        f"{lora.name} is a {metadata.base_model} LoRA, not "
-                        f"{expected_base_model}; it was blocked from the LTX video model."
+                        f"{lora.name} is a {metadata.base_model} LoRA, which is not "
+                        f"compatible with {expected_base_model}; it was blocked from "
+                        "the LTX video model."
                     )
             else:
                 existing = self._find_existing(lora, (filename,))
@@ -543,18 +544,16 @@ def _sha256(path: Path) -> str:
 
 
 def _base_models_match(actual: str, expected: str) -> bool:
-    """Compare the small set of known Civitai labels for the same LTX 2.3 family."""
-    aliases = {
-        "ltxv23": I2V_DYNAMIC_BASE_MODEL,
-        "ltxvideo23": I2V_DYNAMIC_BASE_MODEL,
-        "ltx23": I2V_DYNAMIC_BASE_MODEL,
-    }
+    """Accept Civitai's LTX 2.x labels when targeting the LTX 2.3 model."""
 
     def canonical(value: str) -> str:
-        normalized = re.sub(r"[^a-z0-9]+", "", value.casefold())
-        return aliases.get(normalized, normalized)
+        return re.sub(r"[^a-z0-9]+", "", value.casefold())
 
-    return canonical(actual) == canonical(expected)
+    actual_label = canonical(actual)
+    expected_label = canonical(expected)
+    if expected_label == canonical(I2V_DYNAMIC_BASE_MODEL):
+        return re.fullmatch(r"(?:ltx|ltxv|ltxvideo)2\d*", actual_label) is not None
+    return actual_label == expected_label
 
 
 def _is_civitai_login_url(url: str) -> bool:

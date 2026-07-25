@@ -23,10 +23,11 @@ under different JSON names from being downloaded or injected twice.
 
 T2I and I2V use separate eligibility sets. The global character LoRA and every scene T2I LoRA are excluded from
 I2V by stable asset identity, including aliases with different display names. Every remaining dynamic I2V candidate
-is resolved with an expected base of `LTXV 2.3`; Civitai `baseModel` metadata is checked before manifest or local-file
-acceptance, so an installed Anima/Pony file cannot bypass the guard. The supervisor stores validated I2V filenames
-under an I2V-specific key, and the workflow builder fails closed if that key is absent. Mandatory local DMD and JoyAI
-are the only exceptions because their exact filenames and weights are project constants.
+is resolved for the LTX 2.3 target; Civitai `baseModel` metadata must identify the asset as LTX 2.x. This includes
+Civitai's compact `LTXV2` label and versioned 2.x labels, while rejecting LTX 1.x, Anima, Pony, SDXL, Flux, and
+unverifiable assets before manifest or local-file acceptance. The supervisor stores validated I2V filenames under
+an I2V-specific key, and the workflow builder fails closed if that key is absent. Mandatory local DMD and JoyAI are
+the only exceptions because their exact filenames and weights are project constants.
 
 For a missing Civitai asset, public model-version metadata confirms that it is a LoRA, selects a primary
 virus-scanned SafeTensor, obtains its canonical filename/size/hash, and performs a second local lookup before any
@@ -77,14 +78,16 @@ failure. Authentication/network failures leave the email unread for retry, while
 payload is claimed as invalid under the existing mailbox rules.
 
 If every scene fails asset preparation, the supervisor transitions to `error` and stops polling for replacement
-jobs. The one-click launcher detects that saved job and offers an atomic retry: unfinished scene errors and prompt IDs
-are cleared, succeeded scenes remain untouched, and attempt counters remain durable. A partial asset failure still
-allows successful scenes to render and stitch.
+jobs. The one-click launcher detects any active saved state, including asset resolution, T2I, I2V, stitching, and
+error, and offers an atomic resume or abandonment. Resume clears unfinished scene errors and prompt IDs while
+leaving succeeded scenes and attempt counters durable. A saved stitching job with no unfinished scenes can resume
+final assembly. A partial asset failure still allows successful scenes to render and stitch.
 
-Declining that retry performs a separate atomic abandonment transition. Unfinished scenes are marked `cancelled`,
-their attempt history and the original job payload remain available for diagnosis, and the singleton pipeline state
-is cleared to `idle` with no active job. This prevents the supervisor from reopening the rejected job while allowing
-the next idle tick to request and accept a new payload.
+Declining performs a separate atomic abandonment transition. Before changing durable state, the launcher asks
+ComfyUI to delete pending prompts and interrupt a running prompt only when its queue metadata carries the
+`10MinVideoMaker-supervisor` client ID. Unfinished scenes are then marked `cancelled`, their attempt history and the
+original job payload remain available for diagnosis, and the singleton pipeline state is cleared to `idle` with no
+active job. This prevents the supervisor from reopening the rejected job without touching other ComfyUI clients.
 
 ## Production profile
 

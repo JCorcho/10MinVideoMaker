@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 import tempfile
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import scripts.setup_and_start as setup_module
 from scripts.setup_and_start import (
@@ -227,6 +227,88 @@ class SetupAndStartTests(unittest.TestCase):
             self.assertIsNone(snapshot.job_id)
             self.assertEqual(record.state, SceneState.CANCELLED)
             self.assertIn("Abandoned by the user", record.error)
+
+    def test_launcher_offers_resume_for_interrupted_running_job(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = PipelineStateStore(root / "runtime" / "pipeline.sqlite3")
+            job = parse_job_payload(payload())
+            store.claim_job(job)
+            store.begin_scene_stage(
+                job.job_id,
+                1,
+                PipelineState.RUNNING_I2V,
+                prompt_id="active-prompt",
+            )
+
+            with patch.object(setup_module, "PROJECT_ROOT", root):
+                resumed = offer_saved_job_retry(input_func=_answers(""))
+
+            self.assertEqual(resumed, job.job_id)
+            self.assertEqual(store.snapshot().state, PipelineState.DOWNLOADING_ASSETS)
+            self.assertEqual(store.scene_states(job.job_id), {1: SceneState.PENDING})
+            self.assertIsNone(store.scene_records(job.job_id)[0].prompt_id)
+
+    def test_declining_running_job_cancels_project_prompt_before_abandon(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = PipelineStateStore(root / "runtime" / "pipeline.sqlite3")
+            job = parse_job_payload(payload())
+            store.claim_job(job)
+            store.begin_scene_stage(
+                job.job_id,
+                1,
+                PipelineState.RUNNING_T2I,
+                prompt_id="active-prompt",
+            )
+            comfy_client = Mock()
+            comfy_client.cancel_project_prompts.return_value = ("active-prompt",)
+
+            with patch.object(setup_module, "PROJECT_ROOT", root):
+                resumed = offer_saved_job_retry(
+                    input_func=_answers("n"),
+                    comfy_client=comfy_client,
+                )
+
+            self.assertIsNone(resumed)
+            comfy_client.cancel_project_prompts.assert_called_once_with()
+            self.assertEqual(store.snapshot().state, PipelineState.IDLE)
+            self.assertEqual(
+                store.scene_records(job.job_id)[0].state,
+                SceneState.CANCELLED,
+            )
+
+    def test_launcher_can_resume_final_assembly_with_no_unfinished_scenes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = PipelineStateStore(root / "runtime" / "pipeline.sqlite3")
+            job = parse_job_payload(payload())
+            store.claim_job(job)
+            store.set_scene_state(job.job_id, 1, SceneState.SUCCEEDED)
+            store.transition(PipelineState.STITCHING, job_id=job.job_id)
+
+            with patch.object(setup_module, "PROJECT_ROOT", root):
+                resumed = offer_saved_job_retry(input_func=_answers(""))
+
+            self.assertEqual(resumed, job.job_id)
+            self.assertEqual(store.snapshot().state, PipelineState.DOWNLOADING_ASSETS)
+
+    def test_completed_waiting_job_does_not_prompt_on_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = PipelineStateStore(root / "runtime" / "pipeline.sqlite3")
+            job = parse_job_payload(payload())
+            store.claim_job(job)
+            store.set_scene_state(job.job_id, 1, SceneState.SUCCEEDED)
+            store.transition(PipelineState.WAITING_FOR_GROK, job_id=job.job_id)
+
+            with patch.object(setup_module, "PROJECT_ROOT", root):
+                resumed = offer_saved_job_retry(
+                    input_func=lambda _prompt: self.fail("restart must not prompt")
+                )
+
+            self.assertIsNone(resumed)
+            self.assertEqual(store.snapshot().state, PipelineState.WAITING_FOR_GROK)
 
 
 if __name__ == "__main__":
