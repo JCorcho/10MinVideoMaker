@@ -81,7 +81,9 @@ shared GUI copies and runtime-generated API graphs receive the encrypted runtime
 
 The controlled Windows restart script resolves the expected Easy Install paths, verifies that the process listening
 on port 8188 is the expected embedded Python executable, stops only that process, launches the unchanged
-`Start ComfyUI.bat` hidden, and waits for HTTP health. It is called only for fatal ComfyUI availability failures.
+`Start ComfyUI.bat` hidden, and waits for HTTP health. It is called for fatal ComfyUI availability failures and once
+at GUI takeover when the live Save Scene Frame contract lacks revision support. The takeover reload is refused
+while any ComfyUI prompt is running or pending.
 
 The one-click launcher is also project-local; it does not edit shared ComfyUI startup scripts or global environment
 configuration. Non-secret settings live in `D:\LTX_Supervisor_Storage\config\settings.env`. App Passwords, OAuth

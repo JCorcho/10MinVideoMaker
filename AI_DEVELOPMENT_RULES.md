@@ -580,6 +580,9 @@
 - Ownership/collision: a project lock and exact legacy-process detection enforce one supervisor owner. Active-render
   collisions either wait or cancel only this project's prompts, preserve the interrupted job history, and then run
   the queued revision batch.
+- Live activation: GUI startup verifies that `10MinVideoMaker_SaveSceneFrame` exposes the `revision` input. It may
+  invoke the existing path-verified ComfyUI restart only when the entire queue is empty; otherwise startup refuses
+  and leaves active work untouched.
 - Reproduction: launch `Start 10MinVideoMaker.bat`, select a historical job/scene, mark multiple scenes, edit a seed
   or prompt, choose a supported remake mode, and submit. Do not submit during no-render validation.
 - Verification commands:

@@ -26,7 +26,7 @@ from tenminvideomaker.ownership import (
 from tenminvideomaker.state_store import PipelineState, PipelineStateStore
 from tenminvideomaker.storage import StorageLayout, migrate_legacy_storage
 
-from scripts.run_supervisor import build_supervisor
+from scripts.run_supervisor import build_supervisor, restart_comfyui
 
 
 LOGGER = logging.getLogger("10MinVideoMaker.gui-launcher")
@@ -38,6 +38,29 @@ SAFE_TAKEOVER_STATES = frozenset(
         PipelineState.ERROR,
     }
 )
+
+
+def _save_frame_revision_loaded(comfy: ComfyHttpClient) -> bool:
+    document = comfy.object_info("10MinVideoMaker_SaveSceneFrame")
+    node = document.get("10MinVideoMaker_SaveSceneFrame", {})
+    required = node.get("input", {}).get("required", {})
+    return isinstance(required, dict) and "revision" in required
+
+
+def _ensure_current_node_contract(comfy: ComfyHttpClient) -> None:
+    if _save_frame_revision_loaded(comfy):
+        return
+    running, pending = comfy.queue_counts()
+    if running or pending:
+        raise OwnershipError(
+            "ComfyUI must reload the updated 10MinVideoMaker nodes, but its queue is busy. "
+            "Let the active work finish and launch the GUI again."
+        )
+    LOGGER.info("Reloading ComfyUI once to activate versioned scene-frame saving.")
+    if not restart_comfyui() or not _save_frame_revision_loaded(comfy):
+        raise OwnershipError(
+            "ComfyUI restarted but did not expose the updated Save Scene Frame contract."
+        )
 
 
 def _take_over_idle_legacy_supervisor(process_ids: tuple[int, ...]) -> None:
@@ -115,6 +138,7 @@ def main() -> int:
             storage.root,
             not migration["already_migrated"],
         )
+        _ensure_current_node_contract(ComfyHttpClient())
         supervisor = build_supervisor(
             allow_restart=True,
             require_human_review=True,

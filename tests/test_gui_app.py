@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 import tempfile
 import unittest
+from unittest.mock import Mock, patch
 
 try:
     from fastapi.testclient import TestClient
@@ -19,6 +20,42 @@ from test_contracts import payload
 
 @unittest.skipUnless(TestClient is not None, "FastAPI is supplied by the embedded Python")
 class GuiAppTests(unittest.TestCase):
+    def test_launcher_restarts_only_for_stale_contract_and_empty_queue(self) -> None:
+        from scripts.run_gui import _ensure_current_node_contract
+        from tenminvideomaker.ownership import OwnershipError
+
+        stale = Mock()
+        stale.object_info.return_value = {
+            "10MinVideoMaker_SaveSceneFrame": {
+                "input": {"required": {"job_id": ["STRING"]}}
+            }
+        }
+        stale.queue_counts.return_value = (1, 0)
+        with self.assertRaisesRegex(OwnershipError, "queue is busy"):
+            _ensure_current_node_contract(stale)
+
+        stale.queue_counts.return_value = (0, 0)
+        stale.object_info.side_effect = [
+            {
+                "10MinVideoMaker_SaveSceneFrame": {
+                    "input": {"required": {"job_id": ["STRING"]}}
+                }
+            },
+            {
+                "10MinVideoMaker_SaveSceneFrame": {
+                    "input": {
+                        "required": {
+                            "job_id": ["STRING"],
+                            "revision": ["INT"],
+                        }
+                    }
+                }
+            },
+        ]
+        with patch("scripts.run_gui.restart_comfyui", return_value=True) as restart:
+            _ensure_current_node_contract(stale)
+        restart.assert_called_once_with()
+
     def test_library_scene_editor_and_remake_draft_are_structured(self) -> None:
         from tenminvideomaker.gui_app import create_gui_app
 
