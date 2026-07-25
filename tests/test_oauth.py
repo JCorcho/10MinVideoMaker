@@ -6,6 +6,7 @@ import unittest
 
 from tenminvideomaker.oauth import (
     GMAIL_IMAP_SMTP_SCOPE,
+    GOOGLE_DRIVE_READONLY_SCOPE,
     build_authorization_url,
     refresh_access_token,
 )
@@ -26,7 +27,7 @@ class _Response:
 
 
 class OAuthTests(unittest.TestCase):
-    def test_authorization_url_uses_offline_pkce_and_full_mail_scope(self) -> None:
+    def test_authorization_url_uses_offline_pkce_mail_and_drive_scopes(self) -> None:
         url = build_authorization_url(
             client_id="client-id",
             redirect_uri="http://127.0.0.1:54321/oauth2callback",
@@ -35,7 +36,10 @@ class OAuthTests(unittest.TestCase):
             login_hint="owner@example.com",
         )
         query = parse_qs(urlparse(url).query)
-        self.assertEqual(query["scope"], [GMAIL_IMAP_SMTP_SCOPE])
+        self.assertEqual(
+            frozenset(query["scope"][0].split()),
+            frozenset({GMAIL_IMAP_SMTP_SCOPE, GOOGLE_DRIVE_READONLY_SCOPE}),
+        )
         self.assertEqual(query["access_type"], ["offline"])
         self.assertEqual(query["prompt"], ["consent"])
         self.assertEqual(query["state"], ["state-token"])

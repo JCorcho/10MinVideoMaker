@@ -21,8 +21,11 @@
 - Gmail polling and ComfyUI restart supervision run outside ComfyUI node execution. Nodes and the supervisor share one service layer so that authentication, state transitions, and validation cannot diverge.
 - One-click setup remains project-local. Store non-secrets in ignored `.env`; encrypt App Passwords, OAuth client
   secrets, and refresh tokens with current-user Windows DPAPI in ignored `runtime/secrets.json`. Process environment
-  variables override saved values. Persistent OAuth uses a desktop loopback callback, PKCE/state, offline access, and
-  the full Gmail IMAP/SMTP scope.
+  variables override saved values. Persistent OAuth uses a desktop loopback callback, PKCE/state, offline access,
+  the full Gmail IMAP/SMTP scope, and read-only Google Drive scope.
+- Gmail payload precedence is JSON attachment, valid plain-text body JSON, then a supported Google Drive file link.
+  Drive retrieval must derive download URLs from a validated file ID, reject folder/arbitrary hosts, cap content at
+  5 MiB, and keep transport/authentication failures unread for retry.
 - ComfyUI 0.27.1 on this machine discovers this project through legacy `NODE_CLASS_MAPPINGS`; a V3-only entrypoint
   imported but did not appear in `/object_info`. Keep node wrappers thin and framework-independent services
   authoritative until the live loader behavior changes.
@@ -296,3 +299,27 @@
   - live `/object_info` export validation
   - `git diff --check`
   - no media rendered and no model loaded.
+
+### 2026-07-24 — Google Drive job handoffs
+
+- Changed files: `.env.example`, `tenminvideomaker/drive.py`, `tenminvideomaker/mail.py`,
+  `tenminvideomaker/oauth.py`, `tenminvideomaker/configuration.py`, `scripts/setup_and_start.py`,
+  `tests/test_drive.py`, `tests/test_mail.py`, `tests/test_oauth.py`, `tests/test_configuration.py`,
+  `tests/test_setup_and_start.py`, `README.md`, `docs/architecture.md`, `docs/user-guide.md`,
+  `AI_DEVELOPMENT_RULES.md`.
+- Routing: inbox extraction preserves attachment-first behavior, then checks plain-text JSON, then accepts a
+  validated Google Drive file link from plain text or HTML. Public files download anonymously; private files use the
+  Drive API with the same cached OAuth access token. Download/auth failures keep the email unread for retry.
+- Security: only supported `drive.google.com` file URLs are accepted; folder and arbitrary URLs are ignored. The
+  downloader derives its own Google endpoint from the file ID, restricts final redirect hosts, caps content at
+  5 MiB, requires UTF-8, and passes the result through the existing strict job contract.
+- Setup: OAuth now requests `drive.readonly` in addition to `mail.google.com`. The launcher detects the old mail-only
+  scope marker, reuses DPAPI-protected client credentials for one-time browser reauthorization, opens the Drive API
+  enablement page, and validates read-only API access without downloading a file.
+- Verification:
+  - `python -m unittest discover -s tests -v`
+  - embedded-Python unit tests and compilation
+  - `python scripts/setup_and_start.py --help`
+  - `git diff --check`
+- Results: 91 tests passed under system and Easy Install embedded Python. No email was sent, no Drive file was
+  downloaded, no media was rendered, and no model was loaded.

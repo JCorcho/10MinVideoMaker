@@ -24,6 +24,7 @@ from tenminvideomaker.configuration import (
     load_project_environment,
     save_project_environment,
 )
+from tenminvideomaker.drive import GOOGLE_DRIVE_API_ENABLE_URL
 from tenminvideomaker.mail import (
     GmailClient,
     GmailSettings,
@@ -32,6 +33,8 @@ from tenminvideomaker.mail import (
 )
 from tenminvideomaker.oauth import (
     GOOGLE_CREDENTIALS_URL,
+    GOOGLE_OAUTH_SCOPES,
+    GOOGLE_OAUTH_SCOPE_VALUE,
     OAuthError,
     authorize_desktop_app,
 )
@@ -196,7 +199,12 @@ def required_gmail_ready(environment: dict[str, str]) -> bool:
             "TENMIN_GMAIL_OAUTH_REFRESH_TOKEN",
         )
     )
-    return bool(legacy_token or refresh_ready)
+    return bool(legacy_token or refresh_ready) and oauth_drive_scopes_ready(environment)
+
+
+def oauth_drive_scopes_ready(environment: dict[str, str]) -> bool:
+    configured = frozenset(environment.get("TENMIN_GMAIL_OAUTH_SCOPES", "").split())
+    return set(GOOGLE_OAUTH_SCOPES).issubset(configured)
 
 
 def _prompt_email(
@@ -216,6 +224,7 @@ def _prompt_email(
 def _clear_authentication(environment: dict[str, str]) -> None:
     for key in SECRET_KEYS | {
         "TENMIN_GMAIL_OAUTH_CLIENT_ID",
+        "TENMIN_GMAIL_OAUTH_SCOPES",
     }:
         environment.pop(key, None)
 
@@ -279,24 +288,42 @@ def configure_gmail(
             "TENMIN_GMAIL_OAUTH_REFRESH_TOKEN",
         )
     )
-    if force_authentication or not refresh_ready:
-        print("\nOAuth2 needs a Google Cloud OAuth client of type Desktop app.")
-        print("Google Cloud credentials page:")
-        print(GOOGLE_CREDENTIALS_URL)
-        if _yes_no("Open Google Cloud credentials now?", default=True, input_func=input_func):
-            open_url(GOOGLE_CREDENTIALS_URL)
-        print(
-            "Create/select a project, configure the OAuth consent screen, add your Gmail as a test user "
-            "when the app is in testing, then create a Desktop app OAuth client."
-        )
-        print(
-            "For unattended 24/7 use, publish the consent screen to In production. "
-            "External apps left in Testing receive refresh tokens that expire after 7 days."
-        )
-        client_id = input_func("Paste the Desktop OAuth client ID: ").strip()
-        client_secret = secret_input("Paste the Desktop OAuth client secret: ").strip()
+    scopes_ready = oauth_drive_scopes_ready(environment)
+    if force_authentication or not refresh_ready or not scopes_ready:
+        if refresh_ready and not scopes_ready and not force_authentication:
+            print(
+                "\nThe saved OAuth grant predates Google Drive handoffs. "
+                "A one-time browser reauthorization is required."
+            )
+            client_id = environment["TENMIN_GMAIL_OAUTH_CLIENT_ID"].strip()
+            client_secret = environment["TENMIN_GMAIL_OAUTH_CLIENT_SECRET"].strip()
+        else:
+            print("\nOAuth2 needs a Google Cloud OAuth client of type Desktop app.")
+            print("Google Cloud credentials page:")
+            print(GOOGLE_CREDENTIALS_URL)
+            if _yes_no("Open Google Cloud credentials now?", default=True, input_func=input_func):
+                open_url(GOOGLE_CREDENTIALS_URL)
+            print(
+                "Create/select a project, configure the OAuth consent screen, add your Gmail as a test user "
+                "when the app is in testing, then create a Desktop app OAuth client."
+            )
+            print(
+                "For unattended 24/7 use, publish the consent screen to In production. "
+                "External apps left in Testing receive refresh tokens that expire after 7 days."
+            )
+            client_id = input_func("Paste the Desktop OAuth client ID: ").strip()
+            client_secret = secret_input("Paste the Desktop OAuth client secret: ").strip()
         if not client_id or not client_secret:
             raise MailConfigurationError("OAuth client ID and client secret are required.")
+        print("\nGoogle Drive API page:")
+        print(GOOGLE_DRIVE_API_ENABLE_URL)
+        print("The Google Drive API must be enabled in the same project as the Desktop OAuth client.")
+        print(
+            "The OAuth consent screen's Data Access list must also allow "
+            "https://www.googleapis.com/auth/drive.readonly."
+        )
+        if _yes_no("Open the Google Drive API page now?", default=True, input_func=input_func):
+            open_url(GOOGLE_DRIVE_API_ENABLE_URL)
         refresh_token = oauth_authorize(
             client_id=client_id,
             client_secret=client_secret,
@@ -305,6 +332,7 @@ def configure_gmail(
         environment["TENMIN_GMAIL_OAUTH_CLIENT_ID"] = client_id
         environment["TENMIN_GMAIL_OAUTH_CLIENT_SECRET"] = client_secret
         environment["TENMIN_GMAIL_OAUTH_REFRESH_TOKEN"] = refresh_token
+        environment["TENMIN_GMAIL_OAUTH_SCOPES"] = GOOGLE_OAUTH_SCOPE_VALUE
         environment.pop("TENMIN_GMAIL_OAUTH2_TOKEN", None)
 
 
@@ -408,9 +436,15 @@ def edit_optional_settings(
 
 def _validate_gmail(environment: dict[str, str]) -> None:
     settings = GmailSettings.from_environment(environment)
-    print("\nChecking Gmail SMTP and IMAP login (no email will be sent)...")
+    if settings.auth_mode == "oauth2":
+        print("\nChecking Gmail SMTP/IMAP and Google Drive access (no email will be sent)...")
+    else:
+        print("\nChecking Gmail SMTP and IMAP login (no email will be sent)...")
     GmailClient(settings).validate_credentials()
-    print("Gmail authentication succeeded.")
+    if settings.auth_mode == "oauth2":
+        print("Gmail and Google Drive authentication succeeded.")
+    else:
+        print("Gmail authentication succeeded. Public Google Drive links are supported.")
 
 
 def _ensure_comfyui(environment: dict[str, str]) -> None:
@@ -556,7 +590,7 @@ def main() -> int:
     parser.add_argument(
         "--skip-gmail-check",
         action="store_true",
-        help="Skip the SMTP/IMAP login check (intended only for offline diagnostics).",
+        help="Skip the SMTP/IMAP and Drive access checks (intended only for offline diagnostics).",
     )
     args = parser.parse_args()
 
@@ -572,7 +606,7 @@ def main() -> int:
                     break
                 except MailTransportError:
                     if not _yes_no(
-                        "Gmail login failed. Reconfigure Gmail authentication and retry?",
+                        "Google services validation failed. Reconfigure OAuth/Gmail authentication and retry?",
                         default=True,
                     ):
                         raise

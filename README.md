@@ -4,9 +4,10 @@ An independent ComfyUI custom-node project for building a guided long-form video
 
 ## Current status
 
-The durable job contract, SQLite state machine, Gmail transport, LoRA resolver, FFmpeg assembly service, eight
+The durable job contract, SQLite state machine, Gmail/Google Drive transport, LoRA resolver, FFmpeg assembly service, eight
 interactive ComfyUI nodes, scene-specific Anima/Pony/LTX workflow builders, and unattended supervisor are
-implemented. A project-local one-click launcher now configures Gmail securely, validates SMTP/IMAP, starts ComfyUI
+implemented. A project-local one-click launcher now configures Gmail securely, validates SMTP/IMAP and OAuth Drive
+access, starts ComfyUI
 when needed, configures Civitai downloads, and launches the supervisor. The first production job rendered all eight
 scenes successfully; its geometry recovery and final assembly are documented below.
 
@@ -22,11 +23,12 @@ uses 30-step `res_3m_ode` followed by 30-step `res_5s_ode`, then the reference Y
 Double-click `Start 10MinVideoMaker.bat` in the repository root. On first run it:
 
 1. Detects missing Gmail settings.
-2. Offers Google App Password or OAuth2 browser authorization.
+2. Offers Google App Password or OAuth2 browser authorization. OAuth includes read-only Google Drive access for
+   private job-file links.
 3. Opens Civitai Account Settings and securely collects an API token when missing.
 4. Saves non-secrets in the ignored `.env` file and secrets encrypted with Windows DPAPI in ignored `runtime/`.
 5. Shows the optional settings editor when requested.
-6. Validates Gmail without sending a message, performs a ComfyUI health check, offers to retry an unfinished saved
+6. Validates Gmail and configured Drive access without sending a message, performs a ComfyUI health check, offers to retry an unfinished saved
    job, and starts the supervisor.
 
 On later runs, valid required settings are reused and the launcher asks whether to change optional settings before
@@ -37,7 +39,8 @@ starting. See `docs/user-guide.md` for OAuth setup details and safe setup-only c
 - **Validate Job** — validates and normalizes the exact Grok JSON contract.
 - **Pipeline Status** — reads the durable pipeline state.
 - **Request Grok Job** — sends the exact request subject using environment-provided Gmail credentials.
-- **Poll Gmail Once** — performs one attachment-first IMAP poll; scheduling belongs to the supervisor.
+- **Poll Gmail Once** — performs one attachment-first IMAP poll, then accepts body JSON or a Google Drive file
+  link; scheduling belongs to the supervisor.
 - **Resolve LoRAs** — uses the live ComfyUI process's active LoRA roots, resolves dynamic assets, and verifies
   mandatory I2V LoRAs.
 - **Release Memory** — runs Python and CUDA cache cleanup.

@@ -58,6 +58,10 @@ class ConfigurationTests(unittest.TestCase):
                 root / ".env",
                 {
                     "TENMIN_GMAIL_USERNAME": "local@example.com",
+                    "TENMIN_GMAIL_OAUTH_SCOPES": (
+                        "https://mail.google.com/ "
+                        "https://www.googleapis.com/auth/drive.readonly"
+                    ),
                     "TENMIN_POLL_SECONDS": "300",
                     "NOT_ALLOWED": "ignored",
                 },
@@ -66,6 +70,10 @@ class ConfigurationTests(unittest.TestCase):
                 read_env_file(root / ".env"),
                 {
                     "TENMIN_GMAIL_USERNAME": "local@example.com",
+                    "TENMIN_GMAIL_OAUTH_SCOPES": (
+                        "https://mail.google.com/ "
+                        "https://www.googleapis.com/auth/drive.readonly"
+                    ),
                     "TENMIN_POLL_SECONDS": "300",
                 },
             )

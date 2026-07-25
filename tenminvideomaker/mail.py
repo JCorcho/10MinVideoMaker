@@ -1,4 +1,4 @@
-"""Gmail SMTP/IMAP integration with attachment-first job extraction."""
+"""Gmail integration with attachment, body, and Google Drive job extraction."""
 
 from __future__ import annotations
 
@@ -13,9 +13,15 @@ import os
 import smtplib
 import ssl
 import time
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from .contracts import ContractValidationError, JobPayload, parse_job_payload
+from .drive import (
+    DriveDownloadError,
+    download_google_drive_json,
+    google_drive_file_urls,
+    validate_google_drive_access,
+)
 from .oauth import OAuthError, refresh_access_token
 from .state_store import PipelineState, PipelineStateStore
 
@@ -103,7 +109,11 @@ def build_pipeline_request(
     message["To"] = settings.recipient
     message["Subject"] = PIPELINE_SUBJECT
     message["Message-ID"] = make_msgid(domain=settings.username.split("@")[-1])
-    body = ["Please return one valid 10MinVideoMaker JSON job as a .json attachment or plain-text body."]
+    body = [
+        "Please return one valid 10MinVideoMaker JSON job as a .json attachment, plain-text body, "
+        "or a Google Drive file link.",
+        f"For a Drive link, share the file with {settings.username} or allow anyone with the link to view it.",
+    ]
     if previous_job_id:
         result = "succeeded" if succeeded else "did not complete"
         body.append(f"Previous job {previous_job_id} {result}.")
@@ -147,8 +157,12 @@ def _parse_document(text: str, source: str) -> JobPayload:
     raise ContractValidationError(f"No valid job JSON with job_id and scenes was found in {source}.")
 
 
-def extract_job_payload(message: Message) -> JobPayload:
-    """Prefer a .json attachment; otherwise parse the plain-text email body."""
+def extract_job_payload(
+    message: Message,
+    *,
+    drive_loader: Callable[[str], str] | None = None,
+) -> JobPayload:
+    """Prefer an attachment, then body JSON, then a supported Google Drive file link."""
     json_attachments: list[tuple[str, str]] = []
     for part in message.walk():
         filename = part.get_filename() or ""
@@ -167,7 +181,33 @@ def extract_job_payload(message: Message) -> JobPayload:
         for part in message.walk()
         if part.get_content_type().casefold() == "text/plain" and part.get_content_disposition() != "attachment"
     ]
-    return _parse_document("\n".join(plain_parts), "message body")
+    plain_text = "\n".join(plain_parts)
+    try:
+        return _parse_document(plain_text, "message body")
+    except ContractValidationError as body_error:
+        link_parts = [
+            _decode_part(part)
+            for part in message.walk()
+            if part.get_content_type().casefold() in {"text/plain", "text/html"}
+            and part.get_content_disposition() != "attachment"
+        ]
+        drive_links = google_drive_file_urls("\n".join(link_parts))
+        if not drive_links:
+            raise body_error
+        if drive_loader is None:
+            raise ContractValidationError(
+                "A Google Drive job link was found, but no Drive downloader is configured."
+            ) from body_error
+        invalid_sources: list[str] = []
+        for drive_link in drive_links:
+            content = drive_loader(drive_link)
+            try:
+                return _parse_document(content, "Google Drive file")
+            except ContractValidationError:
+                invalid_sources.append(drive_link)
+        raise ContractValidationError(
+            f"No valid job JSON was found in {len(invalid_sources)} Google Drive file(s)."
+        ) from body_error
 
 
 class GmailClient:
@@ -220,7 +260,7 @@ class GmailClient:
                 raise MailTransportError(f"Could not mark Gmail UID {uid} as read.")
 
     def validate_credentials(self) -> None:
-        """Authenticate to both transports without reading messages or sending email."""
+        """Authenticate to mail and, for OAuth, validate read-only Drive access."""
         context = ssl.create_default_context()
         try:
             with smtplib.SMTP_SSL(
@@ -243,8 +283,23 @@ class GmailClient:
                 timeout=30,
             ) as client:
                 self._authenticate_imap(client)
-        except (OSError, smtplib.SMTPException, imaplib.IMAP4.error, OAuthError) as error:
+            if self.settings.auth_mode == "oauth2":
+                validate_google_drive_access(self._oauth_access_token())
+        except (
+            OSError,
+            smtplib.SMTPException,
+            imaplib.IMAP4.error,
+            OAuthError,
+            DriveDownloadError,
+        ) as error:
             raise MailTransportError(f"Gmail credential validation failed: {error}") from error
+
+    def download_drive_json(self, share_url: str) -> str:
+        access_token = self._oauth_access_token() if self.settings.auth_mode == "oauth2" else ""
+        try:
+            return download_google_drive_json(share_url, access_token=access_token)
+        except DriveDownloadError as error:
+            raise MailTransportError(f"Google Drive job download failed: {error}") from error
 
     def _authenticate_smtp(self, smtp: smtplib.SMTP_SSL) -> None:
         if self.settings.auth_mode == "app_password":
@@ -297,7 +352,10 @@ class GmailPollingService:
             if mailbox_message.sender not in self.client.settings.allowed_senders:
                 continue
             try:
-                payload = extract_job_payload(mailbox_message.message)
+                payload = extract_job_payload(
+                    mailbox_message.message,
+                    drive_loader=self.client.download_drive_json,
+                )
             except ContractValidationError:
                 # A malformed response is terminal for that email but does not poison the running job state.
                 if self.store.claim_message(mailbox_message.message_key):

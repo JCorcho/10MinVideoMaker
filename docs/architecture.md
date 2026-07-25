@@ -43,8 +43,15 @@ The one-click launcher is also project-local; it does not edit shared ComfyUI st
 configuration. Non-secret settings live in ignored `.env`. App Passwords, OAuth client secrets, and refresh tokens
 live in ignored `runtime/secrets.json` after encryption with Windows DPAPI for the current Windows user. Explicit
 process environment variables take precedence over saved project values. OAuth uses a loopback desktop callback,
-PKCE, state validation, offline access, and the full Gmail IMAP/SMTP scope. `GmailClient` exchanges the stored refresh
-token for short-lived access tokens and caches them only in memory.
+PKCE, state validation, offline access, the full Gmail IMAP/SMTP scope, and read-only Google Drive scope.
+`GmailClient` exchanges the stored refresh token for short-lived access tokens and caches them only in memory.
+
+Incoming job precedence is `.json` attachment, valid JSON in the plain-text body, then a supported
+`drive.google.com/file/d/...` (or `open?id=`/`uc?id=`) file link found in plain text or HTML. Drive folder links and
+arbitrary URLs are rejected. Downloads are capped at 5 MiB and may redirect only to approved Google download hosts.
+Public files are attempted anonymously; OAuth mode falls back to the Drive API for files shared with the configured
+Gmail account. Authentication/network failures leave the email unread for retry, while a successfully downloaded
+malformed payload is claimed as invalid under the existing mailbox rules.
 
 If every scene fails asset preparation, the supervisor transitions to `error` and stops polling for replacement
 jobs. The one-click launcher detects that saved job and offers an atomic retry: unfinished scene errors and prompt IDs

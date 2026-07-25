@@ -11,9 +11,11 @@ from scripts.setup_and_start import (
     configure_civitai,
     configure_gmail,
     edit_optional_settings,
+    oauth_drive_scopes_ready,
     offer_saved_job_retry,
     required_gmail_ready,
 )
+from tenminvideomaker.oauth import GOOGLE_OAUTH_SCOPE_VALUE
 from tenminvideomaker.contracts import parse_job_payload
 from tenminvideomaker.state_store import PipelineState, PipelineStateStore, SceneState
 
@@ -44,6 +46,18 @@ class SetupAndStartTests(unittest.TestCase):
                     "TENMIN_GMAIL_OAUTH_CLIENT_ID": "client-id",
                     "TENMIN_GMAIL_OAUTH_CLIENT_SECRET": "client-secret",
                     "TENMIN_GMAIL_OAUTH_REFRESH_TOKEN": "refresh-token",
+                    "TENMIN_GMAIL_OAUTH_SCOPES": GOOGLE_OAUTH_SCOPE_VALUE,
+                }
+            )
+        )
+        self.assertFalse(
+            required_gmail_ready(
+                {
+                    "TENMIN_GMAIL_USERNAME": "owner@example.com",
+                    "TENMIN_GMAIL_AUTH_MODE": "oauth2",
+                    "TENMIN_GMAIL_OAUTH_CLIENT_ID": "client-id",
+                    "TENMIN_GMAIL_OAUTH_CLIENT_SECRET": "client-secret",
+                    "TENMIN_GMAIL_OAUTH_REFRESH_TOKEN": "mail-only-refresh-token",
                 }
             )
         )
@@ -73,7 +87,7 @@ class SetupAndStartTests(unittest.TestCase):
 
         configure_gmail(
             environment,
-            input_func=_answers("owner@example.com", "2", "n", "client-id"),
+            input_func=_answers("owner@example.com", "2", "n", "client-id", "n"),
             secret_input=lambda _prompt: "client-secret",
             open_url=lambda _url: None,
             oauth_authorize=authorize,
@@ -81,7 +95,37 @@ class SetupAndStartTests(unittest.TestCase):
         self.assertEqual(environment["TENMIN_GMAIL_AUTH_MODE"], "oauth2")
         self.assertEqual(environment["TENMIN_GMAIL_OAUTH_CLIENT_ID"], "client-id")
         self.assertEqual(environment["TENMIN_GMAIL_OAUTH_REFRESH_TOKEN"], "refresh-token")
+        self.assertTrue(oauth_drive_scopes_ready(environment))
         self.assertEqual(authorization["login_hint"], "owner@example.com")
+
+    def test_existing_mail_only_oauth_is_reauthorized_for_drive(self) -> None:
+        environment = {
+            "TENMIN_GMAIL_USERNAME": "owner@example.com",
+            "TENMIN_GMAIL_RECIPIENT": "owner@example.com",
+            "TENMIN_GMAIL_ALLOWED_SENDERS": "owner@example.com",
+            "TENMIN_GMAIL_AUTH_MODE": "oauth2",
+            "TENMIN_GMAIL_OAUTH_CLIENT_ID": "client-id",
+            "TENMIN_GMAIL_OAUTH_CLIENT_SECRET": "client-secret",
+            "TENMIN_GMAIL_OAUTH_REFRESH_TOKEN": "old-refresh-token",
+        }
+        authorization = {}
+
+        def authorize(**kwargs):
+            authorization.update(kwargs)
+            return "drive-refresh-token"
+
+        configure_gmail(
+            environment,
+            input_func=_answers("n"),
+            open_url=lambda _url: None,
+            oauth_authorize=authorize,
+        )
+        self.assertEqual(
+            environment["TENMIN_GMAIL_OAUTH_REFRESH_TOKEN"],
+            "drive-refresh-token",
+        )
+        self.assertTrue(oauth_drive_scopes_ready(environment))
+        self.assertEqual(authorization["client_id"], "client-id")
 
     def test_optional_editor_lists_and_changes_selected_value(self) -> None:
         environment = {"TENMIN_GMAIL_USERNAME": "owner@example.com"}

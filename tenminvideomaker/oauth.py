@@ -17,6 +17,9 @@ import webbrowser
 GOOGLE_AUTHORIZATION_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
 GMAIL_IMAP_SMTP_SCOPE = "https://mail.google.com/"
+GOOGLE_DRIVE_READONLY_SCOPE = "https://www.googleapis.com/auth/drive.readonly"
+GOOGLE_OAUTH_SCOPES = (GMAIL_IMAP_SMTP_SCOPE, GOOGLE_DRIVE_READONLY_SCOPE)
+GOOGLE_OAUTH_SCOPE_VALUE = " ".join(GOOGLE_OAUTH_SCOPES)
 GOOGLE_CREDENTIALS_URL = "https://console.cloud.google.com/apis/credentials"
 
 
@@ -40,7 +43,7 @@ def build_authorization_url(
         "client_id": client_id,
         "redirect_uri": redirect_uri,
         "response_type": "code",
-        "scope": GMAIL_IMAP_SMTP_SCOPE,
+        "scope": GOOGLE_OAUTH_SCOPE_VALUE,
         "access_type": "offline",
         "prompt": "consent",
         "include_granted_scopes": "true",

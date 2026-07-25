@@ -4,7 +4,8 @@
 
 The project can validate incoming jobs, poll/send Gmail, resolve LoRAs, build and queue per-scene generation graphs,
 cache the exact T2I frame, download the matching I2V clip, validate/stitch completed clips, request the next job, and
-recover unfinished scenes. Gmail has been authenticated and the first received job remains durably saved for retry.
+recover unfinished scenes. Incoming JSON may arrive as an attachment, in the message body, or through a Google Drive
+file link. Gmail has been authenticated and the first received job remains durably saved for retry.
 Job `20260724-2249` completed at `D:\output\10minfinals\20260724-2249_final.mp4`; the supervisor requested the next
 job and was then intentionally left stopped so the next reply cannot begin rendering without the user.
 
@@ -54,14 +55,20 @@ On the first run, the launcher detects missing Gmail settings and offers:
 
 - **Google App Password**: opens Google's App Password page when requested, then securely prompts for the
   16-character value. The Google account must have 2-Step Verification enabled.
-- **OAuth2 browser login**: opens the Google Cloud credentials page, asks for a **Desktop app** OAuth client ID and
-  client secret, then prints and opens a Google authorization URL. After consent, Google redirects to a temporary
-  loopback listener on this computer and the launcher stores the refresh token.
+- **OAuth2 browser login**: opens the Google Cloud credentials and Drive API pages, asks for a **Desktop app** OAuth
+  client ID and client secret, then prints and opens a Google authorization URL. After consent, Google redirects to
+  a temporary loopback listener on this computer and the launcher stores the refresh token.
 
-OAuth requests the full `https://mail.google.com/` scope because Gmail's SMTP/IMAP XOAUTH2 protocol requires it. For
-uninterrupted operation, an external OAuth consent screen must be published to **In production**; refresh tokens from
-an external project left in **Testing** expire after seven days. A personal app may still show Google's unverified-app
-warning because this scope is restricted.
+OAuth requests `https://mail.google.com/` for Gmail SMTP/IMAP and
+`https://www.googleapis.com/auth/drive.readonly` for private Drive job links. The Google Drive API must be enabled in
+the same Cloud project as the Desktop OAuth client, and the OAuth consent screen's **Data Access** list must include
+that Drive scope. For uninterrupted operation, an external OAuth consent screen must be published to **In
+production**; refresh tokens from an external project left in **Testing** expire after seven days. A personal app may
+still show Google's unverified-app warning because these scopes are sensitive or restricted.
+
+Existing mail-only OAuth grants are detected on the next launcher run. The launcher reuses the encrypted client ID
+and secret, opens the Drive API page, and performs a one-time browser reauthorization for the additional read-only
+scope.
 
 Secrets are not written to `.env`, workflow JSON, or Git. The launcher encrypts App Passwords, OAuth client secrets,
 OAuth refresh tokens, and the Civitai API token with Windows DPAPI for the current Windows user and stores the
@@ -70,7 +77,9 @@ Existing process environment variables override saved project values.
 
 If all required values already exist, the launcher asks whether to change optional settings. Choosing yes displays
 the editable values and a Gmail reconfiguration option. Choosing no proceeds directly to validation and startup.
-Gmail validation authenticates to both SMTP and IMAP but sends no message.
+OAuth validation authenticates to SMTP/IMAP and calls the read-only Drive `about` endpoint, but sends no message and
+downloads no file. App Password mode validates SMTP/IMAP; it can consume only Drive files shared as
+**Anyone with the link**.
 
 ### Civitai API token
 
@@ -97,7 +106,7 @@ To configure and validate without starting ComfyUI or the supervisor:
 python scripts\setup_and_start.py --setup-only
 ```
 
-For an offline UI-only diagnostic that saves settings without contacting Gmail:
+For an offline UI-only diagnostic that saves settings without contacting Gmail or Google Drive:
 
 ```powershell
 python scripts\setup_and_start.py --setup-only --skip-gmail-check
@@ -117,11 +126,20 @@ supervisor:
 - `TENMIN_GMAIL_APP_PASSWORD` when using an App Password
 - `TENMIN_GMAIL_OAUTH_CLIENT_ID`, `TENMIN_GMAIL_OAUTH_CLIENT_SECRET`, and
   `TENMIN_GMAIL_OAUTH_REFRESH_TOKEN` for persistent OAuth2
+- `TENMIN_GMAIL_OAUTH_SCOPES` is a non-secret launcher marker written automatically after mail-plus-Drive consent
 - `TENMIN_GMAIL_OAUTH2_TOKEN` remains supported only as a legacy short-lived access-token override
 - `TENMIN_CIVITAI_TOKEN` for authenticated Civitai file downloads; the launcher stores it with DPAPI
 
-The exact request subject is `Run the LTX video pipeline`. A `.json` attachment takes precedence over the plain-text
-body. A malformed attachment is not silently replaced by body content.
+The exact request subject is `Run the LTX video pipeline`. Payload precedence is:
+
+1. First `.json` attachment.
+2. Valid job JSON in the plain-text body.
+3. A Google Drive **file** link in the plain-text or HTML body.
+
+A malformed attachment is not silently replaced by body content. Drive folder links and non-Google URLs are ignored.
+The downloaded file must be UTF-8 JSON, no larger than 5 MiB, and must pass the same `job_id`/`scenes` contract. Ask
+Grok to share the file with the configured Gmail account; alternatively, **Anyone with the link** works without
+Drive OAuth.
 
 ## Supervisor settings
 

@@ -2,17 +2,22 @@ from __future__ import annotations
 
 from email.message import EmailMessage
 import json
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 from tenminvideomaker.contracts import ContractValidationError
 from tenminvideomaker.mail import (
     GmailClient,
+    GmailPollingService,
     GmailSettings,
+    MailboxMessage,
+    MailTransportError,
     PIPELINE_SUBJECT,
     build_pipeline_request,
     extract_job_payload,
 )
+from tenminvideomaker.state_store import PipelineState
 
 from test_contracts import payload
 
@@ -42,6 +47,59 @@ class MailTests(unittest.TestCase):
         message.set_content(f"Grok response follows:\n{json.dumps(payload())}\nThank you.")
         self.assertEqual(extract_job_payload(message).job_id, "20260724-1610")
 
+    def test_google_drive_link_is_downloaded_when_body_has_no_json(self) -> None:
+        message = EmailMessage()
+        drive_url = (
+            "https://drive.google.com/file/d/"
+            "1AbCdEfGhIjKlMnOpQrStUvWxYz/view?usp=sharing"
+        )
+        message.set_content(f"Job complete. Download scenes.json here: {drive_url}")
+        loaded = []
+
+        def drive_loader(url: str) -> str:
+            loaded.append(url)
+            return json.dumps(payload())
+
+        self.assertEqual(
+            extract_job_payload(message, drive_loader=drive_loader).job_id,
+            "20260724-1610",
+        )
+        self.assertEqual(loaded, [drive_url])
+
+    def test_body_json_is_preferred_over_drive_link(self) -> None:
+        message = EmailMessage()
+        drive_url = (
+            "https://drive.google.com/file/d/"
+            "1AbCdEfGhIjKlMnOpQrStUvWxYz/view?usp=sharing"
+        )
+        message.set_content(f"{json.dumps(payload())}\nBackup: {drive_url}")
+        self.assertEqual(
+            extract_job_payload(
+                message,
+                drive_loader=lambda _url: self.fail("Drive loader should not run"),
+            ).job_id,
+            "20260724-1610",
+        )
+
+    def test_google_drive_link_can_be_found_in_html_only_body(self) -> None:
+        message = EmailMessage()
+        drive_url = (
+            "https://drive.google.com/file/d/"
+            "1AbCdEfGhIjKlMnOpQrStUvWxYz/view?usp=sharing&amp;resourcekey=AbCdEfGhIjKl"
+        )
+        message.set_content("HTML version contains the job link.")
+        message.add_alternative(
+            f'<html><body><a href="{drive_url}">scenes.json</a></body></html>',
+            subtype="html",
+        )
+        self.assertEqual(
+            extract_job_payload(
+                message,
+                drive_loader=lambda _url: json.dumps(payload()),
+            ).job_id,
+            "20260724-1610",
+        )
+
     def test_invalid_json_attachment_does_not_fall_back_to_body(self) -> None:
         message = EmailMessage()
         message.set_content(json.dumps(payload()))
@@ -53,6 +111,47 @@ class MailTests(unittest.TestCase):
         message = build_pipeline_request(self.settings, previous_job_id="20260724-1610", succeeded=True)
         self.assertEqual(message["Subject"], PIPELINE_SUBJECT)
         self.assertIn("20260724-1610 succeeded", message.get_content())
+        self.assertIn("Google Drive file link", message.get_content())
+
+    def test_drive_transport_error_leaves_message_unseen_for_retry(self) -> None:
+        message = EmailMessage()
+        message.set_content(
+            "https://drive.google.com/file/d/"
+            "1AbCdEfGhIjKlMnOpQrStUvWxYz/view?usp=sharing"
+        )
+
+        class Store:
+            def snapshot(self):
+                return SimpleNamespace(state=PipelineState.WAITING_FOR_GROK)
+
+            def claim_message(self, _message_key):
+                raise AssertionError("Transport failures must not claim the message")
+
+        class Client:
+            settings = self.settings
+            marked_seen = []
+
+            def unread_pipeline_messages(self):
+                return [
+                    MailboxMessage(
+                        "42",
+                        "message-key",
+                        "owner@example.com",
+                        PIPELINE_SUBJECT,
+                        message,
+                    )
+                ]
+
+            def download_drive_json(self, _url):
+                raise MailTransportError("temporary Drive outage")
+
+            def mark_seen(self, uid):
+                self.marked_seen.append(uid)
+
+        client = Client()
+        with self.assertRaisesRegex(MailTransportError, "temporary Drive outage"):
+            GmailPollingService(Store(), client).poll_once()
+        self.assertEqual(client.marked_seen, [])
 
     def test_environment_supports_oauth2_without_persisting_token(self) -> None:
         settings = GmailSettings.from_environment(
