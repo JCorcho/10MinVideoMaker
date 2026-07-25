@@ -9,6 +9,7 @@ from email.parser import BytesParser
 from email.utils import formataddr, make_msgid, parseaddr
 import imaplib
 import json
+import logging
 import os
 import smtplib
 import ssl
@@ -30,6 +31,7 @@ PIPELINE_RESPONSE_SUBJECT = "LTX_JOB_COMPLETE"
 
 # Backward-compatible public name for callers that build the outbound request.
 PIPELINE_SUBJECT = PIPELINE_REQUEST_SUBJECT
+LOGGER = logging.getLogger("10MinVideoMaker.mail")
 
 
 class MailConfigurationError(RuntimeError):
@@ -146,14 +148,95 @@ def _json_documents(text: str) -> Iterable[Any]:
         return
     except json.JSONDecodeError:
         pass
-    for index, character in enumerate(text):
+    normalized, normalized_count = _normalize_seed_integer_literals(text)
+    if normalized_count:
+        try:
+            document = json.loads(normalized.strip())
+            LOGGER.warning(
+                "Normalized %d leading-zero seed integer value(s) in inbound JSON.",
+                normalized_count,
+            )
+            yield document
+            return
+        except json.JSONDecodeError:
+            pass
+    for index, character in enumerate(normalized):
         if character != "{":
             continue
         try:
-            document, _ = decoder.raw_decode(text[index:])
+            document, _ = decoder.raw_decode(normalized[index:])
         except json.JSONDecodeError:
             continue
+        if normalized_count:
+            LOGGER.warning(
+                "Normalized %d leading-zero seed integer value(s) in inbound JSON.",
+                normalized_count,
+            )
         yield document
+
+
+def _normalize_seed_integer_literals(text: str) -> tuple[str, int]:
+    """Repair only JSON integer values for seed keys that contain redundant leading zeroes."""
+    result: list[str] = []
+    index = 0
+    normalized_count = 0
+    length = len(text)
+    while index < length:
+        if text[index] != '"':
+            result.append(text[index])
+            index += 1
+            continue
+
+        string_start = index
+        index += 1
+        escaped = False
+        while index < length:
+            character = text[index]
+            index += 1
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                break
+        raw_string = text[string_start:index]
+        result.append(raw_string)
+        try:
+            key = json.loads(raw_string)
+        except json.JSONDecodeError:
+            continue
+        if key not in {"seed", "original_seed"}:
+            continue
+
+        separator_end = index
+        while separator_end < length and text[separator_end].isspace():
+            separator_end += 1
+        if separator_end >= length or text[separator_end] != ":":
+            continue
+        value_start = separator_end + 1
+        while value_start < length and text[value_start].isspace():
+            value_start += 1
+        digit_start = value_start
+        if digit_start < length and text[digit_start] == "-":
+            digit_start += 1
+        digit_end = digit_start
+        while digit_end < length and text[digit_end].isdigit():
+            digit_end += 1
+        digits = text[digit_start:digit_end]
+        if (
+            len(digits) <= 1
+            or not digits.startswith("0")
+            or digit_end >= length
+            or text[digit_end] not in " \t\r\n,}]"
+        ):
+            continue
+
+        normalized_digits = digits.lstrip("0") or "0"
+        result.append(text[index:digit_start])
+        result.append(normalized_digits)
+        index = digit_end
+        normalized_count += 1
+    return "".join(result), normalized_count
 
 
 def _parse_document(text: str, source: str) -> JobPayload:
@@ -251,7 +334,10 @@ class GmailClient:
             messages: list[MailboxMessage] = []
             for raw_uid in data[0].split() if data and data[0] else []:
                 uid = raw_uid.decode("ascii")
-                status, fetched = client.uid("FETCH", uid, "(RFC822)")
+                # BODY.PEEK[] is essential here: RFC822/BODY[] may set \Seen merely
+                # because candidates were inspected. Only mark the one message that
+                # was accepted (or deliberately rejected) after parsing.
+                status, fetched = client.uid("FETCH", uid, "(BODY.PEEK[])")
                 if status != "OK" or not fetched or not isinstance(fetched[0], tuple):
                     continue
                 message = BytesParser(policy=policy.default).parsebytes(fetched[0][1])
@@ -366,7 +452,12 @@ class GmailPollingService:
     def poll_once(self) -> JobPayload | None:
         if self.store.snapshot().state not in {PipelineState.IDLE, PipelineState.WAITING_FOR_GROK}:
             return None
-        for mailbox_message in self.client.unread_pipeline_messages():
+        mailbox_messages = self.client.unread_pipeline_messages()
+        LOGGER.info(
+            "Gmail returned %d unread exact-subject candidate message(s).",
+            len(mailbox_messages),
+        )
+        for mailbox_message in mailbox_messages:
             # Defense in depth for alternate/test Gmail clients: only the dedicated
             # completion subject may be treated as a job handoff.
             if mailbox_message.subject.strip() != PIPELINE_RESPONSE_SUBJECT:
@@ -378,12 +469,17 @@ class GmailPollingService:
                     mailbox_message.message,
                     drive_loader=self.client.download_drive_json,
                 )
-            except ContractValidationError:
+            except ContractValidationError as error:
                 # A malformed response is terminal for that email but does not poison the running job state.
+                LOGGER.warning("Rejected one Gmail job candidate: %s", error)
                 if self.store.claim_message(mailbox_message.message_key):
                     self.client.mark_seen(mailbox_message.uid)
                 continue
             if self.store.claim_inbound_job(mailbox_message.message_key, payload):
                 self.client.mark_seen(mailbox_message.uid)
                 return payload
+            LOGGER.info(
+                "Skipped parsed job %s because its Gmail message or job ID was already accepted.",
+                payload.job_id,
+            )
         return None

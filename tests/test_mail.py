@@ -49,6 +49,44 @@ class MailTests(unittest.TestCase):
         message.set_content(f"Grok response follows:\n{json.dumps(payload())}\nThank you.")
         self.assertEqual(extract_job_payload(message).job_id, "20260724-1610")
 
+    def test_leading_zero_seed_in_drive_json_is_normalized_narrowly(self) -> None:
+        message = EmailMessage()
+        drive_url = (
+            "https://drive.google.com/file/d/"
+            "1AbCdEfGhIjKlMnOpQrStUvWxYz/view?usp=sharing"
+        )
+        message.set_content(drive_url)
+        drive_payload = json.dumps(payload()).replace(
+            '"seed": 2472348977',
+            '"seed": 012345678',
+        )
+
+        with self.assertLogs("10MinVideoMaker.mail", level="WARNING") as captured:
+            parsed = extract_job_payload(
+                message,
+                drive_loader=lambda _url: drive_payload,
+            )
+
+        self.assertEqual(parsed.scenes[0].t2i.seed, 12345678)
+        self.assertEqual(parsed.scenes[0].i2v.seed, 12345678)
+        self.assertIn(
+            "Normalized 2 leading-zero seed integer value(s)",
+            "\n".join(captured.output),
+        )
+
+    def test_leading_zero_normalization_does_not_rewrite_prompt_text(self) -> None:
+        message = EmailMessage()
+        data = payload()
+        data["scenes"][0]["t2i"]["prompt"] = 'literal example: "seed": 012345678'
+        message.set_content(json.dumps(data))
+
+        parsed = extract_job_payload(message)
+
+        self.assertEqual(
+            parsed.scenes[0].t2i.prompt,
+            'literal example: "seed": 012345678',
+        )
+
     def test_google_drive_link_is_downloaded_when_body_has_no_json(self) -> None:
         message = EmailMessage()
         drive_url = (
@@ -166,6 +204,7 @@ class MailTests(unittest.TestCase):
 
         class FakeImap:
             search_arguments = None
+            fetch_arguments = []
 
             def __init__(self, *_args, **_kwargs):
                 pass
@@ -188,8 +227,10 @@ class MailTests(unittest.TestCase):
                     FakeImap.search_arguments = arguments
                     return "OK", [b"41 42"]
                 if command == "FETCH" and arguments[0] == "41":
+                    FakeImap.fetch_arguments.append(arguments)
                     return "OK", [(b"41 (RFC822)", exact.as_bytes())]
                 if command == "FETCH" and arguments[0] == "42":
+                    FakeImap.fetch_arguments.append(arguments)
                     return "OK", [(b"42 (RFC822)", reply.as_bytes())]
                 raise AssertionError((command, arguments))
 
@@ -202,6 +243,10 @@ class MailTests(unittest.TestCase):
         )
         self.assertEqual([message.uid for message in messages], ["41"])
         self.assertEqual(messages[0].subject, PIPELINE_RESPONSE_SUBJECT)
+        self.assertEqual(
+            FakeImap.fetch_arguments,
+            [("41", "(BODY.PEEK[])"), ("42", "(BODY.PEEK[])")],
+        )
 
     def test_poller_rejects_outbound_request_subject(self) -> None:
         message = EmailMessage()

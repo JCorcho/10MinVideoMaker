@@ -196,16 +196,27 @@ class PipelineStateStore:
             current = connection.execute("SELECT state FROM pipeline_state WHERE singleton = 1").fetchone()
             if PipelineState(current["state"]) not in {PipelineState.IDLE, PipelineState.WAITING_FOR_GROK}:
                 return False
-            already_seen = connection.execute(
-                "SELECT 1 FROM mail_messages WHERE message_key = ?", (message_key,)
+            message_record = connection.execute(
+                "SELECT job_id FROM mail_messages WHERE message_key = ?", (message_key,)
             ).fetchone()
             already_accepted = connection.execute("SELECT 1 FROM jobs WHERE job_id = ?", (payload.job_id,)).fetchone()
-            if already_seen or already_accepted:
+            if already_accepted or (
+                message_record is not None and message_record["job_id"] is not None
+            ):
                 return False
-            connection.execute(
-                "INSERT INTO mail_messages (message_key, job_id, processed_at) VALUES (?, ?, ?)",
-                (message_key, payload.job_id, _utc_now()),
-            )
+            if message_record is None:
+                connection.execute(
+                    "INSERT INTO mail_messages (message_key, job_id, processed_at) VALUES (?, ?, ?)",
+                    (message_key, payload.job_id, _utc_now()),
+                )
+            else:
+                # A message can become parseable after its Drive file is corrected
+                # or a narrowly compatible parser repair is added. Upgrade the
+                # earlier terminal record instead of permanently discarding the job.
+                connection.execute(
+                    "UPDATE mail_messages SET job_id = ?, processed_at = ? WHERE message_key = ?",
+                    (payload.job_id, _utc_now(), message_key),
+                )
             self._claim_job(connection, payload)
             return True
 

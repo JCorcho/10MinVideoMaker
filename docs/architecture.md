@@ -72,7 +72,10 @@ Outbound requests use `Run the LTX video pipeline`; inbound jobs use a separate 
 `LTX_JOB_COMPLETE`. The completion must be a new unread message. IMAP narrows candidates by that subject, then the
 client applies an exact decoded-header comparison because Gmail's `SUBJECT` search is substring-based. The durable
 poller repeats the exact-subject gate before sender and payload validation, preventing the outbound trigger, replies,
-forwards, and similarly named messages from entering the job state machine.
+forwards, and similarly named messages from entering the job state machine. Candidate messages are retrieved with
+`BODY.PEEK[]`; fetching a batch cannot set `\Seen` on messages that the current single-job state machine has not
+accepted. The console reports candidate count, parser rejection, and duplicate-job decisions without logging mail
+content, links, or credentials.
 
 Incoming job precedence is `.json` attachment, valid JSON in the plain-text body, then a supported
 `drive.google.com/file/d/...` (or `open?id=`/`uc?id=`) file link found in plain text or HTML. Drive folder links and
@@ -81,7 +84,12 @@ Public files are attempted anonymously. A sign-in redirect outside the approved 
 as an access failure without consuming its response body, so OAuth mode falls back to the Drive API for files shared
 with the configured Gmail account. An authenticated 404 is reported as missing/not-shared rather than as an OAuth
 failure. Authentication/network failures leave the email unread for retry, while a successfully downloaded malformed
-payload is claimed as invalid under the existing mailbox rules.
+payload is claimed as invalid under the existing mailbox rules. A claimed invalid message with `job_id=NULL` may
+later be atomically upgraded to a real job if its Drive file is corrected or a compatible parser repair makes it
+valid; accepted message/job IDs remain immutable duplicates. Before strict contract validation, the mail parser
+performs one narrow Grok compatibility normalization: redundant leading zeroes are removed only from unquoted
+integer values whose JSON key is `seed` or `original_seed`. It does not rewrite string content or relax any other
+JSON syntax.
 
 If every scene fails asset preparation, the supervisor transitions to `error` and stops polling for replacement
 jobs. The one-click launcher detects any active saved state, including asset resolution, T2I, I2V, stitching, and

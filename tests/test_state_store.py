@@ -40,6 +40,15 @@ class StateStoreTests(unittest.TestCase):
         self.assertFalse(self.store.claim_inbound_job("imap:42", self.job))
         self.assertEqual(self.store.snapshot().state, PipelineState.DOWNLOADING_ASSETS)
 
+    def test_previously_rejected_message_can_be_upgraded_to_a_job(self) -> None:
+        self.assertTrue(self.store.claim_message("imap:42"))
+
+        self.assertTrue(self.store.claim_inbound_job("imap:42", self.job))
+
+        snapshot = self.store.snapshot()
+        self.assertEqual(snapshot.state, PipelineState.DOWNLOADING_ASSETS)
+        self.assertEqual(snapshot.job_id, self.job.job_id)
+
     def test_requeue_keeps_successful_scene_intact(self) -> None:
         self.store.claim_job(self.job)
         self.store.set_scene_state(self.job.job_id, 1, SceneState.SUCCEEDED, frame_path="frame.png", video_path="scene.mp4")

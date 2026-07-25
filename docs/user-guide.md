@@ -183,6 +183,12 @@ The small metadata envelope Grok places in the email may contain `job_id`, `driv
 delivery fields without the full `scenes` array. That envelope is intentionally not accepted as the job itself. Its
 Drive file link is followed and the downloaded full JSON must contain both `job_id` and `scenes`.
 
+The supervisor retrieves matching messages with IMAP `BODY.PEEK[]`. Looking at several candidates during one poll
+does not mark the unclaimed messages read; only an accepted job or a deliberately rejected malformed handoff is
+marked handled. The live console reports how many exact-subject messages were found and whether a parsed job was
+accepted, rejected, or skipped as a duplicate. A repeated email containing a `job_id` already present in the
+durable job history is correctly skipped even if its attachment or Drive file is otherwise valid.
+
 Payload precedence is:
 
 1. First `.json` attachment.
@@ -197,6 +203,11 @@ the configured Gmail address as a Viewer or set **General access** to **Anyone w
 file's anonymous sign-in redirect automatically falls back to the authenticated Drive API. If that API returns 404,
 the file does not exist for—or has not been shared with—the authorized account; the completion email remains unread
 and will retry after its sharing is corrected.
+
+Strict JSON normally rejects integer literals with redundant leading zeroes. Because Grok may emit values such as
+`"seed": 012345678`, the handoff parser removes leading zeroes only from unquoted `seed` and `original_seed`
+integers, producing the equivalent value `12345678`. Prompt text is untouched, and no other malformed JSON is
+silently repaired.
 
 ## Supervisor settings
 

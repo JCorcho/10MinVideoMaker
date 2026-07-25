@@ -67,7 +67,9 @@ Windows' context menu.
   replying to it.
 - **Poll Gmail Once** — searches unread mail for the exact completion subject `LTX_JOB_COMPLETE`, then performs
   attachment-first extraction and accepts body JSON or a Google Drive file link; scheduling belongs to the
-  supervisor. Private-file sign-in redirects fall back to the authenticated Drive API.
+  supervisor. Candidate bodies are fetched with IMAP `BODY.PEEK[]`, so inspecting several messages does not mark
+  unclaimed jobs read. Private-file sign-in redirects fall back to the authenticated Drive API. A Grok-style
+  leading-zero integer is normalized only for `seed` and `original_seed` fields before strict contract validation.
 - **Resolve LoRAs** — uses the live ComfyUI process's active LoRA roots, resolves dynamic assets, verifies mandatory
   I2V LoRAs, accepts verified LTX 2.x dynamic LoRAs for LTX 2.3, and blocks LTX 1.x and image-model LoRAs from I2V.
 - **Release Memory** — runs Python and CUDA cache cleanup.

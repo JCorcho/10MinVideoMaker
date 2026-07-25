@@ -515,3 +515,29 @@
   - embedded-Python unit tests and compilation
   - live supervisor restart while `waiting_for_grok`, followed by observed heartbeat output
   - `git diff --check`
+
+### 2026-07-25 — non-consuming Gmail polling and Grok seed compatibility
+
+- Changed files: `tenminvideomaker/mail.py`, `state_store.py`, focused tests in `tests/test_mail.py` and
+  `tests/test_state_store.py`, plus `README.md`, `docs/architecture.md`, `docs/user-guide.md`, and this file.
+- Cause: Gmail candidates were fetched with `RFC822`, which can set `\Seen` before the state machine decides which
+  message to accept. The new `20260725-0614` Drive handoff also contained invalid JSON integer syntax,
+  `"seed": 012345678`; a separate valid candidate resolved to already-accepted job `20260725-0115`.
+- Mail routing: use `BODY.PEEK[]`, log redacted candidate/rejection/duplicate decisions, and permit an earlier
+  `mail_messages.job_id=NULL` rejection record to be atomically upgraded when the same message later parses.
+  Previously accepted message IDs and job IDs remain de-duplicated.
+- Parser compatibility: after normal JSON parsing fails, strip redundant leading zeroes only from unquoted integer
+  values keyed by `seed` or `original_seed`, then run the unchanged strict contract validator. JSON strings and all
+  other invalid syntax remain untouched.
+- Reproduction: deliver an exact-subject Drive envelope whose full file contains `"seed": 012345678`, and another
+  unread message for an existing job ID. The first must normalize and validate; the second must be reported as a
+  duplicate without being accepted.
+- Verification commands:
+  - `python -m unittest discover -s tests -p "test_mail.py" -v`
+  - `python -m unittest discover -s tests -p "test_state_store.py" -v`
+  - full system and embedded-Python unit suites and compilation
+  - live no-render PEEK/parse check against the two mailbox candidates
+  - `git diff --check`
+- Results: all 125 tests passed under system Python and Easy Install embedded Python; both compilation passes and
+  `git diff --check` passed. The live Drive file parsed as job `20260725-0614` with ten scenes after two seed
+  normalizations. No workflow was queued during validation.
