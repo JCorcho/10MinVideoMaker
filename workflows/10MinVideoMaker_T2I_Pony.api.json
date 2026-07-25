@@ -28,6 +28,25 @@
     }
   },
   "3": {
+    "class_type": "LoraLoader",
+    "_meta": {
+      "title": "T2I LoRA: Example Character Pony"
+    },
+    "inputs": {
+      "model": [
+        "2",
+        0
+      ],
+      "clip": [
+        "2",
+        1
+      ],
+      "lora_name": "Example_Character_Pony.safetensors",
+      "strength_model": 0.85,
+      "strength_clip": 0.85
+    }
+  },
+  "4": {
     "class_type": "CLIPTextEncode",
     "_meta": {
       "title": "Scene positive prompt"
@@ -35,12 +54,12 @@
     "inputs": {
       "text": "masterpiece, best quality, highres, realistic portrait, example character, soft directional light, detailed skin, looking at viewer",
       "clip": [
-        "2",
+        "3",
         1
       ]
     }
   },
-  "4": {
+  "5": {
     "class_type": "CLIPTextEncode",
     "_meta": {
       "title": "Scene negative prompt"
@@ -48,12 +67,12 @@
     "inputs": {
       "text": "worst quality, low quality, sketch, text, watermark, logo",
       "clip": [
-        "2",
+        "3",
         1
       ]
     }
   },
-  "5": {
+  "6": {
     "class_type": "EmptyLatentImage",
     "_meta": {
       "title": "704x1248 production latent"
@@ -64,14 +83,14 @@
       "batch_size": 1
     }
   },
-  "6": {
+  "7": {
     "class_type": "KSamplerAdvanced",
     "_meta": {
       "title": "Pony pass 1: res_5s_ode"
     },
     "inputs": {
       "model": [
-        "2",
+        "3",
         0
       ],
       "add_noise": "enable",
@@ -81,44 +100,11 @@
       "sampler_name": "res_5s_ode",
       "scheduler": "karras",
       "positive": [
-        "3",
-        0
-      ],
-      "negative": [
         "4",
         0
       ],
-      "latent_image": [
+      "negative": [
         "5",
-        0
-      ],
-      "start_at_step": 0,
-      "end_at_step": 30,
-      "return_with_leftover_noise": "disable"
-    }
-  },
-  "7": {
-    "class_type": "KSamplerAdvanced",
-    "_meta": {
-      "title": "Pony pass 2: res_3m_ode"
-    },
-    "inputs": {
-      "model": [
-        "2",
-        0
-      ],
-      "add_noise": "enable",
-      "noise_seed": 2472348977,
-      "steps": 30,
-      "cfg": 6.0,
-      "sampler_name": "res_3m_ode",
-      "scheduler": "karras",
-      "positive": [
-        "3",
-        0
-      ],
-      "negative": [
-        "4",
         0
       ],
       "latent_image": [
@@ -131,13 +117,46 @@
     }
   },
   "8": {
+    "class_type": "KSamplerAdvanced",
+    "_meta": {
+      "title": "Pony pass 2: res_3m_ode"
+    },
+    "inputs": {
+      "model": [
+        "3",
+        0
+      ],
+      "add_noise": "enable",
+      "noise_seed": 2472348977,
+      "steps": 30,
+      "cfg": 6.0,
+      "sampler_name": "res_3m_ode",
+      "scheduler": "karras",
+      "positive": [
+        "4",
+        0
+      ],
+      "negative": [
+        "5",
+        0
+      ],
+      "latent_image": [
+        "7",
+        0
+      ],
+      "start_at_step": 0,
+      "end_at_step": 30,
+      "return_with_leftover_noise": "disable"
+    }
+  },
+  "9": {
     "class_type": "VAEDecode",
     "_meta": {
       "title": "Decode initial frame"
     },
     "inputs": {
       "samples": [
-        "7",
+        "8",
         0
       ],
       "vae": [
@@ -146,14 +165,14 @@
       ]
     }
   },
-  "9": {
+  "10": {
     "class_type": "10MinVideoMaker_SaveSceneFrame",
     "_meta": {
       "title": "Cache deterministic scene frame"
     },
     "inputs": {
       "images": [
-        "8",
+        "9",
         0
       ],
       "job_id": "example-20260724-1610",

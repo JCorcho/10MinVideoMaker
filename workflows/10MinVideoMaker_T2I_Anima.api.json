@@ -49,6 +49,25 @@
     }
   },
   "5": {
+    "class_type": "LoraLoader",
+    "_meta": {
+      "title": "T2I LoRA: Example Character Anima"
+    },
+    "inputs": {
+      "model": [
+        "4",
+        0
+      ],
+      "clip": [
+        "4",
+        1
+      ],
+      "lora_name": "Example_Character_Anima.safetensors",
+      "strength_model": 0.85,
+      "strength_clip": 0.85
+    }
+  },
+  "6": {
     "class_type": "CLIPTextEncode",
     "_meta": {
       "title": "Scene positive prompt"
@@ -56,12 +75,12 @@
     "inputs": {
       "text": "masterpiece, best quality, highres, realistic portrait, example character, soft directional light, detailed skin, looking at viewer",
       "clip": [
-        "4",
+        "5",
         1
       ]
     }
   },
-  "6": {
+  "7": {
     "class_type": "CLIPTextEncode",
     "_meta": {
       "title": "Scene negative prompt"
@@ -69,12 +88,12 @@
     "inputs": {
       "text": "worst quality, low quality, sketch, text, watermark, logo",
       "clip": [
-        "4",
+        "5",
         1
       ]
     }
   },
-  "7": {
+  "8": {
     "class_type": "EmptySD3LatentImage",
     "_meta": {
       "title": "704x1248 production latent"
@@ -85,14 +104,14 @@
       "batch_size": 1
     }
   },
-  "8": {
+  "9": {
     "class_type": "KSampler",
     "_meta": {
       "title": "Anima er_sde beta57"
     },
     "inputs": {
       "model": [
-        "4",
+        "5",
         0
       ],
       "seed": 2472348977,
@@ -101,28 +120,28 @@
       "sampler_name": "er_sde",
       "scheduler": "beta57",
       "positive": [
-        "5",
-        0
-      ],
-      "negative": [
         "6",
         0
       ],
-      "latent_image": [
+      "negative": [
         "7",
+        0
+      ],
+      "latent_image": [
+        "8",
         0
       ],
       "denoise": 1.0
     }
   },
-  "9": {
+  "10": {
     "class_type": "VAEDecode",
     "_meta": {
       "title": "Decode initial frame"
     },
     "inputs": {
       "samples": [
-        "8",
+        "9",
         0
       ],
       "vae": [
@@ -131,14 +150,14 @@
       ]
     }
   },
-  "10": {
+  "11": {
     "class_type": "10MinVideoMaker_SaveSceneFrame",
     "_meta": {
       "title": "Cache deterministic scene frame"
     },
     "inputs": {
       "images": [
-        "9",
+        "10",
         0
       ],
       "job_id": "example-20260724-1610",

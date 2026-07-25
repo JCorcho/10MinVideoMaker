@@ -27,7 +27,9 @@
 - The exact Grok schema uses `character.lora.base` to select Anima/Pony and
   `character.lora.recommended_weight` for the global T2I character LoRA. Scene LoRAs continue to use `weight`.
 - The LTX x2 spatial-upscale route uses an internal 352×624 first-pass latent and produces the fixed 704×1248
-  decoded clip. Do not expose or save an alternate production size.
+  saved clip. Because 624 is not divisible by the live latent node's 32-pixel step, the spatial decode is
+  704×1216; route decoded frames through a final core `ImageScale` using Lanczos, 704×1248, and centered crop before
+  video combine. Do not expose or save an alternate production size.
 - I2V uses `VHS_VideoCombine` temporary output. The supervisor retrieves its exact history metadata through
   `/view` and writes the project clip under `D:\output\10minfinals\.work`; do not scan or move shared output folders.
 - Controlled restart must verify the port-8188 owner is the expected Easy Install embedded Python executable before
@@ -42,6 +44,8 @@
   DPAPI secrets, attach it only to Civitai download URLs, never log it, and verify the supplied SHA-256 when present.
 - An all-scene asset failure pauses the saved job in `error` and must not send a new request email. Manual retry
   requeues only unfinished scenes while preserving completed scenes and attempt counters.
+- Assembly/profile failures must also transition to `error` and preserve successful scenes instead of escaping the
+  supervisor tick in `stitching`.
 
 ## Implementation and testing
 
@@ -242,3 +246,25 @@
 - Results: all 75 tests passed under system and Easy Install embedded Python. Live ComfyUI 0.27.1 registered all
   eight project nodes, and its loopback route found both installed mandatory I2V LoRAs by their real selectable
   filenames. No Gmail message was sent, no model was downloaded or loaded, and no media was rendered.
+
+### 2026-07-24 — exact LTX output geometry and assembly recovery
+
+- Changed files: `tenminvideomaker/workflow_builder.py`, `tenminvideomaker/supervisor.py`,
+  `tests/test_workflow_builder.py`, `tests/test_supervisor.py`, regenerated `workflows/10MinVideoMaker_*`,
+  `README.md`, `docs/architecture.md`, `docs/user-guide.md`, `AI_DEVELOPMENT_RULES.md`.
+- Cause: 704×1248 is divisible by 32, but the x2 spatial upscaler's half-height is 624, which is not divisible by
+  the live `EmptyLTXVLatentVideo` 32-pixel step. The first production job consequently decoded every I2V scene at
+  704×1216, and the strict assembly preflight correctly rejected it.
+- Routing: decoded I2V frames now pass through core `ImageScale` with Lanczos scale-to-fill and centered crop at
+  704×1248 before `VHS_VideoCombine`. The crop removes roughly nine pixels per horizontal edge without stretching
+  subjects. Regenerated GUI/API workflows also synchronize the previously stale T2I templates with dynamic
+  character-LoRA loading.
+- Recovery: assembly/profile failures now pause the saved job in `error`, retain successful clips, and do not repeat
+  on each polling tick. Job `20260724-2249`'s eight legacy clips were backed up under
+  `D:\output\10minfinals\.work\20260724-2249\clips\source-704x1216`, normalized to 704×1248 with their original
+  frame counts and AAC streams preserved, then revalidated before final assembly.
+- Verification:
+  - 77 tests passed under system and Easy Install embedded Python.
+  - Live `/object_info` validation accepted the regenerated workflows; all have zero overlaps and no nodes outside
+    their group.
+  - FFprobe confirmed all eight repaired clips are 704×1248 at 24 fps with audio and unchanged frame counts.

@@ -7,8 +7,8 @@ An independent ComfyUI custom-node project for building a guided long-form video
 The durable job contract, SQLite state machine, Gmail transport, LoRA resolver, FFmpeg assembly service, eight
 interactive ComfyUI nodes, scene-specific Anima/Pony/LTX workflow builders, and unattended supervisor are
 implemented. A project-local one-click launcher now configures Gmail securely, validates SMTP/IMAP, starts ComfyUI
-when needed, configures Civitai downloads, and launches the supervisor. The first production job is preserved for
-retry; no production media has been rendered yet.
+when needed, configures Civitai downloads, and launches the supervisor. The first production job rendered all eight
+scenes successfully; its geometry recovery and final assembly are documented below.
 
 ## One-click start
 

@@ -69,7 +69,15 @@ scene, adds DMD and JoyAI before dynamic model-only LoRAs, enables feed-forward 
 samplers and sigma schedules around the tiled spatial upscaler.
 
 The x2 spatial upscaler requires a half-resolution first-pass latent. Its internal dimensions are 352×624 so the
-second pass lands exactly at the only production output size, 704×1248. No alternate output resolution is exposed.
+requested production dimensions are represented at half scale. However, `EmptyLTXVLatentVideo` quantizes each
+half-resolution side to a 32-pixel grid. Although 1248 is divisible by 32, its half-height 624 is not; the live x2
+route therefore decodes at 704×1216. A final core `ImageScale` performs Lanczos scale-to-fill and a centered crop to
+the only saved production size, 704×1248. This removes about nine pixels from each horizontal edge, preserves
+subject proportions, and does not expose an alternate output resolution.
+
+Assembly profile failures are caught explicitly. The supervisor transitions the saved job to `error`, preserves
+completed clips, and stops requesting replacement jobs instead of repeating the same failing stitch every polling
+interval.
 
 ## No-render validation
 

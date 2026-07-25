@@ -33,7 +33,10 @@ Do not queue the example workflows for a real render without replacing the examp
 - LTX I2V: LCM on both passes, verified distinct sigma lists, x2 tiled spatial upscaler, DMD 1.0, JoyAI 0.5.
 
 The first LTX pass uses an internal 352×624 latent only because the mandated spatial model is x2. The decoded and
-saved production clip is always 704×1248.
+saved production clip is always 704×1248. Because half of 1248 is 624, which is not on LTX's required 32-pixel
+half-resolution grid, the spatial pass itself decodes at 704×1216. The workflow immediately applies a Lanczos
+scale-to-fill and centered crop before `VHS_VideoCombine`; this preserves proportions and trims roughly nine pixels
+from each horizontal edge.
 
 ## One-click setup and start
 
@@ -152,6 +155,8 @@ can download LoRAs and begin generation. Use the no-render checks below instead.
   preserves the job, and does not request a replacement email.
 - Relaunching offers to retry unfinished scenes from the saved job; successful scenes and attempt counters remain
   intact.
+- A clip geometry or FFmpeg assembly failure pauses in `error`, preserves every completed clip, and prints the exact
+  mismatch rather than retrying the stitch forever.
 - A server availability failure records `error`, runs the path-verified restart script, and requeues unfinished scenes.
 - VRAM/system cleanup runs after T2I, after each scene attempt, and after assembly.
 

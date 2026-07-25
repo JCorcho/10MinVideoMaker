@@ -534,9 +534,18 @@ def build_i2v_api_workflow(
     )
     decoded_video = graph.add(
         "VAEDecode",
-        "Decode 704x1248 video",
+        "Decode spatial-upscale video",
         samples=graph.output(final_split, 0),
         vae=graph.output(checkpoint, 2),
+    )
+    production_video = graph.add(
+        "ImageScale",
+        "Normalize decoded video to exact 704x1248",
+        image=graph.output(decoded_video),
+        upscale_method="lanczos",
+        width=PRODUCTION_WIDTH,
+        height=PRODUCTION_HEIGHT,
+        crop="center",
     )
     decoded_audio = graph.add(
         "LTXVAudioVAEDecode",
@@ -548,7 +557,7 @@ def build_i2v_api_workflow(
     combined = graph.add(
         "VHS_VideoCombine",
         "Save 704x1248 24 fps scene clip",
-        images=graph.output(decoded_video),
+        images=graph.output(production_video),
         audio=graph.output(decoded_audio),
         frame_rate=float(PRODUCTION_FPS),
         loop_count=0,

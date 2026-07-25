@@ -92,6 +92,34 @@ class WorkflowBuilderTests(unittest.TestCase):
         self.assertFalse(combine["save_output"])
         self.assertEqual(build.api[build.output_node_id]["class_type"], "VHS_VideoCombine")
 
+    def test_i2v_normalizes_decoded_frames_to_exact_production_geometry(self) -> None:
+        build = build_i2v_api_workflow(
+            self.job,
+            self.scene,
+            Path(r"D:\output\10minfinals\.work\20260724-1610\frames\scene_0001.png"),
+        )
+        normalized = next(
+            node
+            for node in nodes_of_type(build.api, "ImageScale")
+            if node.get("_meta", {}).get("title")
+            == "Normalize decoded video to exact 704x1248"
+        )
+        self.assertEqual(
+            (
+                normalized["inputs"]["width"],
+                normalized["inputs"]["height"],
+                normalized["inputs"]["upscale_method"],
+                normalized["inputs"]["crop"],
+            ),
+            (704, 1248, "lanczos", "center"),
+        )
+        decode_id = normalized["inputs"]["image"][0]
+        self.assertEqual(build.api[decode_id]["class_type"], "VAEDecode")
+        combine = nodes_of_type(build.api, "VHS_VideoCombine")[0]
+        self.assertEqual(combine["inputs"]["images"][0], next(
+            node_id for node_id, node in build.api.items() if node is normalized
+        ))
+
     def test_i2v_mandatory_loras_are_always_first_and_exact(self) -> None:
         build = build_i2v_api_workflow(
             self.job,

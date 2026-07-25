@@ -522,7 +522,7 @@
   "34": {
     "class_type": "VAEDecode",
     "_meta": {
-      "title": "Decode 704x1248 video"
+      "title": "Decode spatial-upscale video"
     },
     "inputs": {
       "samples": [
@@ -536,6 +536,22 @@
     }
   },
   "35": {
+    "class_type": "ImageScale",
+    "_meta": {
+      "title": "Normalize decoded video to exact 704x1248"
+    },
+    "inputs": {
+      "image": [
+        "34",
+        0
+      ],
+      "upscale_method": "lanczos",
+      "width": 704,
+      "height": 1248,
+      "crop": "center"
+    }
+  },
+  "36": {
     "class_type": "LTXVAudioVAEDecode",
     "_meta": {
       "title": "Decode generated audio"
@@ -551,18 +567,18 @@
       ]
     }
   },
-  "36": {
+  "37": {
     "class_type": "VHS_VideoCombine",
     "_meta": {
       "title": "Save 704x1248 24 fps scene clip"
     },
     "inputs": {
       "images": [
-        "34",
+        "35",
         0
       ],
       "audio": [
-        "35",
+        "36",
         0
       ],
       "frame_rate": 24.0,

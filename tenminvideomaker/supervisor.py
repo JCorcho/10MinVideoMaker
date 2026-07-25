@@ -11,7 +11,7 @@ import time
 from typing import Any, Callable, Mapping
 
 from .artifacts import scene_clip_path, scene_frame_path
-from .assembly import FfmpegAssembler, probe_video, validate_video_profile
+from .assembly import AssemblyError, FfmpegAssembler, probe_video, validate_video_profile
 from .assets import AssetResolution, LocalLoraRequirement
 from .comfy_http import ComfyHttpClient, ComfyHttpError, find_video_output
 from .constants import MANDATORY_I2V_LORAS
@@ -190,13 +190,27 @@ class PipelineSupervisor:
             self._release_memory()
             return
         self.store.transition(PipelineState.STITCHING, job_id=job.job_id)
-        streams = [self._video_probe(record.video_path) for record in successful]
-        validate_video_profile(streams)
-        self.assembler.stitch(
-            job.job_id,
-            [record.video_path for record in successful],
-            self.store.database_path.parent / "concat",
-        )
+        try:
+            streams = [self._video_probe(record.video_path) for record in successful]
+            validate_video_profile(streams)
+            self.assembler.stitch(
+                job.job_id,
+                [record.video_path for record in successful],
+                self.store.database_path.parent / "concat",
+            )
+        except AssemblyError as error:
+            message = (
+                f"Assembly failed for job {job.job_id}: {error} "
+                "The saved job and completed scene clips were preserved."
+            )
+            self.store.transition(
+                PipelineState.ERROR,
+                job_id=job.job_id,
+                error=message,
+            )
+            LOGGER.error(message)
+            self._release_memory()
+            return
         self._release_memory()
         self._request_next_job(previous_job_id=job.job_id, succeeded=complete_success)
 

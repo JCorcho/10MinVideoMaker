@@ -305,6 +305,50 @@ class SupervisorTests(unittest.TestCase):
             self.assertEqual(assets.resolve_calls, calls_before_paused_tick)
             self.assertEqual(mail.requests, [])
 
+    def test_assembly_profile_failure_pauses_and_preserves_completed_clip(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            job = parse_job_payload(payload())
+            store = PipelineStateStore(root / "pipeline.sqlite3")
+            store.claim_job(job)
+            frame = root / "frame.png"
+            clip = root / "scene.mp4"
+            frame.write_bytes(b"png")
+            clip.write_bytes(b"mp4")
+            store.set_scene_state(
+                job.job_id,
+                1,
+                SceneState.SUCCEEDED,
+                frame_path=str(frame),
+                video_path=str(clip),
+            )
+            mail = FakeMailClient()
+            assembler = FakeAssembler(root / "final.mp4")
+            supervisor = PipelineSupervisor(
+                store=store,
+                mail_client=mail,
+                asset_manager=FakeAssetManager(),
+                comfy=FakeComfy(frame),
+                assembler=assembler,
+                settings=SupervisorSettings(1, 10, 10, 2),
+                video_probe=lambda path: VideoStreamInfo(
+                    Path(path), 704, 1216, Fraction(24, 1)
+                ),
+            )
+
+            supervisor.process_job(job)
+
+            snapshot = store.snapshot()
+            self.assertEqual(snapshot.state, PipelineState.ERROR)
+            self.assertIn("expected 704x1248", snapshot.error)
+            self.assertEqual(
+                store.scene_states(job.job_id),
+                {1: SceneState.SUCCEEDED},
+            )
+            self.assertTrue(clip.is_file())
+            self.assertEqual(assembler.calls, [])
+            self.assertEqual(mail.requests, [])
+
 
 if __name__ == "__main__":
     unittest.main()
