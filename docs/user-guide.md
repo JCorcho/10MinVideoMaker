@@ -4,10 +4,33 @@
 
 The project can validate incoming jobs, poll/send Gmail, resolve LoRAs, build and queue per-scene generation graphs,
 cache the exact T2I frame, download the matching I2V clip, validate/stitch completed clips, request the next job, and
-recover unfinished scenes. Incoming JSON may arrive as an attachment, in the message body, or through a Google Drive
-file link. Gmail has been authenticated, and saved jobs can be retried or explicitly abandoned without deleting
-their diagnostic history. Job `20260724-2249` completed at
-`D:\output\10minfinals\20260724-2249_final.mp4`.
+recover unfinished scenes. Its loopback browser GUI adds required human approval, a historical job library,
+human-readable parameter editing, versioned previews, and multi-scene remake batches.
+
+Persistent data is rooted at `D:\LTX_Supervisor_Storage`. Nothing new is written to the C: drive except the
+version-controlled custom-node source already in this repository.
+
+## Human-review GUI
+
+Double-click `Start 10MinVideoMaker.bat`. After the existing credential checks, the launcher opens
+`http://127.0.0.1:8765/`. The server binds only to this computer.
+
+1. Select a job in **Project library**, then select a scene.
+2. Review the source frame, generated video, prompts, seeds, character and stage LoRAs, T2I passes, Pony face
+   detailer, I2V samplers and sigma schedules, chunking, upscaler, and fixed production profile.
+3. For a newly received job, click **Approve & Queue Job** to start its normal scene pipeline.
+4. To revise a scene, enable **Mark for remake** and choose:
+   - **Video Only** to reuse that revision's existing cached frame and run only I2V.
+   - **Image + Video** to generate a new frame and force the matching I2V workflow to use it.
+5. Edit fields and add/remove LoRAs. Mandatory I2V DMD 1.0 and JoyAI 0.5 and the 704×1248/24 fps profile remain
+   locked safety invariants.
+6. Continue selecting scenes from this or other jobs. The tray keeps the edits until **Save & Remake** is clicked.
+7. If standard work is rendering, choose **Queue edits to run after current job finishes** or
+   **Interrupt/Cancel current job and run edits immediately**. Interrupt targets only prompts owned by this
+   project, preserves the interrupted job's history, and does not restart healthy ComfyUI.
+
+There is intentionally no image-only choice: a changed starting image always requires a new video. Every submitted
+edit creates a new numbered revision; prior frames, clips, parameters, and manifests remain available in history.
 
 ## Workflow templates
 
@@ -61,7 +84,7 @@ The Discord nodes send to the webhook only. `save_output`, previews, prompt incl
 storage, and GitHub updates are disabled. The clean deterministic T2I PNG remains the I2V input, and the clean
 temporary VHS clip remains the master-assembly input; watermarking cannot feed back into generation.
 
-The webhook is encrypted in `runtime/secrets.json` with Windows DPAPI. The versioned workflow files contain only a
+The webhook is encrypted in `D:\LTX_Supervisor_Storage\config\secrets.json` with Windows DPAPI. The versioned workflow files contain only a
 nonfunctional placeholder, while the approved shared workflow copies receive the configured webhook during export.
 To replace it later, run the launcher, choose optional settings, then choose **Configure/change Discord webhook**.
 
@@ -113,9 +136,10 @@ Existing mail-only OAuth grants are detected on the next launcher run. The launc
 and secret, opens the Drive API page, and performs a one-time browser reauthorization for the additional read-only
 scope.
 
-Secrets are not written to `.env`, versioned workflow JSON, or Git. The launcher encrypts App Passwords, OAuth client secrets,
+Secrets are not written to versioned workflow JSON or Git. The launcher encrypts App Passwords, OAuth client secrets,
 OAuth refresh tokens, the Civitai API token, and the Discord webhook with Windows DPAPI for the current Windows user and stores the
-ciphertext in the ignored `runtime/secrets.json`. Non-secret values are stored in the ignored project `.env`.
+ciphertext in `D:\LTX_Supervisor_Storage\config\secrets.json`. Non-secret values are stored in
+`D:\LTX_Supervisor_Storage\config\settings.env`.
 Existing process environment variables override saved project values.
 
 If all required values already exist, the launcher asks whether to change optional settings. Choosing yes displays
@@ -220,6 +244,9 @@ Optional environment variables:
 - `TENMIN_MAX_STAGE_ATTEMPTS` (default `2`)
 - `TENMIN_FFMPEG` and `TENMIN_FFPROBE` (default to commands on `PATH`)
 - `TENMIN_LOG_LEVEL` (default `INFO`)
+- `TENMIN_STORAGE_ROOT` (default and required drive:
+  `D:\LTX_Supervisor_Storage`; alternate project-owned folders must still be on D:)
+- `TENMIN_REQUIRE_HUMAN_REVIEW` (the GUI forces this on)
 
 This machine currently exposes both FFmpeg and FFprobe on `PATH`.
 

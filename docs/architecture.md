@@ -1,15 +1,36 @@
 # 10MinVideoMaker architecture
 
-The automated pipeline has two layers that call the same pure-Python services:
+The pipeline has three layers that call the same pure-Python services:
 
-- **Supervisor**: the 24/7 owner of Gmail polling, ComfyUI API job submission, scene retries, FFmpeg assembly, and controlled restart requests. It polls once every five minutes; it never blocks ComfyUI's execution queue by sleeping inside a node.
+- **Loopback GUI**: a FastAPI/vanilla-JavaScript frontend at `127.0.0.1:8765`. It maps stored jobs to
+  human-readable controls, previews versioned media, accepts approvals and revision batches, and never exposes raw
+  filesystem paths or raw JSON.
+- **Single-owner supervisor controller**: one worker owns Gmail polling, automatic jobs, remake batches, ComfyUI API
+  job submission, retries, assembly, and controlled restart requests. A cross-process lock prevents the legacy
+  console supervisor and GUI worker from running together.
 - **ComfyUI nodes**: interactive/status controls built on the same state, payload, mail, asset, and assembly services. They expose no independent routing or persistence rules.
 
 The running ComfyUI 0.27.1 installation did not expose the package's initial V3 entrypoint through `/object_info`.
 The package therefore registers its compatibility surface through `NODE_CLASS_MAPPINGS`. Business logic remains
 outside the node classes, so this registration choice does not fork the automation implementation.
 
-`runtime/pipeline.sqlite3` is the local durable state store. It is intentionally ignored by Git and records one global pipeline state plus per-scene states. A job is accepted only from `idle` or `waiting_for_grok`; completed scene artifacts remain intact when unfinished scenes are re-queued.
+`D:\LTX_Supervisor_Storage\state\pipeline.sqlite3` is the durable state store. It records the singleton pipeline,
+job history, scene state, immutable source payloads, editable scene revisions, cross-job remake batches, and each
+revision's media paths. New Gmail jobs enter `awaiting_review` and cannot render until explicitly approved.
+Completed artifacts remain intact when unfinished scenes are re-queued.
+
+Every scene revision is stored below
+`D:\LTX_Supervisor_Storage\jobs\{job_id}\scenes\scene_{id}\revisions\{revision}` with `frame.png`,
+`video.mp4`, and a human-readable `generation-manifest.json`. Source Grok payloads live in each job's `source`
+folder, and finals live in `D:\LTX_Supervisor_Storage\finals`. The first GUI launch copies the prior SQLite
+database, configured secrets/settings, payloads, and only media recorded by this project into the new layout.
+Migration never deletes or rewrites the legacy source.
+
+Edits are validated by reconstructing the typed job contract, then passed as explicit workflow overrides. This
+keeps the global character LoRA, stage LoRA separation, mandatory DMD/Joy chain, Pony detailer, samplers, schedulers,
+sigmas, CFG, denoise, chunking, upscaler, seeds, prompts, and fixed production profile in one routing
+implementation. Browser-facing seeds are strings so JavaScript cannot truncate unsigned 64-bit values. A
+video-only revision requires an existing cached frame; image-only is not representable.
 
 Each scene stores independent T2I/I2V attempt counts and its last ComfyUI prompt ID. On a transient prompt failure,
 only the unfinished stage is retried. A timed-out prompt is deleted if pending or interrupted only when that exact
@@ -43,11 +64,12 @@ and is never returned to the supervisor or logs. Each failed asset is reported i
 without cancelling unrelated scenes. Mandatory DMD and JoyAI I2V LoRAs remain local-only because no trusted download
 URL was supplied for them.
 
-Before stitching, FFmpeg preflight verifies every successful clip is 704×1248 at 24 fps. The concat operation uses stream copy and emits `D:\output\10minfinals\{job_id}_final.mp4`; the folder is created only when a completed job is actually assembled.
+Before stitching, FFmpeg preflight verifies every successful clip is 704×1248 at 24 fps. The concat operation uses
+stream copy and emits `D:\LTX_Supervisor_Storage\finals\{job_id}_final.mp4`.
 
 VHS writes scene video to its temporary ComfyUI output and returns metadata through prompt history. The supervisor
-downloads that exact output through the local HTTP API into
-`D:\output\10minfinals\.work\{job_id}\clips\scene_{id}.mp4`; it does not scan or move unrelated shared output files.
+downloads that exact output through the local HTTP API into the matching versioned scene directory under
+`D:\LTX_Supervisor_Storage\jobs`; it does not scan or move unrelated shared output files.
 
 Output delivery is a parallel branch, not a replacement for durable artifacts. The clean T2I result feeds the
 deterministic frame saver and the I2V cache; a second edge passes through `DaSiWa_Watermark` into
@@ -62,10 +84,11 @@ on port 8188 is the expected embedded Python executable, stops only that process
 `Start ComfyUI.bat` hidden, and waits for HTTP health. It is called only for fatal ComfyUI availability failures.
 
 The one-click launcher is also project-local; it does not edit shared ComfyUI startup scripts or global environment
-configuration. Non-secret settings live in ignored `.env`. App Passwords, OAuth client secrets, and refresh tokens
-live in ignored `runtime/secrets.json` after encryption with Windows DPAPI for the current Windows user. Explicit
-process environment variables take precedence over saved project values. OAuth uses a loopback desktop callback,
-PKCE, state validation, offline access, the full Gmail IMAP/SMTP scope, and read-only Google Drive scope.
+configuration. Non-secret settings live in `D:\LTX_Supervisor_Storage\config\settings.env`. App Passwords, OAuth
+client secrets, refresh tokens, Civitai tokens, and the Discord webhook live in
+`D:\LTX_Supervisor_Storage\config\secrets.json` after encryption with Windows DPAPI for the current Windows user.
+Explicit process environment variables take precedence over saved project values. OAuth uses a loopback desktop
+callback, PKCE, state validation, offline access, the full Gmail IMAP/SMTP scope, and read-only Google Drive scope.
 `GmailClient` exchanges the stored refresh token for short-lived access tokens and caches them only in memory.
 
 Outbound requests use `Run the LTX video pipeline`; inbound jobs use a separate exact subject,

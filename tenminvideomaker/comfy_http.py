@@ -71,6 +71,14 @@ class ComfyHttpClient:
             raise ComfyHttpError("ComfyUI returned invalid queue lists.")
         return len(running), len(pending)
 
+    def object_info(self, node_type: str) -> Mapping[str, Any]:
+        if not isinstance(node_type, str) or not node_type:
+            raise ComfyHttpError("node_type must be non-empty text.")
+        response = self._json_request("GET", f"/object_info/{node_type}", timeout=10)
+        if not isinstance(response, Mapping):
+            raise ComfyHttpError("ComfyUI returned invalid node information.")
+        return response
+
     def queue_prompt(self, workflow: Mapping[str, Any]) -> str:
         response = self._json_request(
             "POST",

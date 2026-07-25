@@ -4,12 +4,16 @@ An independent ComfyUI custom-node project for building a guided long-form video
 
 ## Current status
 
-The durable job contract, SQLite state machine, Gmail/Google Drive transport, LoRA resolver, FFmpeg assembly service, eight
-interactive ComfyUI nodes, scene-specific Anima/Pony/LTX workflow builders, and unattended supervisor are
-implemented. A project-local one-click launcher now configures Gmail securely, validates SMTP/IMAP and OAuth Drive
-access, starts ComfyUI
-when needed, configures Civitai downloads, and launches the supervisor. The first production job rendered all eight
-scenes successfully; its geometry recovery and final assembly are documented below.
+The durable job contract, SQLite state machine, Gmail/Google Drive transport, LoRA resolver, FFmpeg assembly
+service, interactive ComfyUI nodes, scene-specific Anima/Pony/LTX workflow builders, and supervisor are
+implemented. The supervisor now runs behind a loopback-only FastAPI browser UI at
+`http://127.0.0.1:8765/`. New Grok jobs wait for approval, and historical complete, partial, failed, and cancelled
+jobs can be reviewed without displaying raw JSON.
+
+All new persistent runtime data lives under `D:\LTX_Supervisor_Storage`: settings and encrypted secrets, SQLite
+state, source payloads, versioned frames and clips, generation manifests, finals, logs, and temporary assembly
+files. The first GUI launch performs a non-destructive import of the former project runtime and recorded
+`D:\output\10minfinals` artifacts. Legacy source files are left untouched.
 
 The first completed master is `D:\output\10minfinals\20260724-2249_final.mp4`: 704×1248, 24 fps, stereo AAC,
 3,848 frames, and 160.35 seconds.
@@ -38,22 +42,21 @@ Double-click `Start 10MinVideoMaker.bat` in the repository root. On first run it
 2. Offers Google App Password or OAuth2 browser authorization. OAuth includes read-only Google Drive access for
    private job-file links.
 3. Opens Civitai Account Settings and securely collects an API token when missing.
-4. Saves non-secrets in the ignored `.env` file and secrets encrypted with Windows DPAPI in ignored `runtime/`.
+4. Saves non-secrets and current-user DPAPI-encrypted secrets under
+   `D:\LTX_Supervisor_Storage\config`.
 5. Securely collects the Discord Patreon-delivery webhook when missing.
 6. Shows the optional settings editor when requested, including a Discord webhook replacement action.
 7. Validates Gmail and configured Drive access without sending a message, performs a ComfyUI health check, and
-   offers to resume or abandon any active saved job before starting the supervisor. Declining cancels only this
-   project's queued/running ComfyUI prompts, marks unfinished scenes cancelled, preserves the saved audit history,
-   and releases the pipeline to accept a new email.
+   launches the human-review GUI plus its single supervisor worker.
 
 On later runs, valid required settings are reused and the launcher asks whether to change optional settings before
 starting. See `docs/user-guide.md` for OAuth setup details and safe setup-only commands.
 
-The visible supervisor console prints a redacted `STATUS` heartbeat every 15 seconds by default. It reports the
-durable state, active job/scene, and only ComfyUI's running/pending queue counts. It also announces Gmail checks,
-LoRA resolution, cached-artifact reuse, T2I/I2V attempts, and stitching. Change the interval through the optional
-**Console heartbeat seconds** setting (`TENMIN_STATUS_INTERVAL_SECONDS`); use the existing log-level option for
-additional `DEBUG` messages.
+The browser UI shows pipeline/ComfyUI status, a job library, scene previews, every generation parameter used by the
+workflow, and version history. Mark any number of scenes across jobs, choose **Video Only** or
+**Image + Video**, edit parameters, then use **Save & Remake**. Image-only remakes are deliberately impossible.
+If an automated render is active, the UI asks whether to queue edits afterward or cancel only this project's
+current prompts and run the edits immediately.
 
 Run `powershell -ExecutionPolicy Bypass -File scripts\install_windows_shortcuts.ps1` to install the project icon
 and launcher shortcut on the current user's Desktop and Start Menu. The shortcut can then be pinned through

@@ -19,12 +19,24 @@
   detailer; Pony uses 30-step `res_3m_ode` then 30-step `res_5s_ode`, followed by the reference
   `bbox/face_yolov8m.pt` detector and `FaceDetailer` settings.
 - Gmail polling and ComfyUI restart supervision run outside ComfyUI node execution. Nodes and the supervisor share one service layer so that authentication, state transitions, and validation cannot diverge.
+- The supported supervisor surface is a loopback-only FastAPI browser GUI plus one worker. New Gmail jobs must enter
+  `awaiting_review` and require explicit approval. A cross-process project lock must prevent the legacy console
+  supervisor and GUI worker from owning the state machine simultaneously.
+- All persistent runtime data belongs under `D:\LTX_Supervisor_Storage`: configuration, DPAPI secrets, SQLite,
+  source payloads, versioned scene frames/clips/manifests, finals, logs, and temporary files. C: remains source and
+  model-loading storage only. A custom `TENMIN_STORAGE_ROOT` must still resolve to D:.
+- Scene edits must use the same typed contract and workflow builders as automatic jobs. Store each edit as a new
+  immutable revision. Video-only revisions require an existing frame; image-only remake must not exist in the API,
+  state enum, or UI. Preserve unsigned 64-bit seeds as strings across the browser boundary.
+- Collision choices are `after_current` and `interrupt_current`. Interrupt may cancel only prompts carrying this
+  project's ComfyUI client ID, then atomically preserve/abandon the active job before a remake batch runs. Never
+  clear the global ComfyUI queue or restart a healthy server for this action.
 - The visible supervisor must emit a redacted status heartbeat during both polling sleeps and long blocking work.
   It may report state, job/scene IDs, safe asset names, and queue counts, but never prompts, workflow bodies, URLs,
   tokens, App Passwords, OAuth secrets, or Discord webhooks.
-- One-click setup remains project-local. Store non-secrets in ignored `.env`; encrypt App Passwords, OAuth client
-  secrets, refresh tokens, Civitai tokens, and Discord webhooks with current-user Windows DPAPI in ignored
-  `runtime/secrets.json`. Process environment
+- One-click setup remains project-local. Store non-secrets in the D-drive settings file; encrypt App Passwords,
+  OAuth client secrets, refresh tokens, Civitai tokens, and Discord webhooks with current-user Windows DPAPI in the
+  D-drive secrets file. Process environment
   variables override saved values. Persistent OAuth uses a desktop loopback callback, PKCE/state, offline access,
   the full Gmail IMAP/SMTP scope, and read-only Google Drive scope.
 - Gmail payload precedence is JSON attachment, valid plain-text body JSON, then a supported Google Drive file link.
@@ -40,7 +52,8 @@
   704×1216; route decoded frames through a final core `ImageScale` using Lanczos, 704×1248, and centered crop before
   video combine. Do not expose or save an alternate production size.
 - I2V uses `VHS_VideoCombine` temporary output. The supervisor retrieves its exact history metadata through
-  `/view` and writes the project clip under `D:\output\10minfinals\.work`; do not scan or move shared output folders.
+  `/view` and writes the project clip into the matching versioned directory below
+  `D:\LTX_Supervisor_Storage\jobs`; do not scan or move shared output folders.
 - Controlled restart must verify the port-8188 owner is the expected Easy Install embedded Python executable before
   stopping it. Never weaken that path check.
 - Standalone automation must resolve LoRAs through the loopback-only project route registered in the live ComfyUI
@@ -541,3 +554,37 @@
 - Results: all 125 tests passed under system Python and Easy Install embedded Python; both compilation passes and
   `git diff --check` passed. The live Drive file parsed as job `20260725-0614` with ten scenes after two seed
   normalizations. No workflow was queued during validation.
+
+### 2026-07-25 — human-review GUI, D-drive storage, and versioned remakes
+
+- Changed files: `.env.example`, `Start 10MinVideoMaker.bat`, `scripts/run_gui.py`, `scripts/run_supervisor.py`,
+  `scripts/setup_and_start.py`; `tenminvideomaker/storage.py`, `ownership.py`, `review.py`, `gui_app.py`,
+  `gui_service.py`, `state_store.py`, `supervisor.py`, `workflow_builder.py`, `artifacts.py`, `assembly.py`,
+  `comfy_http.py`, `configuration.py`, `mail.py`, `nodes.py`, and `server_api.py`; `web/index.html`,
+  `web/styles.css`, `web/app.js`; focused tests in `tests/test_storage.py`, `test_review.py`, `test_gui_app.py`,
+  `test_gui_service.py`, `test_state_store.py`, `test_workflow_builder.py`, `test_artifacts.py`,
+  `test_configuration.py`, and `test_setup_and_start.py`; `README.md`, `docs/architecture.md`,
+  `docs/user-guide.md`, `TODO.md`, and this file.
+- Framework: FastAPI uses the already-installed Easy Install embedded-Python packages. The frontend is dependency-free
+  HTML/CSS/JavaScript, binds only to `127.0.0.1:8765`, and obtains sampler choices from live ComfyUI node contracts.
+- Persistence: new runtime state is rooted at `D:\LTX_Supervisor_Storage`. The one-time migration uses SQLite
+  backup and file copies, materializes source payloads, rewrites only the migrated database paths, and leaves old
+  state/media untouched.
+- Review/routing: Gmail claims enter `awaiting_review`. The UI exposes human-readable source context, prompts,
+  large seeds, effective LoRAs, both model-specific T2I passes, Pony detailer, both I2V samplers/sigmas, CFG and
+  conditioning controls, chunking, upscaler, and locked production invariants. Edits are reparsed through the exact
+  job contract and use the existing workflow builders through explicit overrides.
+- Revisions/batches: only `video_only` and `image_and_video` exist. Drafts can span jobs; submission creates durable
+  numbered scene revisions and manifests. Video-only reuses a verified cached frame. Image + Video writes a new
+  revision frame and passes that exact path into I2V.
+- Ownership/collision: a project lock and exact legacy-process detection enforce one supervisor owner. Active-render
+  collisions either wait or cancel only this project's prompts, preserve the interrupted job history, and then run
+  the queued revision batch.
+- Reproduction: launch `Start 10MinVideoMaker.bat`, select a historical job/scene, mark multiple scenes, edit a seed
+  or prompt, choose a supported remake mode, and submit. Do not submit during no-render validation.
+- Verification commands:
+  - `python -m unittest discover -s tests -q`
+  - Easy Install embedded-Python full unit suite with the repository inserted into `sys.path`
+  - `python -m compileall -q tenminvideomaker scripts tests`
+  - `node --check web/app.js`
+  - `git diff --check`

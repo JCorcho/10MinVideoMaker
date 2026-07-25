@@ -13,9 +13,17 @@ if not exist "%TENMIN_PYTHON%" (
 )
 
 set "PYTHONUTF8=1"
-"%TENMIN_PYTHON%" "%~dp0scripts\setup_and_start.py" %*
+"%TENMIN_PYTHON%" "%~dp0scripts\setup_and_start.py" --setup-only
+if errorlevel 1 goto :setup_failed
+
+"%TENMIN_PYTHON%" -u "%~dp0scripts\run_gui.py" %*
+set "TENMIN_EXIT=%ERRORLEVEL%"
+goto :finished
+
+:setup_failed
 set "TENMIN_EXIT=%ERRORLEVEL%"
 
+:finished
 if not "%TENMIN_EXIT%"=="0" (
     echo.
     echo 10MinVideoMaker exited with code %TENMIN_EXIT%.

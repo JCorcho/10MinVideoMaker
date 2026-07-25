@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>10MinVideoMaker Supervisor</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <p class="eyebrow">Human-in-the-loop production</p>
+      <h1>10MinVideoMaker</h1>
+    </div>
+    <div id="status" class="status-pill">Connecting…</div>
+    <button id="submit-batch" class="primary" disabled>
+      Save &amp; Remake <span id="draft-count">0</span>
+    </button>
+  </header>
+
+  <main class="workspace">
+    <aside class="panel library-panel">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">History</p>
+          <h2>Projects</h2>
+        </div>
+        <button id="refresh" class="icon-button" title="Refresh">↻</button>
+      </div>
+      <div id="jobs" class="scroll-list"></div>
+    </aside>
+
+    <aside class="panel scenes-panel">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">Selected project</p>
+          <h2 id="job-title">Choose a project</h2>
+        </div>
+        <button id="approve-job" class="secondary hidden">Approve &amp; Queue</button>
+      </div>
+      <div id="job-meta" class="metadata"></div>
+      <div id="scenes" class="scroll-list"></div>
+    </aside>
+
+    <section class="panel detail-panel">
+      <div id="empty-state" class="empty-state">
+        <div class="empty-icon">▶</div>
+        <h2>Select a scene</h2>
+        <p>Review the source frame, rendered clip, and every generation setting.</p>
+      </div>
+      <div id="scene-detail" class="hidden">
+        <div class="detail-heading">
+          <div>
+            <p class="eyebrow" id="scene-kicker">Scene</p>
+            <h2 id="scene-heading"></h2>
+          </div>
+          <div class="revision-picker">
+            <label for="revision-select">Result version</label>
+            <select id="revision-select"></select>
+          </div>
+        </div>
+
+        <div class="media-grid">
+          <figure class="media-card">
+            <figcaption>Starting frame</figcaption>
+            <div class="media-stage"><img id="frame-preview" alt="Scene starting frame"></div>
+          </figure>
+          <figure class="media-card">
+            <figcaption>Generated video</figcaption>
+            <div class="media-stage"><video id="video-preview" controls preload="metadata"></video></div>
+          </figure>
+        </div>
+
+        <div class="remake-toolbar">
+          <label class="switch-label">
+            <input id="mark-remake" type="checkbox">
+            <span>Mark scene for remake</span>
+          </label>
+          <div id="remake-mode" class="segmented hidden">
+            <label><input type="radio" name="remake-mode" value="video_only" checked> Video only</label>
+            <label><input type="radio" name="remake-mode" value="image_and_video"> Image + video</label>
+          </div>
+          <span id="draft-state" class="muted"></span>
+        </div>
+
+        <form id="parameter-form">
+          <section class="form-section">
+            <div class="section-title"><h3>Scene</h3><span>Grok direction</span></div>
+            <div class="field-grid two">
+              <label>Title<input data-path="title" type="text"></label>
+              <label>Estimated seconds<input data-path="estimated_seconds" type="number" min="0.1" max="32" step="0.1"></label>
+            </div>
+            <div id="scene-context" class="context-grid"></div>
+          </section>
+
+          <section class="form-section">
+            <div class="section-title"><h3>Character</h3><span>Global identity routing</span></div>
+            <div class="field-grid three">
+              <label>Name<input data-path="character.name" type="text"></label>
+              <label>Series<input data-path="character.series" type="text"></label>
+              <label>Base model<input data-path="character.base_model" type="text"></label>
+            </div>
+            <div id="character-lora"></div>
+          </section>
+
+          <section class="form-section">
+            <div class="section-title"><h3>Text to image</h3><span>Starting-frame generation</span></div>
+            <label>Positive prompt<textarea data-path="t2i.prompt" rows="5"></textarea></label>
+            <label>Negative prompt<textarea data-path="t2i.negative" rows="4"></textarea></label>
+            <label class="compact-field">Seed<input data-path="t2i.seed" type="text" inputmode="numeric"></label>
+            <div id="t2i-loras"></div>
+            <div id="t2i-passes" class="pass-grid"></div>
+            <details id="face-detailer-wrap">
+              <summary>Face detailer settings</summary>
+              <div id="face-detailer" class="field-grid three"></div>
+            </details>
+          </section>
+
+          <section class="form-section">
+            <div class="section-title"><h3>Image to video</h3><span>LTX 2.3 two-pass generation</span></div>
+            <label>Motion prompt<textarea data-path="i2v.prompt" rows="6"></textarea></label>
+            <label>Negative prompt<textarea data-path="i2v.negative" rows="4"></textarea></label>
+            <label class="compact-field">Seed<input data-path="i2v.seed" type="text" inputmode="numeric"></label>
+            <div id="i2v-loras"></div>
+            <div id="mandatory-loras" class="locked-list"></div>
+            <div id="i2v-passes" class="pass-grid"></div>
+            <details>
+              <summary>VRAM chunking and spatial upscaler</summary>
+              <div id="i2v-advanced" class="field-grid three"></div>
+            </details>
+          </section>
+
+          <section class="form-section locked-section">
+            <div class="section-title"><h3>Production profile</h3><span>Project invariant</span></div>
+            <div id="production-profile" class="profile-row"></div>
+          </section>
+
+          <section class="form-section">
+            <details>
+              <summary>Job research and source context</summary>
+              <div id="job-context" class="context-grid"></div>
+            </details>
+          </section>
+        </form>
+      </div>
+    </section>
+  </main>
+
+  <div id="collision-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true">
+    <div class="modal">
+      <p class="eyebrow">ComfyUI is busy</p>
+      <h2>An automated Grok job is currently rendering.</h2>
+      <p>Choose how the saved scene edits should enter the queue.</p>
+      <div class="modal-actions">
+        <button id="queue-after" class="secondary">Queue edits after current job</button>
+        <button id="interrupt-now" class="danger">Interrupt current job &amp; run edits</button>
+        <button id="cancel-modal" class="ghost">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
