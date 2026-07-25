@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import asdict
+from datetime import datetime
 import json
 from pathlib import Path
 from typing import Any, Mapping
@@ -26,6 +27,34 @@ from .state_store import (
     StateTransitionError,
 )
 from .storage import StorageLayout, write_json_atomic
+
+
+def _project_date(job: Any, stored_created_at: str | None = None) -> str:
+    source_created_at = job.raw.get("created_at")
+    if isinstance(source_created_at, str):
+        try:
+            return datetime.fromisoformat(
+                source_created_at.replace("Z", "+00:00")
+            ).strftime("%m/%d/%Y")
+        except ValueError:
+            pass
+    if len(job.job_id) >= 8 and job.job_id[:8].isdigit():
+        try:
+            return datetime.strptime(job.job_id[:8], "%Y%m%d").strftime("%m/%d/%Y")
+        except ValueError:
+            pass
+    if stored_created_at:
+        try:
+            return datetime.fromisoformat(
+                stored_created_at.replace("Z", "+00:00")
+            ).strftime("%m/%d/%Y")
+        except ValueError:
+            pass
+    return "Unknown date"
+
+
+def _project_display_name(job: Any, stored_created_at: str | None = None) -> str:
+    return f"{job.character.name} · {_project_date(job, stored_created_at)}"
 
 
 def _record_document(record: SceneRecord) -> dict[str, Any]:
@@ -122,23 +151,33 @@ def create_gui_app(
 
     @app.get("/api/jobs")
     async def jobs() -> list[dict[str, Any]]:
-        return [
-            {
-                **asdict(item),
-                "status": item.status.value,
-            }
-            for item in controller.store.list_jobs()
-        ]
+        documents: list[dict[str, Any]] = []
+        for item in controller.store.list_jobs():
+            job = controller.store.load_job(item.job_id)
+            documents.append(
+                {
+                    **asdict(item),
+                    "status": item.status.value,
+                    "display_name": _project_display_name(job, item.created_at),
+                }
+            )
+        return documents
 
     @app.get("/api/jobs/{job_id}")
     async def job_detail(job_id: str) -> dict[str, Any]:
         try:
             job = controller.store.load_job(job_id)
             records = controller.store.scene_records(job_id)
+            job_record = next(
+                item
+                for item in controller.store.list_jobs()
+                if item.job_id == job_id
+            )
         except StateTransitionError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
         return {
             "job_id": job.job_id,
+            "display_name": _project_display_name(job, job_record.created_at),
             "character": {
                 "name": job.character.name,
                 "series": job.character.series,

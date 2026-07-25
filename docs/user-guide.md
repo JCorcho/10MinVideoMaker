@@ -16,6 +16,8 @@ Double-click `Start 10MinVideoMaker.bat`. After the existing credential checks, 
 `http://127.0.0.1:8765/`. The server binds only to this computer.
 
 1. Select a job in **Project library**, then select a scene.
+   Project names use `Character · MM/DD/YYYY`; the internal job ID remains hidden as the routing key. The project
+   library and scene list each scroll independently when they contain more rows than fit on screen.
 2. Review the source frame, generated video, prompts, seeds, character and stage LoRAs, T2I passes, Pony face
    detailer, I2V samplers and sigma schedules, chunking, upscaler, and fixed production profile.
 3. For a newly received job, click **Approve & Queue Job** to start its normal scene pipeline.

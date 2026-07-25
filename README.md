@@ -56,7 +56,8 @@ The browser UI shows pipeline/ComfyUI status, a job library, scene previews, eve
 workflow, and version history. Mark any number of scenes across jobs, choose **Video Only** or
 **Image + Video**, edit parameters, then use **Save & Remake**. Image-only remakes are deliberately impossible.
 If an automated render is active, the UI asks whether to queue edits afterward or cancel only this project's
-current prompts and run the edits immediately.
+current prompts and run the edits immediately. Project cards use the readable
+`Character · MM/DD/YYYY` label, and the project and scene columns scroll independently.
 
 Run `powershell -ExecutionPolicy Bypass -File scripts\install_windows_shortcuts.ps1` to install the project icon
 and launcher shortcut on the current user's Desktop and Start Menu. The shortcut can then be pinned through

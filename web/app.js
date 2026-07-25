@@ -73,8 +73,39 @@ function badge(value) {
   return `<span class="badge ${value}">${humanize(value)}</span>`;
 }
 
+function projectDate(job, detail) {
+  const sourceDate = detail?.metadata?.created_at;
+  if (typeof sourceDate === "string") {
+    const parsed = new Date(sourceDate);
+    if (!Number.isNaN(parsed.valueOf())) {
+      return `${String(parsed.getUTCMonth() + 1).padStart(2, "0")}/${String(parsed.getUTCDate()).padStart(2, "0")}/${parsed.getUTCFullYear()}`;
+    }
+  }
+  const encoded = String(job.job_id).match(/^(\d{4})(\d{2})(\d{2})/);
+  if (encoded) {
+    return `${encoded[2]}/${encoded[3]}/${encoded[1]}`;
+  }
+  const stored = new Date(job.created_at);
+  if (!Number.isNaN(stored.valueOf())) {
+    return `${String(stored.getUTCMonth() + 1).padStart(2, "0")}/${String(stored.getUTCDate()).padStart(2, "0")}/${stored.getUTCFullYear()}`;
+  }
+  return "Unknown date";
+}
+
 async function loadJobs() {
-  state.jobs = await api("/api/jobs");
+  const jobs = await api("/api/jobs");
+  state.jobs = await Promise.all(jobs.map(async (job) => {
+    if (job.display_name) return job;
+    try {
+      const detail = await api(`/api/jobs/${encodeURIComponent(job.job_id)}`);
+      return {
+        ...job,
+        display_name: `${detail.character.name} · ${projectDate(job, detail)}`,
+      };
+    } catch {
+      return job;
+    }
+  }));
   renderJobs();
   if (state.selectedJob) {
     await selectJob(state.selectedJob);
@@ -83,8 +114,8 @@ async function loadJobs() {
 
 function renderJobs() {
   $("#jobs").innerHTML = state.jobs.map((job) => `
-    <button class="list-card ${job.job_id === state.selectedJob ? "selected" : ""}" data-job="${job.job_id}">
-      <strong>${escapeHtml(job.job_id)}</strong>
+    <button class="list-card ${job.job_id === state.selectedJob ? "selected" : ""}" data-job="${escapeHtml(job.job_id)}">
+      <strong>${escapeHtml(job.display_name || job.job_id)}</strong>
       <div class="card-row">${badge(job.status)}<span>${job.succeeded_count}/${job.scene_count} scenes</span></div>
     </button>
   `).join("") || `<p class="muted">No stored projects yet.</p>`;
@@ -97,7 +128,8 @@ async function selectJob(jobId) {
   state.sceneData = null;
   renderJobs();
   const job = await api(`/api/jobs/${encodeURIComponent(jobId)}`);
-  $("#job-title").textContent = job.job_id;
+  const summary = state.jobs.find((item) => item.job_id === jobId);
+  $("#job-title").textContent = job.display_name || summary?.display_name || job.job_id;
   $("#job-meta").textContent = `${job.character.name} · ${job.character.series} · ${job.character.base_model}`;
   $("#scenes").innerHTML = job.scenes.map((scene) => `
     <button class="list-card" data-scene="${scene.scene_id}">

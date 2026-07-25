@@ -18,6 +18,25 @@ from tenminvideomaker.storage import StorageLayout
 from test_contracts import payload
 
 
+class GuiStaticAssetTests(unittest.TestCase):
+    def test_project_and_scene_lists_have_independent_scroll_containers(self) -> None:
+        web_root = Path(__file__).parents[1] / "web"
+        styles = (web_root / "styles.css").read_text(encoding="utf-8")
+        script = (web_root / "app.js").read_text(encoding="utf-8")
+
+        self.assertRegex(
+            styles,
+            r"(?s)\.panel\s*\{[^}]*min-height:\s*0;[^}]*display:\s*flex;",
+        )
+        self.assertRegex(
+            styles,
+            r"(?s)\.scroll-list\s*\{[^}]*flex:\s*1 1 auto;"
+            r"[^}]*min-height:\s*0;[^}]*overflow-y:\s*auto;",
+        )
+        self.assertIn("job.display_name || job.job_id", script)
+        self.assertIn("summary?.display_name || job.job_id", script)
+
+
 @unittest.skipUnless(TestClient is not None, "FastAPI is supplied by the embedded Python")
 class GuiAppTests(unittest.TestCase):
     def test_launcher_restarts_only_for_stale_contract_and_empty_queue(self) -> None:
@@ -63,7 +82,9 @@ class GuiAppTests(unittest.TestCase):
             root = Path(directory)
             storage = StorageLayout(root / "storage")
             store = PipelineStateStore(storage.database_path)
-            job = parse_job_payload(payload())
+            source = payload()
+            source["created_at"] = "2026-07-24T16:10:45Z"
+            job = parse_job_payload(source)
             store.claim_job(job, review_required=True)
 
             class FakeComfy:
@@ -98,6 +119,9 @@ class GuiAppTests(unittest.TestCase):
 
             jobs = client.get("/api/jobs").json()
             self.assertEqual(jobs[0]["job_id"], job.job_id)
+            self.assertEqual(jobs[0]["display_name"], "Elsa · 07/24/2026")
+            job_detail = client.get(f"/api/jobs/{job.job_id}").json()
+            self.assertEqual(job_detail["display_name"], "Elsa · 07/24/2026")
             scene = client.get(f"/api/jobs/{job.job_id}/scenes/1").json()
             self.assertIn("first_pass", scene["parameters"]["i2v"])
             self.assertNotIn("payload_json", scene)

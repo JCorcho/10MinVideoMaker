@@ -605,3 +605,16 @@
   preserves an empty destination database before backing up a populated legacy database.
 - Recovery: preserve the placeholder files as timestamped D-drive backups, restore the untouched legacy `.env`
   and DPAPI secret store, then run the normal non-destructive migration and credential validation.
+
+### 2026-07-25 — scrollable GUI libraries and readable project names
+
+- Changed files: `tenminvideomaker/gui_app.py`, `web/styles.css`, `web/app.js`,
+  `tests/test_gui_app.py`, `README.md`, `docs/user-guide.md`, and this file.
+- Cause: the fixed-height project/scene list calculations were inside CSS grid children whose automatic minimum
+  height prevented shrinking; the page body intentionally hides outer overflow, so rows beyond the viewport were
+  clipped instead of becoming scrollable.
+- Repair: library panels are bounded flex columns with `min-height: 0`; each list owns stable independent vertical
+  overflow. Project labels use `Character · MM/DD/YYYY`, preferring the source creation date, then the encoded job
+  date, then the stored creation timestamp. The job ID remains the API and state-machine key.
+- Reproduction: load a history containing more projects and scenes than fit vertically. Both left columns must
+  scroll to their final card, while project cards and the selected-project heading show the readable label.

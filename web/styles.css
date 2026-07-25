@@ -46,15 +46,33 @@ button:disabled { opacity: .42; cursor: not-allowed; }
 
 .workspace {
   height: calc(100vh - 76px);
+  min-height: 0;
+  overflow: hidden;
   display: grid;
   grid-template-columns: 290px 330px minmax(540px, 1fr);
 }
-.panel { min-width: 0; border-right: 1px solid var(--line); background: var(--panel); }
-.panel-heading { min-height: 70px; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 15px 16px; border-bottom: 1px solid var(--line); }
+.panel {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--line);
+  background: var(--panel);
+}
+.panel-heading { flex: 0 0 auto; min-height: 70px; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 15px 16px; border-bottom: 1px solid var(--line); }
 .panel-heading h2 { font-size: 16px; margin-top: 3px; }
-.scroll-list { height: calc(100% - 70px); overflow: auto; padding: 8px; }
-.metadata { padding: 10px 14px; border-bottom: 1px solid var(--line); font-size: 12px; color: var(--muted); }
-.scenes-panel .scroll-list { height: calc(100% - 118px); }
+.scroll-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  padding: 8px;
+}
+.metadata { flex: 0 0 auto; padding: 10px 14px; border-bottom: 1px solid var(--line); font-size: 12px; color: var(--muted); }
 
 .list-card { display: block; width: 100%; text-align: left; padding: 12px; margin-bottom: 7px; background: transparent; border: 1px solid transparent; }
 .list-card:hover { background: var(--panel-2); }
@@ -67,7 +85,7 @@ button:disabled { opacity: .42; cursor: not-allowed; }
 .badge.running, .badge.queued { background: #44391d; color: var(--warning); }
 .badge.awaiting_review { background: #173c45; color: var(--accent); }
 
-.detail-panel { overflow: auto; background: #0e141e; border-right: 0; }
+.detail-panel { display: block; overflow-y: auto; background: #0e141e; border-right: 0; }
 .empty-state { min-height: 100%; display: grid; place-content: center; text-align: center; color: var(--muted); gap: 10px; }
 .empty-state h2 { color: var(--text); }
 .empty-icon { font-size: 30px; color: var(--accent); }
