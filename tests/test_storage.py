@@ -85,6 +85,31 @@ class StorageTests(unittest.TestCase):
             self.assertTrue(old_final.exists())
             self.assertTrue(layout.migration_marker.is_file())
 
+    def test_empty_destination_database_cannot_block_legacy_history_migration(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "project"
+            layout = StorageLayout(root / "new-storage")
+            legacy = PipelineStateStore(project / "runtime" / "pipeline.sqlite3")
+            job = parse_job_payload(payload())
+            legacy.claim_job(job)
+            PipelineStateStore(layout.database_path).snapshot()
+
+            result = migrate_legacy_storage(
+                project,
+                layout=layout,
+                legacy_output_root=root / "legacy-output",
+            )
+
+            self.assertTrue(result["empty_database_preserved"])
+            self.assertTrue(
+                (layout.state_root / "pipeline.pre-migration-empty.sqlite3").is_file()
+            )
+            self.assertEqual(
+                PipelineStateStore(layout.database_path).load_job(job.job_id).job_id,
+                job.job_id,
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

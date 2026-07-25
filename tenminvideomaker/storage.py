@@ -195,6 +195,43 @@ def _backup_sqlite(source: Path, destination: Path) -> bool:
     return True
 
 
+def _sqlite_job_count(path: Path) -> int:
+    if not path.is_file():
+        return 0
+    connection = sqlite3.connect(path)
+    try:
+        has_jobs = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'jobs'"
+        ).fetchone()
+        if not has_jobs:
+            return 0
+        return int(connection.execute("SELECT COUNT(*) FROM jobs").fetchone()[0])
+    except sqlite3.DatabaseError as error:
+        raise StorageError(f"Could not inspect saved state database {path}: {error}") from error
+    finally:
+        connection.close()
+
+
+def _preserve_empty_destination_database(source: Path, destination: Path) -> bool:
+    """Unblock a first migration if an empty destination DB was created prematurely."""
+    if (
+        not source.is_file()
+        or not destination.is_file()
+        or _sqlite_job_count(source) == 0
+        or _sqlite_job_count(destination) != 0
+    ):
+        return False
+    backup = destination.with_name("pipeline.pre-migration-empty.sqlite3")
+    suffix = 1
+    while backup.exists():
+        backup = destination.with_name(
+            f"pipeline.pre-migration-empty-{suffix}.sqlite3"
+        )
+        suffix += 1
+    os.replace(destination, backup)
+    return True
+
+
 def _materialize_payloads(layout: StorageLayout) -> int:
     if not layout.database_path.is_file():
         return 0
@@ -335,10 +372,12 @@ def migrate_legacy_storage(
             "storage_root": str(layout.root),
         }
 
-    database_copied = _backup_sqlite(
-        project_root / "runtime" / "pipeline.sqlite3",
+    legacy_database = project_root / "runtime" / "pipeline.sqlite3"
+    empty_database_preserved = _preserve_empty_destination_database(
+        legacy_database,
         layout.database_path,
     )
+    database_copied = _backup_sqlite(legacy_database, layout.database_path)
     settings_copied = int(
         _copy_if_missing(project_root / ".env", layout.settings_path)
     )
@@ -358,6 +397,7 @@ def migrate_legacy_storage(
     result: dict[str, int | bool | str] = {
         "already_migrated": False,
         "database": database_copied,
+        "empty_database_preserved": empty_database_preserved,
         "settings": settings_copied,
         "secrets": secrets_copied,
         "payloads": payload_count,

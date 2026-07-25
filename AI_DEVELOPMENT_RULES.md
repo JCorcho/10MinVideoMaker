@@ -591,3 +591,17 @@
   - `python -m compileall -q tenminvideomaker scripts tests`
   - `node --check web/app.js`
   - `git diff --check`
+
+### 2026-07-25 — production configuration isolation repair
+
+- Changed files: `tenminvideomaker/configuration.py`, `storage.py`, focused tests in
+  `tests/test_configuration.py` and `tests/test_storage.py`, plus this file.
+- Cause: configuration helpers defaulted every caller—including a temporary test project—to the production
+  `D:\LTX_Supervisor_Storage` root. An earlier unit test therefore wrote its OAuth placeholders into the real
+  settings and secret files. A prematurely initialized empty D-drive SQLite database could also block the
+  first legacy-history backup.
+- Repair: only this exact repository root may select the configured production D-drive layout implicitly.
+  Temporary/embedded project roots default to their own `runtime-storage` directory. First migration detects and
+  preserves an empty destination database before backing up a populated legacy database.
+- Recovery: preserve the placeholder files as timestamped D-drive backups, restore the untouched legacy `.env`
+  and DPAPI secret store, then run the normal non-destructive migration and credential validation.

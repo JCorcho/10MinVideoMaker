@@ -13,6 +13,8 @@ from typing import Callable, Mapping
 
 from .storage import StorageLayout
 
+PACKAGE_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
 SECRET_KEYS = frozenset(
     {
         "TENMIN_GMAIL_APP_PASSWORD",
@@ -48,6 +50,19 @@ CONFIG_KEYS = frozenset(
 
 class ConfigurationError(RuntimeError):
     """Raised when local configuration or encrypted secrets are invalid."""
+
+
+def _project_storage_layout(
+    project_root: Path,
+    storage_layout: StorageLayout | None,
+    environment: Mapping[str, str] | None = None,
+) -> StorageLayout:
+    if storage_layout is not None:
+        return storage_layout
+    if project_root.resolve() == PACKAGE_PROJECT_ROOT:
+        return StorageLayout.configured(environment)
+    # Tests and embedding callers must remain isolated from the production D: root.
+    return StorageLayout(project_root.resolve() / "runtime-storage")
 
 
 class _DataBlob(ctypes.Structure):
@@ -229,7 +244,11 @@ def load_project_environment(
 ) -> dict[str, str]:
     """Merge local config and DPAPI secrets, with explicit OS variables taking precedence."""
     project_root = Path(project_root)
-    layout = storage_layout or StorageLayout.configured(base_environment)
+    layout = _project_storage_layout(
+        project_root,
+        storage_layout,
+        base_environment,
+    )
     local = read_env_file(layout.settings_path)
     secrets_values = SecretStore(layout.secrets_path).load()
     if not local and not layout.settings_path.exists():
@@ -247,8 +266,8 @@ def save_project_environment(
     *,
     storage_layout: StorageLayout | None = None,
 ) -> None:
-    del project_root
-    layout = storage_layout or StorageLayout.configured(values)
+    project_root = Path(project_root)
+    layout = _project_storage_layout(project_root, storage_layout, values)
     write_env_file(
         layout.settings_path,
         {key: value for key, value in values.items() if key in CONFIG_KEYS},

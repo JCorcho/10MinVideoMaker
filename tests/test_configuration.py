@@ -98,6 +98,21 @@ class ConfigurationTests(unittest.TestCase):
             self.assertEqual(merged["TENMIN_STATUS_INTERVAL_SECONDS"], "15")
             self.assertEqual(merged["UNRELATED"], "preserved")
 
+    def test_non_project_callers_cannot_write_the_production_storage_root(self) -> None:
+        with tempfile.TemporaryDirectory(dir=TEST_TEMP_ROOT) as temporary:
+            root = Path(temporary)
+            save_project_environment(
+                root,
+                {"TENMIN_GMAIL_USERNAME": "isolated@example.com"},
+            )
+
+            isolated = root / "runtime-storage" / "config" / "settings.env"
+            self.assertTrue(isolated.is_file())
+            self.assertEqual(
+                read_env_file(isolated)["TENMIN_GMAIL_USERNAME"],
+                "isolated@example.com",
+            )
+
     @unittest.skipUnless(os.name == "nt", "Windows DPAPI is required")
     def test_project_save_uses_dpapi_for_secrets(self) -> None:
         with tempfile.TemporaryDirectory(dir=TEST_TEMP_ROOT) as temporary:
