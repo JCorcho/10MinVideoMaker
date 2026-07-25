@@ -23,6 +23,12 @@ chain. Dynamic I2V LoRAs must be verified from Civitai metadata as `LTXV 2.3` be
 unverifiable or different-base LoRA is rejected even when its file is already installed. DMD 1.0 and JoyAI 0.5
 remain the two mandatory local LTX LoRAs.
 
+Every newly generated scene also has a metadata-free Patreon delivery branch. The exact approved `wm.png`
+watermark is applied only to Discord media: images are sent as lossless PNG at quality 100, and videos are sent as
+H.264 with generated audio at quality 65 and 24 fps. Both DiscordSendSave nodes have `save_output`, prompt inclusion,
+workflow JSON, CDN logging, and GitHub updates disabled. Clean cached frames and deterministic scene clips remain
+unwatermarked for I2V reuse and master assembly.
+
 ## One-click start
 
 Double-click `Start 10MinVideoMaker.bat` in the repository root. On first run it:
@@ -32,8 +38,9 @@ Double-click `Start 10MinVideoMaker.bat` in the repository root. On first run it
    private job-file links.
 3. Opens Civitai Account Settings and securely collects an API token when missing.
 4. Saves non-secrets in the ignored `.env` file and secrets encrypted with Windows DPAPI in ignored `runtime/`.
-5. Shows the optional settings editor when requested.
-6. Validates Gmail and configured Drive access without sending a message, performs a ComfyUI health check, offers to
+5. Securely collects the Discord Patreon-delivery webhook when missing.
+6. Shows the optional settings editor when requested, including a Discord webhook replacement action.
+7. Validates Gmail and configured Drive access without sending a message, performs a ComfyUI health check, offers to
    retry an unfinished saved job, and starts the supervisor. Declining the retry marks unfinished scenes cancelled,
    preserves the saved audit history, and releases the pipeline to accept a new email.
 

@@ -20,7 +20,8 @@
   `bbox/face_yolov8m.pt` detector and `FaceDetailer` settings.
 - Gmail polling and ComfyUI restart supervision run outside ComfyUI node execution. Nodes and the supervisor share one service layer so that authentication, state transitions, and validation cannot diverge.
 - One-click setup remains project-local. Store non-secrets in ignored `.env`; encrypt App Passwords, OAuth client
-  secrets, and refresh tokens with current-user Windows DPAPI in ignored `runtime/secrets.json`. Process environment
+  secrets, refresh tokens, Civitai tokens, and Discord webhooks with current-user Windows DPAPI in ignored
+  `runtime/secrets.json`. Process environment
   variables override saved values. Persistent OAuth uses a desktop loopback callback, PKCE/state, offline access,
   the full Gmail IMAP/SMTP scope, and read-only Google Drive scope.
 - Gmail payload precedence is JSON attachment, valid plain-text body JSON, then a supported Google Drive file link.
@@ -58,6 +59,12 @@
   history, and clear the active pipeline pointer to `idle`; returning `None` without a state transition is invalid.
 - Assembly/profile failures must also transition to `error` and preserve successful scenes instead of escaping the
   supervisor tick in `stitching`.
+- Patreon delivery is a parallel output branch. Preserve clean cached frames and clean deterministic clips as the
+  generation/assembly source of truth. Apply the exact `wm.png` settings only before the DiscordSendSave nodes.
+  Discord image is lossless PNG quality 100; Discord video is H.264 quality 65 at production fps with decoded audio.
+  Both senders must disable local output, prompt/workflow metadata, CDN logging, and GitHub updates. Never commit the
+  real webhook; runtime graphs load it from DPAPI, versioned templates use a placeholder, and approved shared GUI
+  copies may receive the configured secret during export.
 
 ## Implementation and testing
 
@@ -438,5 +445,27 @@
 - Verification commands:
   - `python -m compileall -q tenminvideomaker tests scripts __init__.py`
   - `python -m unittest discover -s tests -v`
+  - `python scripts/export_workflows.py --install-approved-shared-copies`
+  - `git diff --check`
+
+### 2026-07-24 — watermarked metadata-free Discord delivery
+
+- Changed files: `.env.example`, `tenminvideomaker/delivery.py`, `configuration.py`, `state_store.py`, `supervisor.py`,
+  `workflow_builder.py`, `scripts/run_supervisor.py`, `setup_and_start.py`, `export_workflows.py`, all six generated
+  workflow JSON files, focused delivery/configuration/setup/workflow tests, `README.md`, `docs/architecture.md`,
+  `docs/user-guide.md`, and this file.
+- Reference settings: from the explicitly approved reference workflow only, use `wm.png`, bottom-right, scale 0.70,
+  bicubic, transparency 0.40, rotation 0, padding 20×20, optical correction off/0.40, three switches, no fade,
+  margin 0.10, fixed position, seed 0.
+- Routing: the clean image still feeds `10MinVideoMaker_SaveSceneFrame`; its parallel watermarked edge feeds only
+  `DiscordSendSaveImage` at PNG quality 100. Clean normalized video still feeds temporary `VHS_VideoCombine`; its
+  parallel watermarked edge plus decoded audio feeds only `DiscordSendSaveVideo` at H.264 quality 65 and 24 fps.
+- Privacy/storage: both Discord nodes disable `save_output`, prompt inclusion, workflow JSON, CDN storage, and
+  GitHub updates. The imported webhook is DPAPI-encrypted and absent from tracked files. Versioned workflows use a
+  placeholder; approved shared copies receive the encrypted runtime value during export.
+- Verification commands:
+  - `python -m compileall -q tenminvideomaker tests scripts __init__.py`
+  - `python -m unittest discover -s tests -v`
+  - live `/object_info` validation of both delivery graphs
   - `python scripts/export_workflows.py --install-approved-shared-copies`
   - `git diff --check`

@@ -126,6 +126,48 @@ class StateStoreTests(unittest.TestCase):
         self.assertEqual(record.i2v_attempts, 0)
         self.assertIsNone(record.prompt_id)
 
+    def test_single_scene_i2v_requeue_resets_only_interrupted_scene(self) -> None:
+        data = payload()
+        second = payload()["scenes"][0]
+        second["id"] = 2
+        data["scenes"].append(second)
+        job = parse_job_payload(data)
+        self.store.claim_job(job)
+        for scene_id in (1, 2):
+            self.store.begin_scene_stage(
+                job.job_id,
+                scene_id,
+                PipelineState.RUNNING_I2V,
+            )
+        self.store.set_scene_state(
+            job.job_id,
+            1,
+            SceneState.SUCCEEDED,
+            frame_path="frame-1.png",
+            video_path="scene-1.mp4",
+        )
+        self.store.set_scene_state(
+            job.job_id,
+            2,
+            SceneState.RUNNING,
+            frame_path="frame-2.png",
+        )
+
+        self.store.requeue_scene_i2v(job.job_id, 2)
+
+        first, second_record = self.store.scene_records(job.job_id)
+        self.assertEqual(first.state, SceneState.SUCCEEDED)
+        self.assertEqual(first.video_path, "scene-1.mp4")
+        self.assertEqual(first.i2v_attempts, 1)
+        self.assertEqual(second_record.state, SceneState.PENDING)
+        self.assertEqual(second_record.frame_path, "frame-2.png")
+        self.assertIsNone(second_record.video_path)
+        self.assertEqual(second_record.i2v_attempts, 0)
+        self.assertEqual(
+            self.store.snapshot().state,
+            PipelineState.DOWNLOADING_ASSETS,
+        )
+
     def test_abandon_job_cancels_unfinished_scene_and_releases_pipeline(self) -> None:
         self.store.claim_job(self.job)
         self.store.begin_scene_stage(

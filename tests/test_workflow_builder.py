@@ -9,6 +9,7 @@ from tenminvideomaker.constants import (
     I2V_UPSCALE_PASS_SIGMAS,
 )
 from tenminvideomaker.contracts import lora_identity, parse_job_payload
+from tenminvideomaker.delivery import DiscordDeliverySettings
 from tenminvideomaker.workflow_builder import (
     I2V_BASE_HEIGHT,
     I2V_BASE_WIDTH,
@@ -30,6 +31,9 @@ class WorkflowBuilderTests(unittest.TestCase):
     def setUp(self) -> None:
         self.job = parse_job_payload(payload())
         self.scene = self.job.scenes[0]
+        self.delivery = DiscordDeliverySettings(
+            "https://discord.com" + "/api/webhooks/123456789/test-token"
+        )
 
     def test_anima_uses_reference_sampler_and_fixed_output_size(self) -> None:
         build = build_t2i_api_workflow(self.job, self.scene)
@@ -148,6 +152,63 @@ class WorkflowBuilderTests(unittest.TestCase):
         self.assertEqual(combine["frame_rate"], 24.0)
         self.assertFalse(combine["save_output"])
         self.assertEqual(build.api[build.output_node_id]["class_type"], "VHS_VideoCombine")
+
+    def test_t2i_discord_branch_watermarks_full_quality_without_second_save(self) -> None:
+        build = build_t2i_api_workflow(
+            self.job,
+            self.scene,
+            delivery=self.delivery,
+        )
+        watermark = nodes_of_type(build.api, "DaSiWa_Watermark")[0]
+        sender = nodes_of_type(build.api, "DiscordSendSaveImage")[0]
+        sender_id = sender["inputs"]["images"][0]
+        self.assertIs(build.api[sender_id], watermark)
+        self.assertEqual(
+            {
+                "watermark_path": watermark["inputs"]["watermark_path"],
+                "position": watermark["inputs"]["position"],
+                "scale": watermark["inputs"]["scale"],
+                "transparency": watermark["inputs"]["transparency"],
+            },
+            {
+                "watermark_path": "wm.png",
+                "position": "bottom-right",
+                "scale": 0.7,
+                "transparency": 0.4,
+            },
+        )
+        self.assertEqual(sender["inputs"]["quality"], 100)
+        self.assertTrue(sender["inputs"]["lossless"])
+        self.assertTrue(sender["inputs"]["send_to_discord"])
+        self.assertFalse(sender["inputs"]["save_output"])
+        self.assertFalse(sender["inputs"]["include_prompts_in_message"])
+        self.assertFalse(sender["inputs"]["send_workflow_json"])
+        saver = build.api[build.output_node_id]
+        self.assertNotEqual(saver["inputs"]["images"], sender["inputs"]["images"])
+
+    def test_i2v_discord_branch_uses_watermark_audio_and_quality_65_only(self) -> None:
+        frame_path = Path(r"D:\output\10minfinals\.work\job\frames\scene_0001.png")
+        build = build_i2v_api_workflow(
+            self.job,
+            self.scene,
+            frame_path,
+            delivery=self.delivery,
+        )
+        watermark = nodes_of_type(build.api, "DaSiWa_Watermark")[0]
+        sender = nodes_of_type(build.api, "DiscordSendSaveVideo")[0]
+        combine = nodes_of_type(build.api, "VHS_VideoCombine")[0]
+        self.assertEqual(sender["inputs"]["images"][0], next(
+            node_id for node_id, node in build.api.items() if node is watermark
+        ))
+        self.assertNotEqual(sender["inputs"]["images"], combine["inputs"]["images"])
+        self.assertEqual(sender["inputs"]["audio"], combine["inputs"]["audio"])
+        self.assertEqual(sender["inputs"]["format"], "video/h264-mp4")
+        self.assertEqual(sender["inputs"]["frame_rate"], 24.0)
+        self.assertEqual(sender["inputs"]["quality"], 65)
+        self.assertTrue(sender["inputs"]["send_to_discord"])
+        self.assertFalse(sender["inputs"]["save_output"])
+        self.assertFalse(sender["inputs"]["include_prompts_in_message"])
+        self.assertFalse(sender["inputs"]["send_workflow_json"])
 
     def test_i2v_normalizes_decoded_frames_to_exact_production_geometry(self) -> None:
         build = build_i2v_api_workflow(

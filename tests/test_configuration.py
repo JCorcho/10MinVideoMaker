@@ -17,6 +17,7 @@ from tenminvideomaker.configuration import (
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TEST_TEMP_ROOT = PROJECT_ROOT / "runtime" / "test-temp"
+FAKE_DISCORD_WEBHOOK = "https://discord.com" + "/api/webhooks/123/token-secret"
 
 
 class ConfigurationTests(unittest.TestCase):
@@ -36,17 +37,20 @@ class ConfigurationTests(unittest.TestCase):
                 {
                     "TENMIN_GMAIL_APP_PASSWORD": "sixteencharacters",
                     "TENMIN_CIVITAI_TOKEN": "civitai-secret",
+                    "TENMIN_DISCORD_WEBHOOK_URL": FAKE_DISCORD_WEBHOOK,
                     "IGNORED": "not-allowed",
                 }
             )
             serialized = path.read_text(encoding="utf-8")
             self.assertNotIn("sixteencharacters", serialized)
             self.assertNotIn("civitai-secret", serialized)
+            self.assertNotIn("token-secret", serialized)
             self.assertNotIn("not-allowed", serialized)
             self.assertEqual(
                 store.load(),
                 {
                     "TENMIN_CIVITAI_TOKEN": "civitai-secret",
+                    "TENMIN_DISCORD_WEBHOOK_URL": FAKE_DISCORD_WEBHOOK,
                     "TENMIN_GMAIL_APP_PASSWORD": "sixteencharacters",
                 },
             )
@@ -99,6 +103,9 @@ class ConfigurationTests(unittest.TestCase):
                 "TENMIN_GMAIL_OAUTH_CLIENT_SECRET": "client-secret-value",
                 "TENMIN_GMAIL_OAUTH_REFRESH_TOKEN": "refresh-token-value",
                 "TENMIN_CIVITAI_TOKEN": "civitai-token-value",
+                "TENMIN_DISCORD_WEBHOOK_URL": (
+                    "https://discord.com" + "/api/webhooks/123/discord-token-value"
+                ),
             }
             save_project_environment(root, values)
             env_text = (root / ".env").read_text(encoding="utf-8")
@@ -107,10 +114,15 @@ class ConfigurationTests(unittest.TestCase):
             self.assertNotIn("client-secret-value", env_text + secret_text)
             self.assertNotIn("refresh-token-value", env_text + secret_text)
             self.assertNotIn("civitai-token-value", env_text + secret_text)
+            self.assertNotIn("discord-token-value", env_text + secret_text)
             loaded = load_project_environment(root, base_environment={})
             self.assertEqual(loaded["TENMIN_GMAIL_OAUTH_CLIENT_SECRET"], "client-secret-value")
             self.assertEqual(loaded["TENMIN_GMAIL_OAUTH_REFRESH_TOKEN"], "refresh-token-value")
             self.assertEqual(loaded["TENMIN_CIVITAI_TOKEN"], "civitai-token-value")
+            self.assertEqual(
+                loaded["TENMIN_DISCORD_WEBHOOK_URL"],
+                "https://discord.com" + "/api/webhooks/123/discord-token-value",
+            )
 
 
 if __name__ == "__main__":

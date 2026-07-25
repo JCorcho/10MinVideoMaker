@@ -592,5 +592,71 @@
       "save_metadata": true,
       "trim_to_audio": false
     }
+  },
+  "38": {
+    "class_type": "DaSiWa_Watermark",
+    "_meta": {
+      "title": "Watermark Discord scene video"
+    },
+    "inputs": {
+      "images": [
+        "35",
+        0
+      ],
+      "watermark_path": "wm.png",
+      "position": "bottom-right",
+      "scale": 0.7,
+      "resampling": "bicubic",
+      "transparency": 0.4,
+      "rotation": 0,
+      "padding_x": 20,
+      "padding_y": 20,
+      "optical_padding": false,
+      "optical_strength": 0.4,
+      "random_switches": 3,
+      "fade": false,
+      "fade_margin": 0.1,
+      "randomize_position": false,
+      "random_seed": 0
+    }
+  },
+  "39": {
+    "class_type": "DiscordSendSaveVideo",
+    "_meta": {
+      "title": "Send metadata-free watermarked video to Discord"
+    },
+    "inputs": {
+      "images": [
+        "38",
+        0
+      ],
+      "audio": [
+        "36",
+        0
+      ],
+      "filename_prefix": "10MinVideoMaker-example-20260724-1610-scene-0001",
+      "overwrite_last": false,
+      "format": "video/h264-mp4",
+      "frame_rate": 24.0,
+      "quality": 65,
+      "loop_count": 0,
+      "lossless": false,
+      "pingpong": false,
+      "save_output": false,
+      "include_video_info": true,
+      "add_date": true,
+      "add_time": true,
+      "add_dimensions": true,
+      "send_to_discord": true,
+      "webhook_url": "https://discord.com/api/webhooks/000000000000000000/REPLACE_WITH_ENCRYPTED_RUNTIME_WEBHOOK",
+      "discord_message": "10MinVideoMaker job example-20260724-1610 — scene 1: Example portrait",
+      "include_prompts_in_message": false,
+      "send_workflow_json": false,
+      "save_cdn_urls": false,
+      "github_cdn_update": false,
+      "github_repo": "",
+      "github_token": "",
+      "github_file_path": "cdn_urls.md"
+    }
   }
 }

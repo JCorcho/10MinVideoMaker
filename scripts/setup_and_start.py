@@ -25,6 +25,10 @@ from tenminvideomaker.configuration import (
     save_project_environment,
 )
 from tenminvideomaker.drive import GOOGLE_DRIVE_API_ENABLE_URL
+from tenminvideomaker.delivery import (
+    DISCORD_WEBHOOK_ENV,
+    valid_discord_webhook_url,
+)
 from tenminvideomaker.mail import (
     GmailClient,
     GmailSettings,
@@ -222,7 +226,7 @@ def _prompt_email(
 
 
 def _clear_authentication(environment: dict[str, str]) -> None:
-    for key in SECRET_KEYS | {
+    for key in {key for key in SECRET_KEYS if key.startswith("TENMIN_GMAIL_")} | {
         "TENMIN_GMAIL_OAUTH_CLIENT_ID",
         "TENMIN_GMAIL_OAUTH_SCOPES",
     }:
@@ -363,6 +367,23 @@ def configure_civitai(
     environment["TENMIN_CIVITAI_TOKEN"] = token
 
 
+def configure_discord(
+    environment: dict[str, str],
+    *,
+    secret_input: Callable[[str], str] = getpass,
+) -> None:
+    print("\nDiscord Patreon delivery")
+    print("------------------------")
+    print(
+        "Paste the Discord webhook used by the DiscordSendSave nodes. "
+        "It is encrypted with Windows DPAPI and is not written to Git."
+    )
+    webhook = secret_input("Paste the Discord webhook URL: ").strip()
+    if not valid_discord_webhook_url(webhook):
+        raise ConfigurationError("Enter a valid Discord HTTPS webhook URL.")
+    environment[DISCORD_WEBHOOK_ENV] = webhook
+
+
 def edit_optional_settings(
     environment: dict[str, str],
     *,
@@ -385,6 +406,7 @@ def edit_optional_settings(
             print(f"      {setting.description}")
         auth_index = len(OPTIONAL_SETTINGS) + 1
         civitai_index = auth_index + 1
+        discord_index = civitai_index + 1
         print(f"  {auth_index:2}. Reconfigure Gmail authentication")
         token_status = (
             "configured"
@@ -392,6 +414,15 @@ def edit_optional_settings(
             else "not configured"
         )
         print(f"  {civitai_index:2}. Configure/change Civitai API token ({token_status})")
+        discord_status = (
+            "configured"
+            if valid_discord_webhook_url(environment.get(DISCORD_WEBHOOK_ENV, ""))
+            else "not configured"
+        )
+        print(
+            f"  {discord_index:2}. Configure/change Discord webhook "
+            f"({discord_status})"
+        )
         print("   0. Save and continue")
         choice = input_func("Choose a setting to change [0]: ").strip() or "0"
         if choice == "0":
@@ -416,6 +447,12 @@ def edit_optional_settings(
                 input_func=input_func,
                 secret_input=secret_input,
                 open_url=open_url,
+            )
+            continue
+        if number == discord_index:
+            configure_discord(
+                environment,
+                secret_input=secret_input,
             )
             continue
         if not 1 <= number <= len(OPTIONAL_SETTINGS):
@@ -526,6 +563,15 @@ def setup_environment(
                 secret_input=secret_input,
                 open_url=open_url,
             )
+
+    if valid_discord_webhook_url(environment.get(DISCORD_WEBHOOK_ENV, "")):
+        print("Discord Patreon delivery webhook is configured.")
+    else:
+        print("Discord Patreon delivery webhook is missing or invalid.")
+        configure_discord(
+            environment,
+            secret_input=secret_input,
+        )
 
     if _yes_no(
         "Change optional environment settings before starting?",

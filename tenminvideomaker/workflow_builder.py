@@ -26,6 +26,7 @@ from .contracts import (
     effective_t2i_loras,
     lora_identity,
 )
+from .delivery import DiscordDeliverySettings
 
 ANIMA_UNET = "CyberRealistic_AnimaSemi_V6.0.safetensors"
 ANIMA_TEXT_ENCODER = "cyberrealisticAnima_v30_txt.safetensors"
@@ -124,10 +125,136 @@ def _apply_t2i_loras(
     return model, clip
 
 
+def _watermarked_discord_media(
+    graph: _Graph,
+    images: list[Any],
+    *,
+    title: str,
+) -> list[Any]:
+    watermark = graph.add(
+        "DaSiWa_Watermark",
+        title,
+        images=images,
+        watermark_path="wm.png",
+        position="bottom-right",
+        scale=0.7,
+        resampling="bicubic",
+        transparency=0.4,
+        rotation=0,
+        padding_x=20,
+        padding_y=20,
+        optical_padding=False,
+        optical_strength=0.4,
+        random_switches=3,
+        fade=False,
+        fade_margin=0.1,
+        randomize_position=False,
+        random_seed=0,
+    )
+    return graph.output(watermark)
+
+
+def _add_discord_image_delivery(
+    graph: _Graph,
+    images: list[Any],
+    job: JobPayload,
+    scene: SceneSpec,
+    delivery: DiscordDeliverySettings | None,
+) -> None:
+    if delivery is None:
+        return
+    watermarked = _watermarked_discord_media(
+        graph,
+        images,
+        title="Watermark Discord scene image",
+    )
+    graph.add(
+        "DiscordSendSaveImage",
+        "Send metadata-free watermarked image to Discord",
+        images=watermarked,
+        filename_prefix=f"10MinVideoMaker-{job.job_id}-scene-{scene.scene_id:04d}",
+        overwrite_last=False,
+        file_format="png",
+        quality=100,
+        lossless=True,
+        save_output=False,
+        show_preview=False,
+        resize_to_power_of_2=False,
+        resize_method="lanczos",
+        include_format_in_message=False,
+        group_batched_images=True,
+        add_date=True,
+        add_time=True,
+        add_dimensions=True,
+        send_to_discord=True,
+        webhook_url=delivery.webhook_url,
+        discord_message=(
+            f"10MinVideoMaker job {job.job_id} — scene {scene.scene_id}: {scene.title}"
+        ),
+        include_prompts_in_message=False,
+        send_workflow_json=False,
+        save_cdn_urls=False,
+        github_cdn_update=False,
+        github_repo="",
+        github_token="",
+        github_file_path="cdn_urls.md",
+    )
+
+
+def _add_discord_video_delivery(
+    graph: _Graph,
+    images: list[Any],
+    audio: list[Any],
+    job: JobPayload,
+    scene: SceneSpec,
+    delivery: DiscordDeliverySettings | None,
+) -> None:
+    if delivery is None:
+        return
+    watermarked = _watermarked_discord_media(
+        graph,
+        images,
+        title="Watermark Discord scene video",
+    )
+    graph.add(
+        "DiscordSendSaveVideo",
+        "Send metadata-free watermarked video to Discord",
+        images=watermarked,
+        audio=audio,
+        filename_prefix=f"10MinVideoMaker-{job.job_id}-scene-{scene.scene_id:04d}",
+        overwrite_last=False,
+        format="video/h264-mp4",
+        frame_rate=float(PRODUCTION_FPS),
+        quality=65,
+        loop_count=0,
+        lossless=False,
+        pingpong=False,
+        save_output=False,
+        include_video_info=True,
+        add_date=True,
+        add_time=True,
+        add_dimensions=True,
+        send_to_discord=True,
+        webhook_url=delivery.webhook_url,
+        discord_message=(
+            f"10MinVideoMaker job {job.job_id} — scene {scene.scene_id}: {scene.title}"
+        ),
+        include_prompts_in_message=False,
+        send_workflow_json=False,
+        save_cdn_urls=False,
+        github_cdn_update=False,
+        github_repo="",
+        github_token="",
+        github_file_path="cdn_urls.md",
+    )
+
+
 def build_t2i_api_workflow(
     job: JobPayload,
     scene: SceneSpec,
     resolved_lora_filenames: Mapping[str, str] | None = None,
+    *,
+    delivery: DiscordDeliverySettings | None = None,
 ) -> WorkflowBuild:
     """Build the matching Anima or Pony workflow for one scene."""
     graph = _Graph()
@@ -301,6 +428,7 @@ def build_t2i_api_workflow(
         job_id=job.job_id,
         scene_id=scene.scene_id,
     )
+    _add_discord_image_delivery(graph, final_image, job, scene, delivery)
     return WorkflowBuild(
         api=graph.nodes,
         output_node_id=saved,
@@ -341,6 +469,8 @@ def build_i2v_api_workflow(
     scene: SceneSpec,
     cached_frame_path: str | Path,
     resolved_lora_filenames: Mapping[str, str] | None = None,
+    *,
+    delivery: DiscordDeliverySettings | None = None,
 ) -> WorkflowBuild:
     """Build the two-pass LCM LTX 2.3 graph for one exact cached T2I frame."""
     frame_path = Path(cached_frame_path)
@@ -622,6 +752,14 @@ def build_i2v_api_workflow(
         crf=19,
         save_metadata=True,
         trim_to_audio=False,
+    )
+    _add_discord_video_delivery(
+        graph,
+        graph.output(production_video),
+        graph.output(decoded_audio),
+        job,
+        scene,
+        delivery,
     )
     return WorkflowBuild(api=graph.nodes, output_node_id=combined, filename_prefix=filename_prefix)
 

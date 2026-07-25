@@ -9,6 +9,7 @@ import scripts.setup_and_start as setup_module
 from scripts.setup_and_start import (
     _local_comfy_url,
     configure_civitai,
+    configure_discord,
     configure_gmail,
     edit_optional_settings,
     oauth_drive_scopes_ready,
@@ -20,6 +21,10 @@ from tenminvideomaker.contracts import parse_job_payload
 from tenminvideomaker.state_store import PipelineState, PipelineStateStore, SceneState
 
 from test_contracts import payload
+
+FAKE_DISCORD_WEBHOOK = (
+    "https://discord.com" + "/api/webhooks/123456789/token-value"
+)
 
 
 def _answers(*values: str):
@@ -146,6 +151,22 @@ class SetupAndStartTests(unittest.TestCase):
         )
         self.assertEqual(environment["TENMIN_CIVITAI_TOKEN"], "civitai-api-token")
         self.assertEqual(opened, ["https://civitai.com/user/account"])
+
+    def test_discord_setup_collects_only_a_valid_webhook_secret(self) -> None:
+        environment = {}
+        configure_discord(
+            environment,
+            secret_input=lambda _prompt: FAKE_DISCORD_WEBHOOK,
+        )
+        self.assertEqual(
+            environment["TENMIN_DISCORD_WEBHOOK_URL"],
+            FAKE_DISCORD_WEBHOOK,
+        )
+        with self.assertRaisesRegex(Exception, "valid Discord"):
+            configure_discord(
+                {},
+                secret_input=lambda _prompt: "https://example.com/not-discord",
+            )
 
     def test_comfy_url_is_restricted_to_the_authorized_local_server(self) -> None:
         self.assertTrue(_local_comfy_url("http://127.0.0.1:8188"))

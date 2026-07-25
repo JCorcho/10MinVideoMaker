@@ -48,6 +48,23 @@ Do not queue the example workflows for a real render without replacing the examp
 This means Grok should list only genuine LTXV 2.3 motion/character LoRAs in I2V fields. It should never repeat an
 Anima, Pony, SDXL, Flux, or other image-model LoRA there.
 
+### Patreon Discord delivery
+
+Each production scene sends two metadata-free, watermarked Patreon previews through the installed
+DiscordSendSave nodes:
+
+- Image: `wm.png`, bottom-right, scale 0.70, transparency 0.40, 20-pixel padding; lossless PNG, quality 100.
+- Video: the same watermark settings on the final 704×1248 frame batch; H.264 MP4 with generated audio, 24 fps,
+  quality 65.
+
+The Discord nodes send to the webhook only. `save_output`, previews, prompt inclusion, workflow JSON, CDN URL
+storage, and GitHub updates are disabled. The clean deterministic T2I PNG remains the I2V input, and the clean
+temporary VHS clip remains the master-assembly input; watermarking cannot feed back into generation.
+
+The webhook is encrypted in `runtime/secrets.json` with Windows DPAPI. The versioned workflow files contain only a
+nonfunctional placeholder, while the approved shared workflow copies receive the configured webhook during export.
+To replace it later, run the launcher, choose optional settings, then choose **Configure/change Discord webhook**.
+
 The GUI templates store a separate `fixed` seed-control value after each sampler/detailer seed. This keeps the
 canvas widgets aligned, so the Pony samplers visibly show 30 steps rather than incorrectly displaying CFG 6 in the
 steps field.
@@ -96,8 +113,8 @@ Existing mail-only OAuth grants are detected on the next launcher run. The launc
 and secret, opens the Drive API page, and performs a one-time browser reauthorization for the additional read-only
 scope.
 
-Secrets are not written to `.env`, workflow JSON, or Git. The launcher encrypts App Passwords, OAuth client secrets,
-OAuth refresh tokens, and the Civitai API token with Windows DPAPI for the current Windows user and stores the
+Secrets are not written to `.env`, versioned workflow JSON, or Git. The launcher encrypts App Passwords, OAuth client secrets,
+OAuth refresh tokens, the Civitai API token, and the Discord webhook with Windows DPAPI for the current Windows user and stores the
 ciphertext in the ignored `runtime/secrets.json`. Non-secret values are stored in the ignored project `.env`.
 Existing process environment variables override saved project values.
 

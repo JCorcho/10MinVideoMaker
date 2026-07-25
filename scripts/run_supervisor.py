@@ -19,6 +19,7 @@ from tenminvideomaker.assembly import FfmpegAssembler, probe_video
 from tenminvideomaker.assets import ComfyLoraAssetClient
 from tenminvideomaker.comfy_http import ComfyHttpClient
 from tenminvideomaker.configuration import load_project_environment
+from tenminvideomaker.delivery import DiscordDeliverySettings
 from tenminvideomaker.mail import GmailClient, GmailSettings
 from tenminvideomaker.state_store import PipelineStateStore
 from tenminvideomaker.supervisor import PipelineSupervisor, SupervisorSettings
@@ -77,6 +78,7 @@ def build_supervisor(*, allow_restart: bool) -> PipelineSupervisor:
         settings=SupervisorSettings.from_environment(),
         restart_comfy=restart_comfyui if allow_restart else None,
         video_probe=partial(probe_video, ffprobe_executable=ffprobe),
+        delivery=DiscordDeliverySettings.from_environment(configured_environment),
     )
 
 

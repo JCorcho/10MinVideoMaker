@@ -23,6 +23,7 @@ from .contracts import (
     effective_t2i_loras,
     lora_identity,
 )
+from .delivery import DiscordDeliverySettings
 from .mail import GmailClient, GmailPollingService
 from .state_store import PipelineState, PipelineStateStore, SceneState
 from .workflow_builder import build_i2v_api_workflow, build_t2i_api_workflow
@@ -82,6 +83,7 @@ class PipelineSupervisor:
         frame_path_factory: Callable[[str, int], Path] = scene_frame_path,
         clip_path_factory: Callable[[str, int], Path] = scene_clip_path,
         video_probe: Callable[[str | Path], object] = probe_video,
+        delivery: DiscordDeliverySettings | None = None,
     ):
         self.store = store
         self.mail_client = mail_client
@@ -94,6 +96,7 @@ class PipelineSupervisor:
         self._frame_path = frame_path_factory
         self._clip_path = clip_path_factory
         self._video_probe = video_probe
+        self.delivery = delivery
 
     def tick(self) -> None:
         """Advance the durable pipeline until it reaches a polling wait state."""
@@ -295,6 +298,7 @@ class PipelineSupervisor:
                 job,
                 scene,
                 resolved_lora_filenames,
+                delivery=self.delivery,
             )
             prompt_id = self.comfy.queue_prompt(build.api)
             self.store.set_scene_prompt_id(job.job_id, scene.scene_id, prompt_id)
@@ -338,6 +342,7 @@ class PipelineSupervisor:
             scene,
             frame_path,
             resolved_lora_filenames,
+            delivery=self.delivery,
         )
         prompt_id = self.comfy.queue_prompt(build.api)
         self.store.set_scene_prompt_id(job.job_id, scene.scene_id, prompt_id)

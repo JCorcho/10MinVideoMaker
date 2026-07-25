@@ -1,6 +1,6 @@
 {
-  "last_node_id": 37,
-  "last_link_id": 55,
+  "last_node_id": 39,
+  "last_link_id": 58,
   "nodes": [
     {
       "id": 1,
@@ -236,6 +236,7 @@
             "Princess_Tiana.safetensors",
             "Puffy_Nipples_PonyXL.safetensors",
             "Pussyjob_LTX-2.3_Sulphur.safetensors",
+            "Qinsleth_OC_Anima_IL_Pony_-_Anima_Preview_3.safetensors",
             "RealSkin_xxXL_v1.safetensors",
             "ShinySkinSlider3.0_800steps.safetensors",
             "Thigh Size Slider V2_alpha1.0_rank4_noxattn_last.safetensors",
@@ -378,6 +379,7 @@
             "Princess_Tiana.safetensors",
             "Puffy_Nipples_PonyXL.safetensors",
             "Pussyjob_LTX-2.3_Sulphur.safetensors",
+            "Qinsleth_OC_Anima_IL_Pony_-_Anima_Preview_3.safetensors",
             "RealSkin_xxXL_v1.safetensors",
             "ShinySkinSlider3.0_800steps.safetensors",
             "Thigh Size Slider V2_alpha1.0_rank4_noxattn_last.safetensors",
@@ -2091,7 +2093,8 @@
           "name": "IMAGE",
           "type": "IMAGE",
           "links": [
-            54
+            54,
+            56
           ],
           "slot_index": 0
         }
@@ -2138,7 +2141,8 @@
           "name": "Audio",
           "type": "AUDIO",
           "links": [
-            55
+            55,
+            58
           ],
           "slot_index": 0
         }
@@ -2269,6 +2273,441 @@
         false
       ],
       "title": "Save 704x1248 24 fps scene clip"
+    },
+    {
+      "id": 38,
+      "type": "DaSiWa_Watermark",
+      "pos": [
+        7800,
+        526
+      ],
+      "size": [
+        360,
+        558
+      ],
+      "flags": {},
+      "order": 37,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 56
+        },
+        {
+          "name": "watermark_path",
+          "type": [
+            "0.png",
+            "011644_00000_clean.png",
+            "11v2.png",
+            "174-1746261_oscar-the-grouch-i-love.png",
+            "86b8184f-9017-466b-a049-d39fb09dbdc3.png",
+            "Architecture.png",
+            "BallerinaBunny.png",
+            "BunnyExplorer.png",
+            "BunnySitting.jpg",
+            "Buttons.png",
+            "Cat.jpeg",
+            "CatVector.png",
+            "ComfyUI-Image_2026-07-16_11-26-09_1184x1504_00001.png",
+            "ComfyUI-Video_2026-07-11_04-41-07_00001.png",
+            "ComfyUI_00574_.png",
+            "DancerInWhite.png",
+            "Dancers.png",
+            "DancersBunny.png",
+            "Dog.jpeg",
+            "Flowers.jpg",
+            "Geisha.png",
+            "GnomeLineArt.png",
+            "Helmet.png",
+            "House3D.jpg",
+            "InfiniteTalkMan.jpg",
+            "Man1.jpg",
+            "Man2.jpg",
+            "Man3.jpg",
+            "ModernDancer.png",
+            "PIXA3D.jpeg",
+            "PixaGirl.png",
+            "PixaromaLogo.png",
+            "Screenshot 2025-04-04 141810.png",
+            "Screenshot 2026-07-11 234144.png",
+            "Screenshot 2026-07-11 234255.png",
+            "Screenshot 2026-07-11 234327.png",
+            "Sketch.jpeg",
+            "SphereAndCube3D.png",
+            "WanWoman.png",
+            "Woman1.jpg",
+            "Woman2.jpg",
+            "Woman3.jpeg",
+            "WomanPortraitRed.png",
+            "WomanPose.jpeg",
+            "WomanStanding.png",
+            "XMAS.jpg",
+            "example.png",
+            "example_image.jpg",
+            "groceries.jpg",
+            "icon.png",
+            "image.png",
+            "img__00001__wm.png",
+            "img__00030_.png",
+            "kcpp_img2img.jpg",
+            "robot.png",
+            "scene_0001.png",
+            "scene_0002.png",
+            "storyboard_ComfyUI-Video_2026-07-16_03-40-06_00001-audio.png",
+            "storyboard_video_0003_0002_00001-audio.png",
+            "video_0002_0001_00001.png",
+            "video_0007_0006_00001.png",
+            "video_0010_0009_00001.png",
+            "video_0014_0013_00001.png",
+            "video_0015_0014_00001.png",
+            "video_0017_0016_00001.png",
+            "vrgdg_i2i_1784692468626.png",
+            "vrgdg_i2i_1784708686702.png",
+            "vrgdg_i2i_1784709801267.png",
+            "vrgdg_i2i_1784709815634.png",
+            "vrgdg_i2i_1784711010304.png",
+            "vrgdg_i2i_1784744560236.png",
+            "vrgdg_i2i_1784746445350.png",
+            "vrgdg_i2i_1784746569570.png",
+            "vrgdg_i2i_1784746641256.png",
+            "vrgdg_i2i_1784746731715.png",
+            "vrgdg_i2i_1784746803566.png",
+            "vrgdg_i2i_1784746821785.png",
+            "vrgdg_i2i_1784747088507.png",
+            "vrgdg_i2i_1784747434500.png",
+            "vrgdg_i2i_1784752090598.png",
+            "vrgdg_i2i_1784752350836.png",
+            "vrgdg_i2i_1784752728104.png",
+            "vrgdg_i2i_1784758527583.png",
+            "vrgdg_i2i_1784780551668.png",
+            "vrgdg_i2i_1784780973168.png",
+            "vrgdg_i2i_1784781541190.png",
+            "vrgdg_i2i_1784781998165.png",
+            "vrgdg_i2i_1784782747232.png",
+            "vrgdg_i2i_1784783085376.png",
+            "vrgdg_i2i_1784783520860.png",
+            "vrgdg_i2i_1784783836017.png",
+            "vrgdg_i2i_1784784411622.png",
+            "vrgdg_i2i_1784784978036.png",
+            "vrgdg_i2i_1784785344778.png",
+            "vrgdg_i2i_1784785654151.png",
+            "vrgdg_i2i_1784785975256.png",
+            "vrgdg_i2i_1784786942314.png",
+            "vrgdg_i2i_1784787066818.png",
+            "vrgdg_i2i_1784787191121.png",
+            "vrgdg_i2i_1784787319718.png",
+            "vrgdg_i2i_1784787429916.png",
+            "vrgdg_i2i_1784787539565.png",
+            "vrgdg_placeholder_i2i.png",
+            "vrgdg_script_to_film_placeholder.png",
+            "wm.png"
+          ],
+          "link": null
+        },
+        {
+          "name": "position",
+          "type": [
+            "bottom-right",
+            "bottom-left",
+            "top-right",
+            "top-left",
+            "center"
+          ],
+          "link": null
+        },
+        {
+          "name": "scale",
+          "type": "FLOAT",
+          "link": null
+        },
+        {
+          "name": "resampling",
+          "type": [
+            "bicubic",
+            "bilinear",
+            "nearest",
+            "area",
+            "nearest-exact"
+          ],
+          "link": null
+        },
+        {
+          "name": "transparency",
+          "type": "FLOAT",
+          "link": null
+        },
+        {
+          "name": "rotation",
+          "type": "INT",
+          "link": null
+        },
+        {
+          "name": "padding_x",
+          "type": "INT",
+          "link": null
+        },
+        {
+          "name": "padding_y",
+          "type": "INT",
+          "link": null
+        },
+        {
+          "name": "optical_padding",
+          "type": "BOOLEAN",
+          "link": null
+        },
+        {
+          "name": "optical_strength",
+          "type": "FLOAT",
+          "link": null
+        },
+        {
+          "name": "random_switches",
+          "type": "INT",
+          "link": null
+        },
+        {
+          "name": "fade",
+          "type": "BOOLEAN",
+          "link": null
+        },
+        {
+          "name": "fade_margin",
+          "type": "FLOAT",
+          "link": null
+        },
+        {
+          "name": "randomize_position",
+          "type": "BOOLEAN",
+          "link": null
+        },
+        {
+          "name": "random_seed",
+          "type": "INT",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            57
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "DaSiWa_Watermark"
+      },
+      "widgets_values": [
+        "wm.png",
+        "bottom-right",
+        0.7,
+        "bicubic",
+        0.4,
+        0,
+        20,
+        20,
+        false,
+        0.4,
+        3,
+        false,
+        0.1,
+        false,
+        0
+      ],
+      "title": "Watermark Discord scene video"
+    },
+    {
+      "id": 39,
+      "type": "DiscordSendSaveVideo",
+      "pos": [
+        8320,
+        0
+      ],
+      "size": [
+        360,
+        810
+      ],
+      "flags": {},
+      "order": 38,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 57
+        },
+        {
+          "name": "filename_prefix",
+          "type": "STRING",
+          "link": null
+        },
+        {
+          "name": "overwrite_last",
+          "type": "BOOLEAN",
+          "link": null
+        },
+        {
+          "name": "format",
+          "type": [
+            "image/gif",
+            "image/webp",
+            "video/gif",
+            "video/mp4",
+            "video/h264-mp4",
+            "video/h265-mp4",
+            "video/webm",
+            "video/vp9-webm",
+            "video/prores"
+          ],
+          "link": null
+        },
+        {
+          "name": "frame_rate",
+          "type": "FLOAT",
+          "link": null
+        },
+        {
+          "name": "quality",
+          "type": "INT",
+          "link": null
+        },
+        {
+          "name": "loop_count",
+          "type": "INT",
+          "link": null
+        },
+        {
+          "name": "lossless",
+          "type": "BOOLEAN",
+          "link": null
+        },
+        {
+          "name": "pingpong",
+          "type": "BOOLEAN",
+          "link": null
+        },
+        {
+          "name": "save_output",
+          "type": "BOOLEAN",
+          "link": null
+        },
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "link": 58
+        },
+        {
+          "name": "include_video_info",
+          "type": "BOOLEAN",
+          "link": null
+        },
+        {
+          "name": "add_date",
+          "type": "BOOLEAN",
+          "link": null
+        },
+        {
+          "name": "add_time",
+          "type": "BOOLEAN",
+          "link": null
+        },
+        {
+          "name": "add_dimensions",
+          "type": "BOOLEAN",
+          "link": null
+        },
+        {
+          "name": "send_to_discord",
+          "type": "BOOLEAN",
+          "link": null
+        },
+        {
+          "name": "webhook_url",
+          "type": "STRING",
+          "link": null
+        },
+        {
+          "name": "discord_message",
+          "type": "STRING",
+          "link": null
+        },
+        {
+          "name": "include_prompts_in_message",
+          "type": "BOOLEAN",
+          "link": null
+        },
+        {
+          "name": "send_workflow_json",
+          "type": "BOOLEAN",
+          "link": null
+        },
+        {
+          "name": "save_cdn_urls",
+          "type": "BOOLEAN",
+          "link": null
+        },
+        {
+          "name": "github_cdn_update",
+          "type": "BOOLEAN",
+          "link": null
+        },
+        {
+          "name": "github_repo",
+          "type": "STRING",
+          "link": null
+        },
+        {
+          "name": "github_token",
+          "type": "STRING",
+          "link": null
+        },
+        {
+          "name": "github_file_path",
+          "type": "STRING",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "video_path",
+          "type": "STRING",
+          "links": [],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "DiscordSendSaveVideo"
+      },
+      "widgets_values": [
+        "10MinVideoMaker-example-20260724-1610-scene-0001",
+        false,
+        "video/h264-mp4",
+        24.0,
+        65,
+        0,
+        false,
+        false,
+        false,
+        true,
+        true,
+        true,
+        true,
+        true,
+        "https://discord.com/api/webhooks/000000000000000000/REPLACE_WITH_ENCRYPTED_RUNTIME_WEBHOOK",
+        "10MinVideoMaker job example-20260724-1610 — scene 1: Example portrait",
+        false,
+        false,
+        false,
+        false,
+        "",
+        "",
+        "cdn_urls.md"
+      ],
+      "title": "Send metadata-free watermarked video to Discord"
     }
   ],
   "links": [
@@ -2711,6 +3150,30 @@
       37,
       7,
       "AUDIO"
+    ],
+    [
+      56,
+      35,
+      0,
+      38,
+      0,
+      "IMAGE"
+    ],
+    [
+      57,
+      38,
+      0,
+      39,
+      0,
+      "IMAGE"
+    ],
+    [
+      58,
+      36,
+      0,
+      39,
+      10,
+      "AUDIO"
     ]
   ],
   "groups": [
@@ -2720,7 +3183,7 @@
       "bounding": [
         -80,
         -80,
-        8320,
+        8840,
         3082
       ],
       "color": "#2b6f8a",

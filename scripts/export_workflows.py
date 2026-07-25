@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-import shutil
 import sys
 from urllib.request import urlopen
 
@@ -13,7 +12,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from tenminvideomaker.artifacts import scene_frame_path
+from tenminvideomaker.configuration import load_project_environment
 from tenminvideomaker.contracts import parse_job_payload
+from tenminvideomaker.delivery import (
+    DiscordDeliverySettings,
+    TEMPLATE_WEBHOOK_PLACEHOLDER,
+)
 from tenminvideomaker.workflow_builder import build_i2v_api_workflow, build_t2i_api_workflow
 from tenminvideomaker.workflow_export import api_to_gui_workflow, inspect_gui_workflow
 
@@ -28,22 +32,48 @@ def _write_json(path: Path, value) -> None:
     path.write_text(json.dumps(value, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
+def _replace_value(value, old: str, new: str):
+    if isinstance(value, dict):
+        return {key: _replace_value(item, old, new) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_replace_value(item, old, new) for item in value]
+    return new if value == old else value
+
+
 def export(*, shared_root: Path | None) -> dict[str, dict]:
     with urlopen("http://127.0.0.1:8188/object_info", timeout=30) as response:
         object_info = json.load(response)
     raw = json.loads((PROJECT_ROOT / "examples" / "example_job.json").read_text(encoding="utf-8"))
+    template_delivery = DiscordDeliverySettings(TEMPLATE_WEBHOOK_PLACEHOLDER)
+    runtime_delivery = DiscordDeliverySettings.from_environment(
+        load_project_environment(PROJECT_ROOT),
+        required=False,
+    )
     anima_job = parse_job_payload(raw)
-    anima = build_t2i_api_workflow(anima_job, anima_job.scenes[0])
+    anima = build_t2i_api_workflow(
+        anima_job,
+        anima_job.scenes[0],
+        delivery=template_delivery,
+    )
 
     pony_raw = json.loads(json.dumps(raw))
     pony_raw["character"]["lora"]["base"] = "Pony"
     pony_raw["character"]["lora"]["name"] = "Example Character Pony"
     pony_raw["scenes"][0]["t2i"]["loras"][0]["name"] = "Example Character Pony"
     pony_job = parse_job_payload(pony_raw)
-    pony = build_t2i_api_workflow(pony_job, pony_job.scenes[0])
+    pony = build_t2i_api_workflow(
+        pony_job,
+        pony_job.scenes[0],
+        delivery=template_delivery,
+    )
 
     frame_path = scene_frame_path(anima_job.job_id, anima_job.scenes[0].scene_id)
-    i2v = build_i2v_api_workflow(anima_job, anima_job.scenes[0], frame_path)
+    i2v = build_i2v_api_workflow(
+        anima_job,
+        anima_job.scenes[0],
+        frame_path,
+        delivery=template_delivery,
+    )
     builds = {
         "10MinVideoMaker_T2I_Anima": anima,
         "10MinVideoMaker_T2I_Pony": pony,
@@ -60,7 +90,16 @@ def export(*, shared_root: Path | None) -> dict[str, dict]:
         _write_json(gui_path, gui)
         if shared_root is not None:
             shared_root.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(gui_path, shared_root / gui_path.name)
+            shared_gui = (
+                _replace_value(
+                    gui,
+                    TEMPLATE_WEBHOOK_PLACEHOLDER,
+                    runtime_delivery.webhook_url,
+                )
+                if runtime_delivery
+                else gui
+            )
+            _write_json(shared_root / gui_path.name, shared_gui)
         report[name] = {
             "api": str(api_path),
             "gui": str(gui_path),

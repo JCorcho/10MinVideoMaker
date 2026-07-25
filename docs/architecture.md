@@ -42,6 +42,14 @@ VHS writes scene video to its temporary ComfyUI output and returns metadata thro
 downloads that exact output through the local HTTP API into
 `D:\output\10minfinals\.work\{job_id}\clips\scene_{id}.mp4`; it does not scan or move unrelated shared output files.
 
+Output delivery is a parallel branch, not a replacement for durable artifacts. The clean T2I result feeds the
+deterministic frame saver and the I2V cache; a second edge passes through `DaSiWa_Watermark` into
+`DiscordSendSaveImage`. Likewise, normalized decoded I2V frames feed the temporary VHS clip unchanged while a
+parallel watermark edge feeds `DiscordSendSaveVideo` with the same decoded audio. Discord nodes are the only media
+senders, strip workflow metadata, and do not retain a second local copy. The webhook is loaded from the project
+DPAPI secret store at graph-build time. Versioned templates contain a nonfunctional placeholder; only the approved
+shared GUI copies and runtime-generated API graphs receive the encrypted runtime value.
+
 The controlled Windows restart script resolves the expected Easy Install paths, verifies that the process listening
 on port 8188 is the expected embedded Python executable, stops only that process, launches the unchanged
 `Start ComfyUI.bat` hidden, and waits for HTTP health. It is called only for fatal ComfyUI availability failures.

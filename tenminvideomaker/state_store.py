@@ -461,6 +461,38 @@ class PipelineStateStore:
             )
         return [int(row["scene_id"]) for row in rows]
 
+    def requeue_scene_i2v(self, job_id: str, scene_id: int) -> None:
+        """Reset one interrupted I2V scene without changing other scene artifacts."""
+        self.initialize()
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            exists = connection.execute(
+                "SELECT 1 FROM scenes WHERE job_id = ? AND scene_id = ?",
+                (job_id, scene_id),
+            ).fetchone()
+            if not exists:
+                raise StateTransitionError(
+                    f"Unknown scene {scene_id} for job {job_id}."
+                )
+            connection.execute(
+                """
+                UPDATE scenes
+                SET state = ?, video_path = NULL, error = NULL,
+                    i2v_attempts = 0, prompt_id = NULL, updated_at = ?
+                WHERE job_id = ? AND scene_id = ?
+                """,
+                (SceneState.PENDING, _utc_now(), job_id, scene_id),
+            )
+            connection.execute(
+                """
+                UPDATE pipeline_state
+                SET state = ?, job_id = ?, active_scene_id = NULL,
+                    error = NULL, updated_at = ?
+                WHERE singleton = 1
+                """,
+                (PipelineState.DOWNLOADING_ASSETS, job_id, _utc_now()),
+            )
+
     def abandon_job(
         self,
         job_id: str,
