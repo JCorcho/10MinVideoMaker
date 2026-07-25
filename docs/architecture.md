@@ -46,6 +46,12 @@ process environment variables take precedence over saved project values. OAuth u
 PKCE, state validation, offline access, the full Gmail IMAP/SMTP scope, and read-only Google Drive scope.
 `GmailClient` exchanges the stored refresh token for short-lived access tokens and caches them only in memory.
 
+Outbound requests use `Run the LTX video pipeline`; inbound jobs use a separate exact subject,
+`LTX_JOB_COMPLETE`. The completion must be a new unread message. IMAP narrows candidates by that subject, then the
+client applies an exact decoded-header comparison because Gmail's `SUBJECT` search is substring-based. The durable
+poller repeats the exact-subject gate before sender and payload validation, preventing the outbound trigger, replies,
+forwards, and similarly named messages from entering the job state machine.
+
 Incoming job precedence is `.json` attachment, valid JSON in the plain-text body, then a supported
 `drive.google.com/file/d/...` (or `open?id=`/`uc?id=`) file link found in plain text or HTML. Drive folder links and
 arbitrary URLs are rejected. Downloads are capped at 5 MiB and may redirect only to approved Google download hosts.

@@ -25,7 +25,11 @@ from .drive import (
 from .oauth import OAuthError, refresh_access_token
 from .state_store import PipelineState, PipelineStateStore
 
-PIPELINE_SUBJECT = "Run the LTX video pipeline"
+PIPELINE_REQUEST_SUBJECT = "Run the LTX video pipeline"
+PIPELINE_RESPONSE_SUBJECT = "LTX_JOB_COMPLETE"
+
+# Backward-compatible public name for callers that build the outbound request.
+PIPELINE_SUBJECT = PIPELINE_REQUEST_SUBJECT
 
 
 class MailConfigurationError(RuntimeError):
@@ -107,9 +111,11 @@ def build_pipeline_request(
     message = EmailMessage()
     message["From"] = formataddr(("10MinVideoMaker", settings.username))
     message["To"] = settings.recipient
-    message["Subject"] = PIPELINE_SUBJECT
+    message["Subject"] = PIPELINE_REQUEST_SUBJECT
     message["Message-ID"] = make_msgid(domain=settings.username.split("@")[-1])
     body = [
+        f"Send the completed handoff as a new email with the exact subject {PIPELINE_RESPONSE_SUBJECT}. "
+        "Do not reply to this request email.",
         "Please return one valid 10MinVideoMaker JSON job as a .json attachment, plain-text body, "
         "or a Google Drive file link.",
         f"For a Drive link, share the file with {settings.username} or allow anyone with the link to view it.",
@@ -233,7 +239,13 @@ class GmailClient:
             status, _ = client.select("INBOX")
             if status != "OK":
                 raise MailTransportError("Could not select Gmail INBOX.")
-            status, data = client.uid("SEARCH", None, "UNSEEN", "SUBJECT", f'"{PIPELINE_SUBJECT}"')
+            status, data = client.uid(
+                "SEARCH",
+                None,
+                "UNSEEN",
+                "SUBJECT",
+                f'"{PIPELINE_RESPONSE_SUBJECT}"',
+            )
             if status != "OK":
                 raise MailTransportError("Could not search Gmail for pipeline responses.")
             messages: list[MailboxMessage] = []
@@ -245,7 +257,13 @@ class GmailClient:
                 message = BytesParser(policy=policy.default).parsebytes(fetched[0][1])
                 sender = parseaddr(message.get("From", ""))[1].casefold()
                 message_key = str(message.get("Message-ID") or f"imap-uid:{uid}").strip()
-                messages.append(MailboxMessage(uid, message_key, sender, str(message.get("Subject", "")), message))
+                subject = str(message.get("Subject", "")).strip()
+                # IMAP SUBJECT matching is substring-based. Enforce the exact handoff
+                # subject here so replies, forwards, and similarly named mail cannot
+                # enter the pipeline.
+                if subject != PIPELINE_RESPONSE_SUBJECT:
+                    continue
+                messages.append(MailboxMessage(uid, message_key, sender, subject, message))
             return messages
 
     def mark_seen(self, uid: str) -> None:
@@ -349,6 +367,10 @@ class GmailPollingService:
         if self.store.snapshot().state not in {PipelineState.IDLE, PipelineState.WAITING_FOR_GROK}:
             return None
         for mailbox_message in self.client.unread_pipeline_messages():
+            # Defense in depth for alternate/test Gmail clients: only the dedicated
+            # completion subject may be treated as a job handoff.
+            if mailbox_message.subject.strip() != PIPELINE_RESPONSE_SUBJECT:
+                continue
             if mailbox_message.sender not in self.client.settings.allowed_senders:
                 continue
             try:

@@ -323,3 +323,24 @@
   - `git diff --check`
 - Results: 91 tests passed under system and Easy Install embedded Python. No email was sent, no Drive file was
   downloaded, no media was rendered, and no model was loaded.
+
+### 2026-07-24 — dedicated Gmail completion subject
+
+- Changed files: `tenminvideomaker/mail.py`, `tests/test_mail.py`, `README.md`, `docs/architecture.md`,
+  `docs/user-guide.md`, `AI_DEVELOPMENT_RULES.md`.
+- Routing: outbound requests retain `Run the LTX video pipeline`; the message body now tells Grok to send a new
+  email with exact subject `LTX_JOB_COMPLETE`. IMAP searches unread completion mail, and both the transport reader
+  and durable poller enforce exact decoded-subject equality so request mail, replies, forwards, and substring
+  matches cannot retrigger the pipeline.
+- Drive envelope: Grok's abbreviated body metadata is ignored as an incomplete job and its supported Drive file
+  link is downloaded through the existing validated transport. Only the downloaded full `job_id`/`scenes` contract
+  is accepted.
+- Reproduction: send an unread message from an allowed sender with subject `LTX_JOB_COMPLETE` and the Drive metadata
+  envelope. A request-subject message or `Re: LTX_JOB_COMPLETE` must remain unclaimed.
+- Verification commands:
+  - `python -m unittest discover -s tests -v`
+  - embedded-Python unit tests and compilation
+  - `git diff --check`
+- Results: all 94 tests passed under system and Easy Install embedded Python; compilation and
+  `git diff --check` passed. No Gmail message was sent, no Drive file was downloaded, no media was rendered, and no
+  model was loaded.

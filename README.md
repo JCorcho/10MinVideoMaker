@@ -38,9 +38,11 @@ starting. See `docs/user-guide.md` for OAuth setup details and safe setup-only c
 
 - **Validate Job** — validates and normalizes the exact Grok JSON contract.
 - **Pipeline Status** — reads the durable pipeline state.
-- **Request Grok Job** — sends the exact request subject using environment-provided Gmail credentials.
-- **Poll Gmail Once** — performs one attachment-first IMAP poll, then accepts body JSON or a Google Drive file
-  link; scheduling belongs to the supervisor.
+- **Request Grok Job** — sends `Run the LTX video pipeline` and instructs Grok to return a new message rather than
+  replying to it.
+- **Poll Gmail Once** — searches unread mail for the exact completion subject `LTX_JOB_COMPLETE`, then performs
+  attachment-first extraction and accepts body JSON or a Google Drive file link; scheduling belongs to the
+  supervisor.
 - **Resolve LoRAs** — uses the live ComfyUI process's active LoRA roots, resolves dynamic assets, and verifies
   mandatory I2V LoRAs.
 - **Release Memory** — runs Python and CUDA cache cleanup.

@@ -130,7 +130,17 @@ supervisor:
 - `TENMIN_GMAIL_OAUTH2_TOKEN` remains supported only as a legacy short-lived access-token override
 - `TENMIN_CIVITAI_TOKEN` for authenticated Civitai file downloads; the launcher stores it with DPAPI
 
-The exact request subject is `Run the LTX video pipeline`. Payload precedence is:
+The supervisor sends its request with the exact subject `Run the LTX video pipeline`. Grok must deliver the job as a
+**new email**, not a reply, using the exact subject `LTX_JOB_COMPLETE`. The poller considers only unread messages
+whose decoded subject is exactly `LTX_JOB_COMPLETE`; `Re: LTX_JOB_COMPLETE`, the outbound request subject, and
+similar partial matches are ignored. Opening a completion email before the supervisor claims it marks it read in
+Gmail, so mark that message unread again before starting the supervisor.
+
+The small metadata envelope Grok places in the email may contain `job_id`, `drive_web_view_link`, and related
+delivery fields without the full `scenes` array. That envelope is intentionally not accepted as the job itself. Its
+Drive file link is followed and the downloaded full JSON must contain both `job_id` and `scenes`.
+
+Payload precedence is:
 
 1. First `.json` attachment.
 2. Valid job JSON in the plain-text body.

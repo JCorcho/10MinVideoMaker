@@ -13,6 +13,8 @@ from tenminvideomaker.mail import (
     GmailSettings,
     MailboxMessage,
     MailTransportError,
+    PIPELINE_REQUEST_SUBJECT,
+    PIPELINE_RESPONSE_SUBJECT,
     PIPELINE_SUBJECT,
     build_pipeline_request,
     extract_job_payload,
@@ -54,6 +56,38 @@ class MailTests(unittest.TestCase):
             "1AbCdEfGhIjKlMnOpQrStUvWxYz/view?usp=sharing"
         )
         message.set_content(f"Job complete. Download scenes.json here: {drive_url}")
+        loaded = []
+
+        def drive_loader(url: str) -> str:
+            loaded.append(url)
+            return json.dumps(payload())
+
+        self.assertEqual(
+            extract_job_payload(message, drive_loader=drive_loader).job_id,
+            "20260724-1610",
+        )
+        self.assertEqual(loaded, [drive_url])
+
+    def test_drive_metadata_envelope_falls_back_to_its_file_link(self) -> None:
+        message = EmailMessage()
+        drive_url = (
+            "https://drive.google.com/file/d/"
+            "1AykG5rvgsNw2mz83op8z6h8tQI1V_iwY/view?usp=drivesdk"
+        )
+        message.set_content(
+            "-----BEGIN_SCENES_JSON-----\n"
+            + json.dumps(
+                {
+                    "job_id": "20260725-0035",
+                    "created_at": "2026-07-25T00:35:00Z",
+                    "drive_web_view_link": drive_url,
+                    "drive_file_id": "1AykG5rvgsNw2mz83op8z6h8tQI1V_iwY",
+                    "local_artifact": "video_job_20260725_0035.json",
+                    "scenes_count": 20,
+                }
+            )
+            + "\n-----END_SCENES_JSON-----"
+        )
         loaded = []
 
         def drive_loader(url: str) -> str:
@@ -109,9 +143,92 @@ class MailTests(unittest.TestCase):
 
     def test_request_subject_is_exact_and_can_report_prior_job(self) -> None:
         message = build_pipeline_request(self.settings, previous_job_id="20260724-1610", succeeded=True)
-        self.assertEqual(message["Subject"], PIPELINE_SUBJECT)
+        self.assertEqual(message["Subject"], PIPELINE_REQUEST_SUBJECT)
+        self.assertEqual(PIPELINE_SUBJECT, PIPELINE_REQUEST_SUBJECT)
+        self.assertNotEqual(PIPELINE_REQUEST_SUBJECT, PIPELINE_RESPONSE_SUBJECT)
         self.assertIn("20260724-1610 succeeded", message.get_content())
         self.assertIn("Google Drive file link", message.get_content())
+        self.assertIn(f"exact subject {PIPELINE_RESPONSE_SUBJECT}", message.get_content())
+        self.assertIn("Do not reply", message.get_content())
+
+    def test_imap_searches_for_unread_exact_completion_subject(self) -> None:
+        exact = EmailMessage()
+        exact["From"] = "owner@example.com"
+        exact["Subject"] = PIPELINE_RESPONSE_SUBJECT
+        exact["Message-ID"] = "<exact@example.com>"
+        exact.set_content(json.dumps(payload()))
+
+        reply = EmailMessage()
+        reply["From"] = "owner@example.com"
+        reply["Subject"] = f"Re: {PIPELINE_RESPONSE_SUBJECT}"
+        reply["Message-ID"] = "<reply@example.com>"
+        reply.set_content(json.dumps(payload()))
+
+        class FakeImap:
+            search_arguments = None
+
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def login(self, _username, _secret):
+                return "OK", [b"authenticated"]
+
+            def select(self, mailbox):
+                self.selected_mailbox = mailbox
+                return "OK", [b"2"]
+
+            def uid(self, command, *arguments):
+                if command == "SEARCH":
+                    FakeImap.search_arguments = arguments
+                    return "OK", [b"41 42"]
+                if command == "FETCH" and arguments[0] == "41":
+                    return "OK", [(b"41 (RFC822)", exact.as_bytes())]
+                if command == "FETCH" and arguments[0] == "42":
+                    return "OK", [(b"42 (RFC822)", reply.as_bytes())]
+                raise AssertionError((command, arguments))
+
+        with patch("tenminvideomaker.mail.imaplib.IMAP4_SSL", FakeImap):
+            messages = GmailClient(self.settings).unread_pipeline_messages()
+
+        self.assertEqual(
+            FakeImap.search_arguments,
+            (None, "UNSEEN", "SUBJECT", f'"{PIPELINE_RESPONSE_SUBJECT}"'),
+        )
+        self.assertEqual([message.uid for message in messages], ["41"])
+        self.assertEqual(messages[0].subject, PIPELINE_RESPONSE_SUBJECT)
+
+    def test_poller_rejects_outbound_request_subject(self) -> None:
+        message = EmailMessage()
+        message.set_content(json.dumps(payload()))
+
+        class Store:
+            def snapshot(self):
+                return SimpleNamespace(state=PipelineState.WAITING_FOR_GROK)
+
+            def claim_inbound_job(self, _message_key, _payload):
+                raise AssertionError("Outbound request mail must never be claimed")
+
+        class Client:
+            settings = self.settings
+
+            def unread_pipeline_messages(self):
+                return [
+                    MailboxMessage(
+                        "42",
+                        "request-message",
+                        "owner@example.com",
+                        PIPELINE_REQUEST_SUBJECT,
+                        message,
+                    )
+                ]
+
+        self.assertIsNone(GmailPollingService(Store(), Client()).poll_once())
 
     def test_drive_transport_error_leaves_message_unseen_for_retry(self) -> None:
         message = EmailMessage()
@@ -137,7 +254,7 @@ class MailTests(unittest.TestCase):
                         "42",
                         "message-key",
                         "owner@example.com",
-                        PIPELINE_SUBJECT,
+                        PIPELINE_RESPONSE_SUBJECT,
                         message,
                     )
                 ]
