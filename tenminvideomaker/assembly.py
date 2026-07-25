@@ -9,6 +9,8 @@ from pathlib import Path
 import subprocess
 from typing import Callable, Iterable, Sequence
 
+from .storage import StorageLayout
+
 from .constants import PRODUCTION_FPS, PRODUCTION_HEIGHT, PRODUCTION_WIDTH
 
 
@@ -57,12 +59,16 @@ class FfmpegAssembler:
 
     def __init__(
         self,
-        output_root: str | Path = r"D:\output\10minfinals",
+        output_root: str | Path | None = None,
         *,
         ffmpeg_executable: str = "ffmpeg",
         runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
     ):
-        self.output_root = Path(output_root)
+        self.output_root = (
+            Path(output_root)
+            if output_root is not None
+            else StorageLayout.configured().finals_root
+        )
         self.ffmpeg_executable = ffmpeg_executable
         self._runner = runner
 

@@ -10,6 +10,7 @@ from tenminvideomaker.constants import (
 )
 from tenminvideomaker.contracts import lora_identity, parse_job_payload
 from tenminvideomaker.delivery import DiscordDeliverySettings
+from tenminvideomaker.review import scene_review_document, validate_scene_edit
 from tenminvideomaker.workflow_builder import (
     I2V_BASE_HEIGHT,
     I2V_BASE_WIDTH,
@@ -28,6 +29,33 @@ def nodes_of_type(workflow, class_type):
 
 
 class WorkflowBuilderTests(unittest.TestCase):
+    def test_reviewed_i2v_sampler_and_sigmas_reach_both_workflow_passes(self) -> None:
+        job = parse_job_payload(payload())
+        scene = job.scenes[0]
+        document = scene_review_document(job, scene)
+        document["i2v"]["first_pass"]["sampler"] = "euler"
+        document["i2v"]["first_pass"]["sigmas"] = [1.0, 0.5, 0.0]
+        document["i2v"]["second_pass"]["sampler"] = "heun"
+        document["i2v"]["second_pass"]["sigmas"] = [0.5, 0.0]
+        edit = validate_scene_edit(job, scene.scene_id, document)
+        build = build_i2v_api_workflow(
+            edit.job,
+            edit.scene,
+            Path(r"D:\LTX_Supervisor_Storage\jobs\job\frame.png"),
+            {},
+            overrides=edit.workflow,
+        )
+        samplers = nodes_of_type(build.api, "KSamplerSelect")
+        sigmas = nodes_of_type(build.api, "ManualSigmas")
+        self.assertEqual(
+            [node["inputs"]["sampler_name"] for node in samplers],
+            ["euler", "heun"],
+        )
+        self.assertEqual(
+            [node["inputs"]["sigmas"] for node in sigmas],
+            ["1, 0.5, 0", "0.5, 0"],
+        )
+
     def setUp(self) -> None:
         self.job = parse_job_payload(payload())
         self.scene = self.job.scenes[0]

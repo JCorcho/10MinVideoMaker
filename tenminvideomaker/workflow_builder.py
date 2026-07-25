@@ -27,6 +27,7 @@ from .contracts import (
     lora_identity,
 )
 from .delivery import DiscordDeliverySettings
+from .review import SceneWorkflowOverrides
 
 ANIMA_UNET = "CyberRealistic_AnimaSemi_V6.0.safetensors"
 ANIMA_TEXT_ENCODER = "cyberrealisticAnima_v30_txt.safetensors"
@@ -255,6 +256,8 @@ def build_t2i_api_workflow(
     resolved_lora_filenames: Mapping[str, str] | None = None,
     *,
     delivery: DiscordDeliverySettings | None = None,
+    overrides: SceneWorkflowOverrides | None = None,
+    revision: int = 1,
 ) -> WorkflowBuild:
     """Build the matching Anima or Pony workflow for one scene."""
     graph = _Graph()
@@ -318,54 +321,100 @@ def build_t2i_api_workflow(
     )
 
     if family == "anima":
+        pass_settings = (
+            overrides.t2i_passes[0]
+            if overrides is not None
+            else {
+                "sampler": "er_sde",
+                "scheduler": "beta57",
+                "steps": 30,
+                "cfg": 4.5,
+                "denoise": 1.0,
+            }
+        )
         sampled = graph.add(
             "KSampler",
-            "Anima er_sde beta57",
+            f"Anima {pass_settings['sampler']} {pass_settings['scheduler']}",
             model=model,
             seed=scene.t2i.seed,
-            steps=30,
-            cfg=4.5,
-            sampler_name="er_sde",
-            scheduler="beta57",
+            steps=pass_settings["steps"],
+            cfg=pass_settings["cfg"],
+            sampler_name=pass_settings["sampler"],
+            scheduler=pass_settings["scheduler"],
             positive=graph.output(positive),
             negative=graph.output(negative),
             latent_image=graph.output(latent),
-            denoise=1.0,
+            denoise=pass_settings.get("denoise", 1.0),
         )
     else:
+        pony_passes = (
+            overrides.t2i_passes
+            if overrides is not None
+            else (
+                {
+                    "sampler": "res_3m_ode",
+                    "scheduler": "karras",
+                    "steps": 30,
+                    "cfg": 6.0,
+                    "start_step": 0,
+                    "end_step": 30,
+                    "add_noise": True,
+                    "return_with_leftover_noise": False,
+                },
+                {
+                    "sampler": "res_5s_ode",
+                    "scheduler": "karras",
+                    "steps": 30,
+                    "cfg": 6.0,
+                    "start_step": 0,
+                    "end_step": 30,
+                    "add_noise": True,
+                    "return_with_leftover_noise": False,
+                },
+            )
+        )
+        first_settings, second_settings = pony_passes
         first = graph.add(
             "KSamplerAdvanced",
-            "Pony pass 1: res_3m_ode",
+            f"Pony pass 1: {first_settings['sampler']}",
             model=model,
-            add_noise="enable",
+            add_noise="enable" if first_settings.get("add_noise", True) else "disable",
             noise_seed=scene.t2i.seed,
-            steps=30,
-            cfg=6.0,
-            sampler_name="res_3m_ode",
-            scheduler="karras",
+            steps=first_settings["steps"],
+            cfg=first_settings["cfg"],
+            sampler_name=first_settings["sampler"],
+            scheduler=first_settings["scheduler"],
             positive=graph.output(positive),
             negative=graph.output(negative),
             latent_image=graph.output(latent),
-            start_at_step=0,
-            end_at_step=30,
-            return_with_leftover_noise="disable",
+            start_at_step=first_settings.get("start_step", 0),
+            end_at_step=first_settings.get("end_step", first_settings["steps"]),
+            return_with_leftover_noise=(
+                "enable"
+                if first_settings.get("return_with_leftover_noise", False)
+                else "disable"
+            ),
         )
         sampled = graph.add(
             "KSamplerAdvanced",
-            "Pony pass 2: res_5s_ode",
+            f"Pony pass 2: {second_settings['sampler']}",
             model=model,
-            add_noise="enable",
+            add_noise="enable" if second_settings.get("add_noise", True) else "disable",
             noise_seed=scene.t2i.seed,
-            steps=30,
-            cfg=6.0,
-            sampler_name="res_5s_ode",
-            scheduler="karras",
+            steps=second_settings["steps"],
+            cfg=second_settings["cfg"],
+            sampler_name=second_settings["sampler"],
+            scheduler=second_settings["scheduler"],
             positive=graph.output(positive),
             negative=graph.output(negative),
             latent_image=graph.output(first),
-            start_at_step=0,
-            end_at_step=30,
-            return_with_leftover_noise="disable",
+            start_at_step=second_settings.get("start_step", 0),
+            end_at_step=second_settings.get("end_step", second_settings["steps"]),
+            return_with_leftover_noise=(
+                "enable"
+                if second_settings.get("return_with_leftover_noise", False)
+                else "disable"
+            ),
         )
 
     decoded = graph.add(
@@ -376,10 +425,32 @@ def build_t2i_api_workflow(
     )
     final_image = graph.output(decoded)
     if family == "pony":
+        detailer_settings = (
+            overrides.face_detailer
+            if overrides is not None and overrides.face_detailer is not None
+            else {
+                "enabled": True,
+                "detector": "bbox/face_yolov8m.pt",
+                "guide_size": 512,
+                "max_size": 1024,
+                "steps": 20,
+                "cfg": 5.0,
+                "sampler": "dpmpp_2m_sde",
+                "scheduler": "karras",
+                "denoise": 0.38,
+                "feather": 5,
+                "bbox_threshold": 0.5,
+                "bbox_dilation": 10,
+                "bbox_crop_factor": 3.0,
+                "drop_size": 120,
+                "noise_mask_feather": 20,
+            }
+        )
+    if family == "pony" and detailer_settings.get("enabled", True):
         detector = graph.add(
             "UltralyticsDetectorProvider",
             "Pony face bbox detector",
-            model_name="bbox/face_yolov8m.pt",
+            model_name=detailer_settings.get("detector", "bbox/face_yolov8m.pt"),
         )
         detailer = graph.add(
             "FaceDetailer",
@@ -388,35 +459,35 @@ def build_t2i_api_workflow(
             model=model,
             clip=clip,
             vae=vae,
-            guide_size=512,
+            guide_size=detailer_settings.get("guide_size", 512),
             guide_size_for=True,
-            max_size=1024,
+            max_size=detailer_settings.get("max_size", 1024),
             seed=scene.t2i.seed,
-            steps=20,
-            cfg=5.0,
-            sampler_name="dpmpp_2m_sde",
-            scheduler="karras",
+            steps=detailer_settings["steps"],
+            cfg=detailer_settings["cfg"],
+            sampler_name=detailer_settings["sampler"],
+            scheduler=detailer_settings["scheduler"],
             positive=graph.output(positive),
             negative=graph.output(negative),
-            denoise=0.38,
-            feather=5,
+            denoise=detailer_settings["denoise"],
+            feather=detailer_settings.get("feather", 5),
             noise_mask=True,
             force_inpaint=True,
-            bbox_threshold=0.5,
-            bbox_dilation=10,
-            bbox_crop_factor=3.0,
+            bbox_threshold=detailer_settings.get("bbox_threshold", 0.5),
+            bbox_dilation=detailer_settings.get("bbox_dilation", 10),
+            bbox_crop_factor=detailer_settings.get("bbox_crop_factor", 3.0),
             sam_detection_hint="center-1",
             sam_dilation=0,
             sam_threshold=0.93,
             sam_bbox_expansion=0,
             sam_mask_hint_threshold=0.7,
             sam_mask_hint_use_negative="False",
-            drop_size=120,
+            drop_size=detailer_settings.get("drop_size", 120),
             bbox_detector=graph.output(detector, 0),
             wildcard="",
             cycle=1,
             inpaint_model=False,
-            noise_mask_feather=20,
+            noise_mask_feather=detailer_settings.get("noise_mask_feather", 20),
             tiled_encode=False,
             tiled_decode=False,
         )
@@ -427,6 +498,7 @@ def build_t2i_api_workflow(
         images=final_image,
         job_id=job.job_id,
         scene_id=scene.scene_id,
+        revision=revision,
     )
     _add_discord_image_delivery(graph, final_image, job, scene, delivery)
     return WorkflowBuild(
@@ -471,6 +543,7 @@ def build_i2v_api_workflow(
     resolved_lora_filenames: Mapping[str, str] | None = None,
     *,
     delivery: DiscordDeliverySettings | None = None,
+    overrides: SceneWorkflowOverrides | None = None,
 ) -> WorkflowBuild:
     """Build the two-pass LCM LTX 2.3 graph for one exact cached T2I frame."""
     frame_path = Path(cached_frame_path)
@@ -478,6 +551,45 @@ def build_i2v_api_workflow(
         raise WorkflowBuildError("cached_frame_path must be absolute.")
 
     graph = _Graph()
+    first_pass = (
+        overrides.i2v_first_pass
+        if overrides is not None
+        else {
+            "sampler": I2V_SAMPLER,
+            "sigmas": I2V_FIRST_PASS_SIGMAS,
+            "cfg": 1.0,
+            "reference_strength": 0.75,
+            "image_strength": 0.75,
+            "image_compression": 35,
+        }
+    )
+    second_pass = (
+        overrides.i2v_second_pass
+        if overrides is not None
+        else {
+            "sampler": I2V_SAMPLER,
+            "sigmas": I2V_UPSCALE_PASS_SIGMAS,
+            "cfg": 1.0,
+            "reference_strength": 1.0,
+            "image_strength": 1.0,
+            "image_compression": 30,
+        }
+    )
+    chunking = (
+        overrides.chunking
+        if overrides is not None
+        else {"chunks": 2, "dimension_threshold": 4096}
+    )
+    upscaler_settings = (
+        overrides.spatial_upscaler
+        if overrides is not None
+        else {
+            "model": I2V_SPATIAL_UPSCALER,
+            "tile_size": 11,
+            "overlap": 6,
+            "max_size_without_tiling": 22,
+        }
+    )
     checkpoint = graph.add(
         "CheckpointLoaderSimple",
         "LTX 2.3 checkpoint",
@@ -507,8 +619,8 @@ def build_i2v_api_workflow(
         "LTXVChunkFeedForward",
         "16 GB VRAM chunking",
         model=model,
-        chunks=2,
-        dim_threshold=4096,
+        chunks=chunking["chunks"],
+        dim_threshold=chunking["dimension_threshold"],
     )
     reference_enabled = graph.add(
         "LTXReferenceEnable",
@@ -558,7 +670,7 @@ def build_i2v_api_workflow(
         "LTXVPreprocess",
         "Preprocess first-pass reference",
         image=graph.output(base_image),
-        img_compression=35,
+        img_compression=first_pass["image_compression"],
     )
     base_latent = graph.add(
         "EmptyLTXVLatentVideo",
@@ -575,7 +687,7 @@ def build_i2v_api_workflow(
         latent=graph.output(base_latent),
         num_images="1",
         **{
-            "num_images.strength_1": 0.75,
+            "num_images.strength_1": first_pass["image_strength"],
             "num_images.image_1": graph.output(base_preprocessed),
             "num_images.index_1": 0,
         },
@@ -601,15 +713,19 @@ def build_i2v_api_workflow(
         vae=graph.output(checkpoint, 2),
         image=graph.output(base_preprocessed),
         target_latent=graph.output(first_i2v),
-        strength=0.75,
+        strength=first_pass["reference_strength"],
         position_mode="reference",
         verbose=False,
     )
-    first_sampler = graph.add("KSamplerSelect", "LCM first pass", sampler_name=I2V_SAMPLER)
+    first_sampler = graph.add(
+        "KSamplerSelect",
+        "I2V first-pass sampler",
+        sampler_name=first_pass["sampler"],
+    )
     first_sigmas = graph.add(
         "ManualSigmas",
         "Verified first-pass sigmas",
-        sigmas=_sigma_string(I2V_FIRST_PASS_SIGMAS),
+        sigmas=_sigma_string(first_pass["sigmas"]),
     )
     first_sampled = graph.add(
         "SamplerCustom",
@@ -617,7 +733,7 @@ def build_i2v_api_workflow(
         model=graph.output(first_model),
         add_noise=True,
         noise_seed=scene.i2v.seed,
-        cfg=1.0,
+        cfg=first_pass["cfg"],
         positive=graph.output(conditioning, 0),
         negative=graph.output(conditioning, 1),
         sampler=graph.output(first_sampler),
@@ -632,7 +748,7 @@ def build_i2v_api_workflow(
     upscaler = graph.add(
         "LatentUpscaleModelLoader",
         "LTX spatial x2 upscaler",
-        model_name=I2V_SPATIAL_UPSCALER,
+        model_name=upscaler_settings["model"],
     )
     upscaled_video = graph.add(
         "LTXVLatentUpsamplerTiled",
@@ -640,9 +756,9 @@ def build_i2v_api_workflow(
         samples=graph.output(first_split, 0),
         upscale_model=graph.output(upscaler),
         vae=graph.output(checkpoint, 2),
-        tile_size=11,
-        overlap=6,
-        max_size_for_no_tile=22,
+        tile_size=upscaler_settings["tile_size"],
+        overlap=upscaler_settings["overlap"],
+        max_size_for_no_tile=upscaler_settings["max_size_without_tiling"],
         rotate_for_landscape=False,
         debug=False,
     )
@@ -660,7 +776,7 @@ def build_i2v_api_workflow(
         "LTXVPreprocess",
         "Preprocess upscale-pass reference",
         image=graph.output(full_image),
-        img_compression=30,
+        img_compression=second_pass["image_compression"],
     )
     second_i2v = graph.add(
         "LTXVImgToVideoInplaceKJ",
@@ -669,7 +785,7 @@ def build_i2v_api_workflow(
         latent=graph.output(upscaled_video),
         num_images="1",
         **{
-            "num_images.strength_1": 1.0,
+            "num_images.strength_1": second_pass["image_strength"],
             "num_images.image_1": graph.output(full_preprocessed),
             "num_images.index_1": 0,
         },
@@ -687,15 +803,19 @@ def build_i2v_api_workflow(
         vae=graph.output(checkpoint, 2),
         image=graph.output(full_preprocessed),
         target_latent=graph.output(second_i2v),
-        strength=1.0,
+        strength=second_pass["reference_strength"],
         position_mode="reference",
         verbose=False,
     )
-    second_sampler = graph.add("KSamplerSelect", "LCM upscale pass", sampler_name=I2V_SAMPLER)
+    second_sampler = graph.add(
+        "KSamplerSelect",
+        "I2V upscale-pass sampler",
+        sampler_name=second_pass["sampler"],
+    )
     second_sigmas = graph.add(
         "ManualSigmas",
         "Verified upscale-pass sigmas",
-        sigmas=_sigma_string(I2V_UPSCALE_PASS_SIGMAS),
+        sigmas=_sigma_string(second_pass["sigmas"]),
     )
     second_sampled = graph.add(
         "SamplerCustom",
@@ -703,7 +823,7 @@ def build_i2v_api_workflow(
         model=graph.output(second_model),
         add_noise=True,
         noise_seed=scene.i2v.seed,
-        cfg=1.0,
+        cfg=second_pass["cfg"],
         positive=graph.output(conditioning, 0),
         negative=graph.output(conditioning, 1),
         sampler=graph.output(second_sampler),

@@ -320,6 +320,34 @@ class SupervisorTests(unittest.TestCase):
             self.assertEqual(len(assembler.calls), 1)
             self.assertEqual(mail.requests, [(job.job_id, False)])
 
+    def test_remake_asset_resolution_is_limited_to_the_selected_scene(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            raw = payload()
+            second = copy.deepcopy(raw["scenes"][0])
+            second["id"] = 2
+            second["title"] = "Unrelated missing asset scene"
+            second["i2v"]["loras"] = [
+                {
+                    "name": "Missing Scene LoRA",
+                    "download_url": "https://example.invalid/missing.safetensors",
+                    "weight": 0.8,
+                }
+            ]
+            raw["scenes"].append(second)
+            job = parse_job_payload(raw)
+            supervisor = PipelineSupervisor(
+                store=PipelineStateStore(root / "pipeline.sqlite3"),
+                mail_client=FakeMailClient(),
+                asset_manager=OneMissingAssetManager(),
+                comfy=FakeComfy(root / "unused.png"),
+            )
+
+            preparation = supervisor._resolve_assets(job, scene_ids={1})
+
+            self.assertEqual(preparation.failures, {})
+            self.assertNotIn("Missing Scene LoRA", " ".join(preparation.resolved_filenames))
+
     def test_all_asset_failures_pause_saved_job_without_requesting_another(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()

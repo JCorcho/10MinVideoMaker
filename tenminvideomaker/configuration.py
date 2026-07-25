@@ -11,6 +11,8 @@ import os
 from pathlib import Path
 from typing import Callable, Mapping
 
+from .storage import StorageLayout
+
 SECRET_KEYS = frozenset(
     {
         "TENMIN_GMAIL_APP_PASSWORD",
@@ -39,6 +41,7 @@ CONFIG_KEYS = frozenset(
         "TENMIN_FFMPEG",
         "TENMIN_FFPROBE",
         "TENMIN_LOG_LEVEL",
+        "TENMIN_REQUIRE_HUMAN_REVIEW",
     }
 )
 
@@ -222,22 +225,34 @@ def load_project_environment(
     project_root: str | Path,
     *,
     base_environment: Mapping[str, str] | None = None,
+    storage_layout: StorageLayout | None = None,
 ) -> dict[str, str]:
     """Merge local config and DPAPI secrets, with explicit OS variables taking precedence."""
     project_root = Path(project_root)
-    local = read_env_file(project_root / ".env")
-    secrets_values = SecretStore(project_root / "runtime" / "secrets.json").load()
+    layout = storage_layout or StorageLayout.configured(base_environment)
+    local = read_env_file(layout.settings_path)
+    secrets_values = SecretStore(layout.secrets_path).load()
+    if not local and not layout.settings_path.exists():
+        local = read_env_file(project_root / ".env")
+    if not secrets_values and not layout.secrets_path.exists():
+        secrets_values = SecretStore(project_root / "runtime" / "secrets.json").load()
     merged = {**local, **secrets_values}
     merged.update(dict(os.environ if base_environment is None else base_environment))
     return merged
 
 
-def save_project_environment(project_root: str | Path, values: Mapping[str, str]) -> None:
-    project_root = Path(project_root)
+def save_project_environment(
+    project_root: str | Path,
+    values: Mapping[str, str],
+    *,
+    storage_layout: StorageLayout | None = None,
+) -> None:
+    del project_root
+    layout = storage_layout or StorageLayout.configured(values)
     write_env_file(
-        project_root / ".env",
+        layout.settings_path,
         {key: value for key, value in values.items() if key in CONFIG_KEYS},
     )
-    SecretStore(project_root / "runtime" / "secrets.json").save(
+    SecretStore(layout.secrets_path).save(
         {key: value for key, value in values.items() if key in SECRET_KEYS}
     )

@@ -11,9 +11,10 @@ from .assets import AssetResolution, LocalLoraRequirement, LoraAssetManager
 from .configuration import load_project_environment
 from .constants import I2V_DYNAMIC_BASE_MODEL
 from .contracts import LoraSpec, civitai_version_id
+from .storage import StorageLayout
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-RUNTIME_ROOT = PROJECT_ROOT / "runtime"
+STORAGE = StorageLayout.configured()
 ASSET_RESOLVE_ROUTE = "/10minvideomaker/assets/resolve"
 
 _REGISTERED = False
@@ -126,7 +127,7 @@ def register_routes() -> bool:
             environment = load_project_environment(PROJECT_ROOT)
             manager = LoraAssetManager(
                 folder_paths.get_folder_paths("loras"),
-                RUNTIME_ROOT / "asset_manifest.json",
+                STORAGE.asset_manifest_path,
                 visible_lora_names=folder_paths.get_filename_list("loras"),
                 civitai_token=environment.get("TENMIN_CIVITAI_TOKEN", ""),
             )

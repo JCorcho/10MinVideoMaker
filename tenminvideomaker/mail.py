@@ -449,7 +449,7 @@ class GmailPollingService:
         self.store = store
         self.client = client
 
-    def poll_once(self) -> JobPayload | None:
+    def poll_once(self, *, review_required: bool = False) -> JobPayload | None:
         if self.store.snapshot().state not in {PipelineState.IDLE, PipelineState.WAITING_FOR_GROK}:
             return None
         mailbox_messages = self.client.unread_pipeline_messages()
@@ -475,7 +475,11 @@ class GmailPollingService:
                 if self.store.claim_message(mailbox_message.message_key):
                     self.client.mark_seen(mailbox_message.uid)
                 continue
-            if self.store.claim_inbound_job(mailbox_message.message_key, payload):
+            if self.store.claim_inbound_job(
+                mailbox_message.message_key,
+                payload,
+                review_required=review_required,
+            ):
                 self.client.mark_seen(mailbox_message.uid)
                 return payload
             LOGGER.info(

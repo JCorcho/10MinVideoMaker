@@ -13,6 +13,7 @@ from tenminvideomaker.configuration import (
     save_project_environment,
     write_env_file,
 )
+from tenminvideomaker.storage import StorageLayout
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -58,8 +59,9 @@ class ConfigurationTests(unittest.TestCase):
     def test_env_file_round_trip_and_os_values_take_precedence(self) -> None:
         with tempfile.TemporaryDirectory(dir=TEST_TEMP_ROOT) as temporary:
             root = Path(temporary)
+            storage = StorageLayout(root / "storage")
             write_env_file(
-                root / ".env",
+                storage.settings_path,
                 {
                     "TENMIN_GMAIL_USERNAME": "local@example.com",
                     "TENMIN_GMAIL_OAUTH_SCOPES": (
@@ -72,7 +74,7 @@ class ConfigurationTests(unittest.TestCase):
                 },
             )
             self.assertEqual(
-                read_env_file(root / ".env"),
+                read_env_file(storage.settings_path),
                 {
                     "TENMIN_GMAIL_USERNAME": "local@example.com",
                     "TENMIN_GMAIL_OAUTH_SCOPES": (
@@ -89,6 +91,7 @@ class ConfigurationTests(unittest.TestCase):
                     "TENMIN_GMAIL_USERNAME": "process@example.com",
                     "UNRELATED": "preserved",
                 },
+                storage_layout=storage,
             )
             self.assertEqual(merged["TENMIN_GMAIL_USERNAME"], "process@example.com")
             self.assertEqual(merged["TENMIN_POLL_SECONDS"], "300")
@@ -110,15 +113,20 @@ class ConfigurationTests(unittest.TestCase):
                     "https://discord.com" + "/api/webhooks/123/discord-token-value"
                 ),
             }
-            save_project_environment(root, values)
-            env_text = (root / ".env").read_text(encoding="utf-8")
-            secret_text = (root / "runtime" / "secrets.json").read_text(encoding="utf-8")
+            storage = StorageLayout(root / "storage")
+            save_project_environment(root, values, storage_layout=storage)
+            env_text = storage.settings_path.read_text(encoding="utf-8")
+            secret_text = storage.secrets_path.read_text(encoding="utf-8")
             json.loads(secret_text)
             self.assertNotIn("client-secret-value", env_text + secret_text)
             self.assertNotIn("refresh-token-value", env_text + secret_text)
             self.assertNotIn("civitai-token-value", env_text + secret_text)
             self.assertNotIn("discord-token-value", env_text + secret_text)
-            loaded = load_project_environment(root, base_environment={})
+            loaded = load_project_environment(
+                root,
+                base_environment={},
+                storage_layout=storage,
+            )
             self.assertEqual(loaded["TENMIN_GMAIL_OAUTH_CLIENT_SECRET"], "client-secret-value")
             self.assertEqual(loaded["TENMIN_GMAIL_OAUTH_REFRESH_TOKEN"], "refresh-token-value")
             self.assertEqual(loaded["TENMIN_CIVITAI_TOKEN"], "civitai-token-value")

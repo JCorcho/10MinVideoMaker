@@ -9,11 +9,17 @@ class ArtifactTests(unittest.TestCase):
     def test_scene_paths_are_deterministic_and_project_scoped(self) -> None:
         self.assertEqual(
             str(scene_frame_path("20260724-1610", 3)),
-            r"D:\output\10minfinals\.work\20260724-1610\frames\scene_0003.png",
+            (
+                r"D:\LTX_Supervisor_Storage\jobs\20260724-1610\scenes"
+                r"\scene_0003\revisions\0001\frame.png"
+            ),
         )
         self.assertEqual(
             str(scene_clip_path("20260724-1610", 3)),
-            r"D:\output\10minfinals\.work\20260724-1610\clips\scene_0003.mp4",
+            (
+                r"D:\LTX_Supervisor_Storage\jobs\20260724-1610\scenes"
+                r"\scene_0003\revisions\0001\video.mp4"
+            ),
         )
 
     def test_artifact_paths_reject_traversal(self) -> None:

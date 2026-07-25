@@ -5,7 +5,15 @@ import tempfile
 import unittest
 
 from tenminvideomaker.contracts import parse_job_payload
-from tenminvideomaker.state_store import PipelineState, PipelineStateStore, SceneState, StateTransitionError
+from tenminvideomaker.state_store import (
+    JobState,
+    PipelineState,
+    PipelineStateStore,
+    RemakeBatchState,
+    RemakeMode,
+    SceneState,
+    StateTransitionError,
+)
 
 from test_contracts import payload
 
@@ -25,6 +33,41 @@ class StateStoreTests(unittest.TestCase):
         self.assertEqual(snapshot.state, PipelineState.DOWNLOADING_ASSETS)
         self.assertEqual(snapshot.job_id, self.job.job_id)
         self.assertEqual(self.store.scene_states(self.job.job_id), {1: SceneState.PENDING})
+
+    def test_human_review_claim_waits_until_explicit_approval(self) -> None:
+        self.store.claim_job(self.job, review_required=True)
+        self.assertEqual(self.store.snapshot().state, PipelineState.AWAITING_REVIEW)
+        self.assertEqual(self.store.list_jobs()[0].status, JobState.AWAITING_REVIEW)
+        self.store.approve_job(self.job.job_id)
+        self.assertEqual(self.store.snapshot().state, PipelineState.DOWNLOADING_ASSETS)
+        self.assertEqual(self.store.list_jobs()[0].status, JobState.QUEUED)
+
+    def test_cross_job_remake_batch_versions_scenes_and_requires_cached_video_frame(self) -> None:
+        self.store.claim_job(self.job)
+        parameters = {"job_id": self.job.job_id, "scene_id": 1}
+        with self.assertRaisesRegex(StateTransitionError, "cached frame"):
+            self.store.create_remake_batch(
+                [(self.job.job_id, 1, RemakeMode.VIDEO_ONLY, parameters)]
+            )
+        frame = Path(self.temporary_directory.name) / "frame.png"
+        frame.write_bytes(b"frame")
+        self.store.set_scene_state(
+            self.job.job_id,
+            1,
+            SceneState.SUCCEEDED,
+            frame_path=str(frame),
+        )
+        batch_id, revisions = self.store.create_remake_batch(
+            [
+                (self.job.job_id, 1, RemakeMode.VIDEO_ONLY, parameters),
+                (self.job.job_id, 1, RemakeMode.IMAGE_AND_VIDEO, parameters),
+            ]
+        )
+        self.assertEqual([item[2] for item in revisions], [1, 2])
+        self.store.queue_remake_batch(batch_id, "after_current")
+        batch = self.store.list_remake_batches()[0]
+        self.assertEqual(batch.state, RemakeBatchState.QUEUED)
+        self.assertEqual(batch.item_count, 2)
 
     def test_job_cannot_be_claimed_twice(self) -> None:
         self.store.claim_job(self.job)

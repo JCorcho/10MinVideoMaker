@@ -28,13 +28,14 @@ from .contracts import (
 )
 from .mail import GmailClient, GmailPollingService, GmailSettings, MailConfigurationError, MailTransportError
 from .state_store import PipelineState, PipelineStateStore
+from .storage import StorageLayout
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-RUNTIME_ROOT = PROJECT_ROOT / "runtime"
+STORAGE = StorageLayout.configured()
 
 
 def _store() -> PipelineStateStore:
-    return PipelineStateStore(RUNTIME_ROOT / "pipeline.sqlite3")
+    return PipelineStateStore(STORAGE.database_path)
 
 
 def _json(value: Any) -> str:
@@ -260,12 +261,13 @@ class TenMinSaveSceneFrameNode(_AlwaysRun):
                 "images": ("IMAGE",),
                 "job_id": ("STRING", {"default": ""}),
                 "scene_id": ("INT", {"default": 1, "min": 1}),
+                "revision": ("INT", {"default": 1, "min": 1}),
             }
         }
 
-    def execute(self, images, job_id: str, scene_id: int):
+    def execute(self, images, job_id: str, scene_id: int, revision: int = 1):
         try:
-            path = save_scene_frame(images, job_id, scene_id)
+            path = save_scene_frame(images, job_id, scene_id, revision)
         except ArtifactError as error:
             raise RuntimeError(str(error)) from error
         return (str(path),)
@@ -296,7 +298,11 @@ class TenMinStitchClipsNode(_AlwaysRun):
         if not isinstance(clip_paths, list) or not all(isinstance(path, str) for path in clip_paths):
             raise AssemblyError("clip_paths_json must be a JSON array of file paths.")
         validate_video_profile(probe_video(path) for path in clip_paths)
-        final_path = FfmpegAssembler().stitch(job_id, clip_paths, RUNTIME_ROOT / "concat")
+        final_path = FfmpegAssembler().stitch(
+            job_id,
+            clip_paths,
+            STORAGE.temp_root / "concat",
+        )
         return (str(final_path), "stitching complete")
 
 

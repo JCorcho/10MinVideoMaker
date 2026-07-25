@@ -191,7 +191,10 @@ class SetupAndStartTests(unittest.TestCase):
                 error="asset preparation failed",
             )
             with patch.object(setup_module, "PROJECT_ROOT", root):
-                retried = offer_saved_job_retry(input_func=_answers(""))
+                retried = offer_saved_job_retry(
+                    input_func=_answers(""),
+                    database_path=store.database_path,
+                )
             self.assertEqual(retried, job.job_id)
             self.assertEqual(store.snapshot().state, PipelineState.DOWNLOADING_ASSETS)
             self.assertEqual(
@@ -218,7 +221,10 @@ class SetupAndStartTests(unittest.TestCase):
             )
 
             with patch.object(setup_module, "PROJECT_ROOT", root):
-                retried = offer_saved_job_retry(input_func=_answers("n"))
+                retried = offer_saved_job_retry(
+                    input_func=_answers("n"),
+                    database_path=store.database_path,
+                )
 
             self.assertIsNone(retried)
             snapshot = store.snapshot()
@@ -242,7 +248,10 @@ class SetupAndStartTests(unittest.TestCase):
             )
 
             with patch.object(setup_module, "PROJECT_ROOT", root):
-                resumed = offer_saved_job_retry(input_func=_answers(""))
+                resumed = offer_saved_job_retry(
+                    input_func=_answers(""),
+                    database_path=store.database_path,
+                )
 
             self.assertEqual(resumed, job.job_id)
             self.assertEqual(store.snapshot().state, PipelineState.DOWNLOADING_ASSETS)
@@ -268,6 +277,7 @@ class SetupAndStartTests(unittest.TestCase):
                 resumed = offer_saved_job_retry(
                     input_func=_answers("n"),
                     comfy_client=comfy_client,
+                    database_path=store.database_path,
                 )
 
             self.assertIsNone(resumed)
@@ -288,7 +298,10 @@ class SetupAndStartTests(unittest.TestCase):
             store.transition(PipelineState.STITCHING, job_id=job.job_id)
 
             with patch.object(setup_module, "PROJECT_ROOT", root):
-                resumed = offer_saved_job_retry(input_func=_answers(""))
+                resumed = offer_saved_job_retry(
+                    input_func=_answers(""),
+                    database_path=store.database_path,
+                )
 
             self.assertEqual(resumed, job.job_id)
             self.assertEqual(store.snapshot().state, PipelineState.DOWNLOADING_ASSETS)
@@ -304,7 +317,8 @@ class SetupAndStartTests(unittest.TestCase):
 
             with patch.object(setup_module, "PROJECT_ROOT", root):
                 resumed = offer_saved_job_retry(
-                    input_func=lambda _prompt: self.fail("restart must not prompt")
+                    input_func=lambda _prompt: self.fail("restart must not prompt"),
+                    database_path=store.database_path,
                 )
 
             self.assertIsNone(resumed)

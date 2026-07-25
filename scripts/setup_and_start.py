@@ -43,6 +43,7 @@ from tenminvideomaker.oauth import (
     authorize_desktop_app,
 )
 from tenminvideomaker.state_store import PipelineState, PipelineStateStore, SceneState
+from tenminvideomaker.storage import StorageLayout
 
 APP_PASSWORD_URL = "https://myaccount.google.com/apppasswords"
 CIVITAI_API_KEYS_URL = "https://civitai.com/user/account"
@@ -512,7 +513,7 @@ def _ensure_comfyui(environment: dict[str, str]) -> None:
         "-EasyInstallRoot",
         str(easy_install_root),
         "-ProjectRuntimeRoot",
-        str(PROJECT_ROOT / "runtime"),
+        str(StorageLayout.configured().state_root),
         "-Port",
         str(port),
     ]
@@ -608,8 +609,11 @@ def offer_saved_job_retry(
     *,
     input_func: Callable[[str], str] = input,
     comfy_client: ComfyHttpClient | None = None,
+    database_path: str | Path | None = None,
 ) -> str | None:
-    store = PipelineStateStore(PROJECT_ROOT / "runtime" / "pipeline.sqlite3")
+    store = PipelineStateStore(
+        database_path or StorageLayout.configured().database_path
+    )
     snapshot = store.snapshot()
     if not snapshot.job_id or snapshot.state == PipelineState.IDLE:
         return None

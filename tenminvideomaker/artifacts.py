@@ -8,8 +8,8 @@ import re
 from typing import Any
 
 from .constants import PRODUCTION_HEIGHT, PRODUCTION_WIDTH
+from .storage import StorageError, StorageLayout
 
-FINAL_OUTPUT_ROOT = Path(r"D:\output\10minfinals")
 _JOB_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 
@@ -17,23 +17,54 @@ class ArtifactError(ValueError):
     """Raised when a project artifact cannot be named or persisted safely."""
 
 
-def scene_frame_path(job_id: str, scene_id: int) -> Path:
+def scene_frame_path(
+    job_id: str,
+    scene_id: int,
+    *,
+    layout: StorageLayout | None = None,
+    revision: int = 1,
+) -> Path:
     if not _JOB_ID_RE.fullmatch(job_id):
         raise ArtifactError("job_id contains unsafe path characters.")
     if isinstance(scene_id, bool) or not isinstance(scene_id, int) or scene_id < 1:
         raise ArtifactError("scene_id must be a positive integer.")
-    return FINAL_OUTPUT_ROOT / ".work" / job_id / "frames" / f"scene_{scene_id:04d}.png"
+    try:
+        return (layout or StorageLayout.configured()).scene_frame_path(
+            job_id,
+            scene_id,
+            revision,
+        )
+    except StorageError as error:
+        raise ArtifactError(str(error)) from error
 
 
-def scene_clip_path(job_id: str, scene_id: int) -> Path:
+def scene_clip_path(
+    job_id: str,
+    scene_id: int,
+    *,
+    layout: StorageLayout | None = None,
+    revision: int = 1,
+) -> Path:
     if not _JOB_ID_RE.fullmatch(job_id):
         raise ArtifactError("job_id contains unsafe path characters.")
     if isinstance(scene_id, bool) or not isinstance(scene_id, int) or scene_id < 1:
         raise ArtifactError("scene_id must be a positive integer.")
-    return FINAL_OUTPUT_ROOT / ".work" / job_id / "clips" / f"scene_{scene_id:04d}.mp4"
+    try:
+        return (layout or StorageLayout.configured()).scene_clip_path(
+            job_id,
+            scene_id,
+            revision,
+        )
+    except StorageError as error:
+        raise ArtifactError(str(error)) from error
 
 
-def save_scene_frame(images: Any, job_id: str, scene_id: int) -> Path:
+def save_scene_frame(
+    images: Any,
+    job_id: str,
+    scene_id: int,
+    revision: int = 1,
+) -> Path:
     """Atomically save the first ComfyUI IMAGE batch item as the scene source frame."""
     try:
         import numpy as np
@@ -50,7 +81,7 @@ def save_scene_frame(images: Any, job_id: str, scene_id: int) -> Path:
             f"received {array.shape[2]}x{array.shape[1]}."
         )
 
-    path = scene_frame_path(job_id, scene_id)
+    path = scene_frame_path(job_id, scene_id, revision=revision)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(".png.tmp")
     mode = "RGBA" if array.shape[-1] == 4 else "RGB"

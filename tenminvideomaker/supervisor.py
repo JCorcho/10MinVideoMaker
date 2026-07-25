@@ -26,8 +26,10 @@ from .contracts import (
 )
 from .delivery import DiscordDeliverySettings
 from .mail import GmailClient, GmailPollingService
-from .state_store import PipelineState, PipelineStateStore, SceneState
+from .review import scene_review_document
+from .state_store import JobState, PipelineState, PipelineStateStore, SceneState
 from .workflow_builder import build_i2v_api_workflow, build_t2i_api_workflow
+from .storage import StorageLayout, write_json_atomic
 
 LOGGER = logging.getLogger("10MinVideoMaker.supervisor")
 
@@ -49,6 +51,7 @@ class SupervisorSettings:
     i2v_timeout_seconds: float = 21600.0
     max_stage_attempts: int = 2
     status_interval_seconds: float = 15.0
+    require_human_review: bool = False
 
     @classmethod
     def from_environment(cls) -> "SupervisorSettings":
@@ -60,6 +63,11 @@ class SupervisorSettings:
             status_interval_seconds=float(
                 os.environ.get("TENMIN_STATUS_INTERVAL_SECONDS", "15")
             ),
+            require_human_review=os.environ.get(
+                "TENMIN_REQUIRE_HUMAN_REVIEW",
+                "false",
+            ).strip().casefold()
+            in {"1", "true", "yes", "on"},
         )
 
     def __post_init__(self) -> None:
@@ -91,6 +99,7 @@ class PipelineSupervisor:
         clip_path_factory: Callable[[str, int], Path] = scene_clip_path,
         video_probe: Callable[[str | Path], object] = probe_video,
         delivery: DiscordDeliverySettings | None = None,
+        storage: StorageLayout | None = None,
     ):
         self.store = store
         self.mail_client = mail_client
@@ -104,6 +113,7 @@ class PipelineSupervisor:
         self._clip_path = clip_path_factory
         self._video_probe = video_probe
         self.delivery = delivery
+        self.storage = storage
 
     def tick(self) -> None:
         """Advance the durable pipeline until it reaches a polling wait state."""
@@ -119,7 +129,9 @@ class PipelineSupervisor:
             return
         if snapshot.state == PipelineState.WAITING_FOR_GROK:
             LOGGER.info("Checking Gmail for an unread LTX_JOB_COMPLETE handoff.")
-            payload = GmailPollingService(self.store, self.mail_client).poll_once()
+            payload = GmailPollingService(self.store, self.mail_client).poll_once(
+                review_required=self.settings.require_human_review,
+            )
             if payload:
                 LOGGER.info(
                     "Accepted Gmail job %s with %s scene(s).",
@@ -128,6 +140,12 @@ class PipelineSupervisor:
                 )
             else:
                 LOGGER.info("No new valid job was found; remaining in waiting_for_grok.")
+            return
+        if snapshot.state == PipelineState.AWAITING_REVIEW:
+            LOGGER.info(
+                "Job %s is awaiting human review in the supervisor GUI.",
+                snapshot.job_id or "unknown",
+            )
             return
         if not snapshot.job_id:
             raise FatalPipelineError(f"Pipeline state {snapshot.state} has no active job id.")
@@ -204,14 +222,60 @@ class PipelineSupervisor:
             LOGGER.warning("STATUS | durable pipeline state could not be read.", exc_info=True)
 
     def process_job(self, job: JobPayload) -> None:
+        self.store.set_job_status(job.job_id, JobState.RUNNING)
+        existing_records = {
+            record.scene_id: record for record in self.store.scene_records(job.job_id)
+        }
+        for scene in job.scenes:
+            record = existing_records[scene.scene_id]
+            document = scene_review_document(job, scene)
+            self.store.ensure_original_scene_revision(
+                job.job_id,
+                scene.scene_id,
+                parameters=document,
+                frame_path=record.frame_path,
+                video_path=record.video_path,
+            )
+            if self.storage is not None:
+                write_json_atomic(
+                    self.storage.generation_manifest_path(
+                        job.job_id,
+                        scene.scene_id,
+                        1,
+                    ),
+                    {
+                        "job_id": job.job_id,
+                        "scene_id": scene.scene_id,
+                        "revision": 1,
+                        "remake_mode": "image_and_video",
+                        "parameters": document,
+                        "frame_path": record.frame_path,
+                        "video_path": record.video_path,
+                        "status": record.state.value,
+                    },
+                )
         LOGGER.info("Resolving assets for job %s.", job.job_id)
         self.store.transition(PipelineState.DOWNLOADING_ASSETS, job_id=job.job_id)
         preparation = self._resolve_assets(job)
+        if self.store.snapshot().job_id != job.job_id:
+            LOGGER.info(
+                "Job %s asset resolution finished after a controlled cancellation; "
+                "no scene was queued.",
+                job.job_id,
+            )
+            return
+        scene_by_id = {scene.scene_id: scene for scene in job.scenes}
         for scene_id, errors in preparation.failures.items():
             self.store.set_scene_state(
                 job.job_id,
                 scene_id,
                 SceneState.FAILED,
+                error="; ".join(errors),
+            )
+            self._update_original_revision(
+                job,
+                scene_by_id[scene_id],
+                state=SceneState.FAILED,
                 error="; ".join(errors),
             )
             LOGGER.error(
@@ -227,10 +291,10 @@ class PipelineSupervisor:
                 "correct the asset/authentication problem and retry the saved job."
             )
             self.store.transition(PipelineState.ERROR, job_id=job.job_id, error=error)
+            self.store.set_job_status(job.job_id, JobState.FAILED)
             LOGGER.error("%s Job %s remains saved and was not replaced.", error, job.job_id)
             return
 
-        scene_by_id = {scene.scene_id: scene for scene in job.scenes}
         for record in self.store.scene_records(job.job_id):
             scene = scene_by_id[record.scene_id]
             if record.state == SceneState.SUCCEEDED and record.video_path and Path(record.video_path).is_file():
@@ -242,6 +306,12 @@ class PipelineSupervisor:
                 scene,
                 preparation.resolved_filenames,
             )
+            if self.store.snapshot().job_id != job.job_id:
+                LOGGER.info(
+                    "Job %s left the active pipeline after a controlled cancellation.",
+                    job.job_id,
+                )
+                return
 
         records = self.store.scene_records(job.job_id)
         successful = [
@@ -254,6 +324,7 @@ class PipelineSupervisor:
                 "the saved job is paused for manual retry."
             )
             self.store.transition(PipelineState.ERROR, job_id=job.job_id, error=error)
+            self.store.set_job_status(job.job_id, JobState.FAILED)
             LOGGER.error(error)
             self._release_memory()
             return
@@ -266,7 +337,7 @@ class PipelineSupervisor:
         try:
             streams = [self._video_probe(record.video_path) for record in successful]
             validate_video_profile(streams)
-            self.assembler.stitch(
+            assembled_path = self.assembler.stitch(
                 job.job_id,
                 [record.video_path for record in successful],
                 self.store.database_path.parent / "concat",
@@ -281,9 +352,15 @@ class PipelineSupervisor:
                 job_id=job.job_id,
                 error=message,
             )
+            self.store.set_job_status(job.job_id, JobState.FAILED)
             LOGGER.error(message)
             self._release_memory()
             return
+        self.store.set_job_status(
+            job.job_id,
+            JobState.SUCCEEDED if complete_success else JobState.PARTIAL,
+            final_path=str(assembled_path),
+        )
         self._release_memory()
         self._request_next_job(previous_job_id=job.job_id, succeeded=complete_success)
 
@@ -300,6 +377,22 @@ class PipelineSupervisor:
             except ComfyHttpError as error:
                 if not self.comfy.alive():
                     raise FatalPipelineError(str(error)) from error
+                snapshot = self.store.snapshot()
+                current_record = next(
+                    item
+                    for item in self.store.scene_records(job.job_id)
+                    if item.scene_id == scene.scene_id
+                )
+                if (
+                    snapshot.job_id != job.job_id
+                    or current_record.state == SceneState.CANCELLED
+                ):
+                    LOGGER.info(
+                        "Job %s scene %s stopped after a controlled user cancellation.",
+                        job.job_id,
+                        scene.scene_id,
+                    )
+                    return
                 record = next(
                     item
                     for item in self.store.scene_records(job.job_id)
@@ -326,6 +419,12 @@ class PipelineSupervisor:
                     SceneState.FAILED,
                     error=str(error),
                 )
+                self._update_original_revision(
+                    job,
+                    scene,
+                    state=SceneState.FAILED,
+                    error=str(error),
+                )
                 LOGGER.error("Scene %s exhausted its retry budget: %s", scene.scene_id, error)
                 return
             except Exception as error:
@@ -333,6 +432,12 @@ class PipelineSupervisor:
                     job.job_id,
                     scene.scene_id,
                     SceneState.FAILED,
+                    error=str(error),
+                )
+                self._update_original_revision(
+                    job,
+                    scene,
+                    state=SceneState.FAILED,
                     error=str(error),
                 )
                 LOGGER.exception("Scene %s failed with a non-ComfyUI error.", scene.scene_id)
@@ -352,6 +457,12 @@ class PipelineSupervisor:
         frame_path = self._frame_path(job.job_id, scene.scene_id)
         if record.frame_path and Path(record.frame_path).is_file():
             frame_path = Path(record.frame_path)
+            self._update_original_revision(
+                job,
+                scene,
+                state=SceneState.PENDING,
+                frame_path=frame_path,
+            )
             LOGGER.info(
                 "Job %s scene %s: reusing cached T2I frame.",
                 job.job_id,
@@ -363,6 +474,12 @@ class PipelineSupervisor:
                 scene.scene_id,
                 SceneState.PENDING,
                 frame_path=str(frame_path),
+            )
+            self._update_original_revision(
+                job,
+                scene,
+                state=SceneState.PENDING,
+                frame_path=frame_path,
             )
             LOGGER.info(
                 "Job %s scene %s: recovered deterministic T2I frame from disk.",
@@ -405,6 +522,12 @@ class PipelineSupervisor:
                 SceneState.PENDING,
                 frame_path=str(frame_path),
             )
+            self._update_original_revision(
+                job,
+                scene,
+                state=SceneState.PENDING,
+                frame_path=frame_path,
+            )
             LOGGER.info(
                 "Job %s scene %s: T2I finished and cached the deterministic frame.",
                 job.job_id,
@@ -418,6 +541,13 @@ class PipelineSupervisor:
         clip_path = self._clip_path(job.job_id, scene.scene_id)
         if record.video_path and Path(record.video_path).is_file():
             self.store.set_scene_state(job.job_id, scene.scene_id, SceneState.SUCCEEDED)
+            self._update_original_revision(
+                job,
+                scene,
+                state=SceneState.SUCCEEDED,
+                frame_path=frame_path,
+                video_path=Path(record.video_path),
+            )
             LOGGER.info(
                 "Job %s scene %s: reusing completed scene clip.",
                 job.job_id,
@@ -430,6 +560,13 @@ class PipelineSupervisor:
                 scene.scene_id,
                 SceneState.SUCCEEDED,
                 video_path=str(clip_path),
+            )
+            self._update_original_revision(
+                job,
+                scene,
+                state=SceneState.SUCCEEDED,
+                frame_path=frame_path,
+                video_path=clip_path,
             )
             LOGGER.info(
                 "Job %s scene %s: recovered deterministic scene clip from disk.",
@@ -473,15 +610,78 @@ class PipelineSupervisor:
             frame_path=str(frame_path),
             video_path=str(clip_path),
         )
+        self._update_original_revision(
+            job,
+            scene,
+            state=SceneState.SUCCEEDED,
+            frame_path=frame_path,
+            video_path=clip_path,
+        )
         LOGGER.info(
             "Job %s scene %s: I2V finished and saved the deterministic clip.",
             job.job_id,
             scene.scene_id,
         )
 
-    def _resolve_assets(self, job: JobPayload) -> AssetPreparation:
+    def _update_original_revision(
+        self,
+        job: JobPayload,
+        scene: SceneSpec,
+        *,
+        state: SceneState,
+        frame_path: str | Path | None = None,
+        video_path: str | Path | None = None,
+        error: str | None = None,
+    ) -> None:
+        """Keep revision one and its human-readable manifest in sync."""
+        frame_text = str(frame_path) if frame_path is not None else None
+        video_text = str(video_path) if video_path is not None else None
+        self.store.update_scene_revision(
+            job.job_id,
+            scene.scene_id,
+            1,
+            state=state,
+            frame_path=frame_text,
+            video_path=video_text,
+            error=error,
+        )
+        if self.storage is None:
+            return
+        revision = next(
+            item
+            for item in self.store.scene_revisions(job.job_id, scene.scene_id)
+            if item.revision == 1
+        )
+        write_json_atomic(
+            self.storage.generation_manifest_path(job.job_id, scene.scene_id, 1),
+            {
+                "job_id": job.job_id,
+                "scene_id": scene.scene_id,
+                "revision": 1,
+                "remake_mode": "image_and_video",
+                "parameters": revision.parameters,
+                "frame_path": revision.frame_path,
+                "video_path": revision.video_path,
+                "status": revision.state.value,
+                "error": revision.error,
+            },
+        )
+
+    def _resolve_assets(
+        self,
+        job: JobPayload,
+        *,
+        scene_ids: set[int] | None = None,
+    ) -> AssetPreparation:
+        selected_scenes = tuple(
+            scene
+            for scene in job.scenes
+            if scene_ids is None or scene.scene_id in scene_ids
+        )
+        if scene_ids is not None and {scene.scene_id for scene in selected_scenes} != scene_ids:
+            raise ValueError("Asset resolution requested an unknown scene.")
         failures: dict[int, dict[str, str]] = {
-            scene.scene_id: {} for scene in job.scenes
+            scene.scene_id: {} for scene in selected_scenes
         }
         cache: dict[tuple[str, str | None], AssetResolution] = {}
         resolved_filenames: dict[str, str] = {}
@@ -536,7 +736,7 @@ class PipelineSupervisor:
         global_result = resolve(job.character.lora)
         if not global_result.succeeded:
             key = lora_identity(job.character.lora)
-            for scene in job.scenes:
+            for scene in selected_scenes:
                 record_failure(
                     scene.scene_id,
                     key,
@@ -551,7 +751,7 @@ class PipelineSupervisor:
                     filename,
                     result.error or "required local file is missing",
                 )
-                for scene in job.scenes:
+                for scene in selected_scenes:
                     record_failure(
                         scene.scene_id,
                         f"required:{filename.casefold()}",
@@ -564,7 +764,7 @@ class PipelineSupervisor:
                     result.local_filename or filename,
                 )
 
-        for scene in job.scenes:
+        for scene in selected_scenes:
             for lora in effective_t2i_loras(scene, job.character):
                 result = resolve(lora)
                 if not result.succeeded:
