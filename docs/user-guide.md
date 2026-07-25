@@ -5,9 +5,9 @@
 The project can validate incoming jobs, poll/send Gmail, resolve LoRAs, build and queue per-scene generation graphs,
 cache the exact T2I frame, download the matching I2V clip, validate/stitch completed clips, request the next job, and
 recover unfinished scenes. Incoming JSON may arrive as an attachment, in the message body, or through a Google Drive
-file link. Gmail has been authenticated and the first received job remains durably saved for retry.
-Job `20260724-2249` completed at `D:\output\10minfinals\20260724-2249_final.mp4`; the supervisor requested the next
-job and was then intentionally left stopped so the next reply cannot begin rendering without the user.
+file link. Gmail has been authenticated, and saved jobs can be retried or explicitly abandoned without deleting
+their diagnostic history. Job `20260724-2249` completed at
+`D:\output\10minfinals\20260724-2249_final.mp4`.
 
 ## Workflow templates
 
@@ -207,7 +207,9 @@ can download LoRAs and begin generation. Use the no-render checks below instead.
 - If asset preparation fails for every scene, the supervisor pauses in `error`, prints each cause in the console,
   preserves the job, and does not request a replacement email.
 - Relaunching offers to retry unfinished scenes from the saved job; successful scenes and attempt counters remain
-  intact.
+  intact. Answering **no** abandons that saved job: unfinished scenes become `cancelled`, its payload and diagnostic
+  history remain in SQLite, and the active pipeline returns to `idle` so the supervisor can request and accept a
+  different job.
 - A clip geometry or FFmpeg assembly failure pauses in `error`, preserves every completed clip, and prints the exact
   mismatch rather than retrying the stitch forever.
 - A server availability failure records `error`, runs the path-verified restart script, and requeues unfinished scenes.

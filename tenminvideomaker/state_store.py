@@ -425,3 +425,55 @@ class PipelineStateStore:
                 (PipelineState.DOWNLOADING_ASSETS, job_id, _utc_now()),
             )
         return [int(row["scene_id"]) for row in rows]
+
+    def abandon_job(
+        self,
+        job_id: str,
+        *,
+        reason: str = "Abandoned by the user from the one-click launcher.",
+    ) -> list[int]:
+        """Atomically release a saved job while preserving its audit history."""
+        self.initialize()
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            current = connection.execute(
+                "SELECT state, job_id FROM pipeline_state WHERE singleton = 1"
+            ).fetchone()
+            if current["job_id"] != job_id:
+                raise StateTransitionError(
+                    f"Cannot abandon job {job_id}; the active job is {current['job_id'] or 'none'}."
+                )
+            rows = connection.execute(
+                "SELECT scene_id FROM scenes WHERE job_id = ? AND state != ? ORDER BY scene_id",
+                (job_id, SceneState.SUCCEEDED),
+            ).fetchall()
+            connection.execute(
+                """
+                UPDATE scenes
+                SET state = ?,
+                    error = CASE
+                        WHEN error IS NULL OR TRIM(error) = '' THEN ?
+                        ELSE error || ' | ' || ?
+                    END,
+                    prompt_id = NULL,
+                    updated_at = ?
+                WHERE job_id = ? AND state != ?
+                """,
+                (
+                    SceneState.CANCELLED,
+                    reason,
+                    reason,
+                    _utc_now(),
+                    job_id,
+                    SceneState.SUCCEEDED,
+                ),
+            )
+            connection.execute(
+                """
+                UPDATE pipeline_state
+                SET state = ?, job_id = NULL, active_scene_id = NULL, error = NULL, updated_at = ?
+                WHERE singleton = 1
+                """,
+                (PipelineState.IDLE, _utc_now()),
+            )
+        return [int(row["scene_id"]) for row in rows]

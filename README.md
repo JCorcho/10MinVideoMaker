@@ -28,8 +28,9 @@ Double-click `Start 10MinVideoMaker.bat` in the repository root. On first run it
 3. Opens Civitai Account Settings and securely collects an API token when missing.
 4. Saves non-secrets in the ignored `.env` file and secrets encrypted with Windows DPAPI in ignored `runtime/`.
 5. Shows the optional settings editor when requested.
-6. Validates Gmail and configured Drive access without sending a message, performs a ComfyUI health check, offers to retry an unfinished saved
-   job, and starts the supervisor.
+6. Validates Gmail and configured Drive access without sending a message, performs a ComfyUI health check, offers to
+   retry an unfinished saved job, and starts the supervisor. Declining the retry marks unfinished scenes cancelled,
+   preserves the saved audit history, and releases the pipeline to accept a new email.
 
 On later runs, valid required settings are reused and the launcher asks whether to change optional settings before
 starting. See `docs/user-guide.md` for OAuth setup details and safe setup-only commands.

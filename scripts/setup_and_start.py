@@ -574,6 +574,11 @@ def offer_saved_job_retry(
         default=True,
         input_func=input_func,
     ):
+        store.abandon_job(snapshot.job_id)
+        print(
+            f"Saved job {snapshot.job_id} was abandoned. Its audit history was preserved, "
+            "and the pipeline can now accept a new job."
+        )
         return None
     store.retry_job(snapshot.job_id)
     print(f"Saved job {snapshot.job_id} is queued for asset resolution.")

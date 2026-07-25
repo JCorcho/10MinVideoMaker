@@ -49,6 +49,8 @@
   DPAPI secrets, attach it only to Civitai download URLs, never log it, and verify the supplied SHA-256 when present.
 - An all-scene asset failure pauses the saved job in `error` and must not send a new request email. Manual retry
   requeues only unfinished scenes while preserving completed scenes and attempt counters.
+- Declining a saved-job retry must atomically mark unfinished scenes cancelled, preserve the job and scene audit
+  history, and clear the active pipeline pointer to `idle`; returning `None` without a state transition is invalid.
 - Assembly/profile failures must also transition to `error` and preserve successful scenes instead of escaping the
   supervisor tick in `stitching`.
 
@@ -386,3 +388,25 @@
 - Results: both shortcuts resolve to the project batch file through `cmd.exe`, with the repository working
   directory and project icon. All 96 tests passed under system and Easy Install embedded Python; no shortcut was
   launched, no Gmail message was sent, and no media was rendered.
+
+### 2026-07-24 — explicit saved-job abandonment
+
+- Changed files: `tenminvideomaker/state_store.py`, `scripts/setup_and_start.py`,
+  `tests/test_state_store.py`, `tests/test_setup_and_start.py`, `README.md`, `docs/architecture.md`,
+  `docs/user-guide.md`, `AI_DEVELOPMENT_RULES.md`.
+- Cause: declining the saved-job retry returned from the launcher prompt without changing durable state. The
+  supervisor therefore reopened the same `error` snapshot and remained paused on the rejected job.
+- Recovery: the decline path now atomically marks unfinished scenes `cancelled`, clears prompt IDs, retains the
+  original job payload, errors, successes, and attempt counters for audit, and resets the singleton pipeline state
+  to `idle` with no active job.
+- Verification commands:
+  - `python -m unittest discover -s tests -p "test_state_store.py" -v`
+  - `python -m unittest discover -s tests -p "test_setup_and_start.py" -v`
+  - `python -m unittest discover -s tests -v`
+  - `python -m compileall -q tenminvideomaker scripts __init__.py`
+  - `git diff --check`
+- Results: all 98 tests passed under system Python and the Easy Install embedded Python; compilation and
+  `git diff --check` passed.
+- Live recovery: job `20260725-0115` was atomically abandoned with all eight unfinished scenes marked `cancelled`.
+  The already-running supervisor observed `idle` on its next scheduled tick, successfully sent a fresh request,
+  and transitioned to `waiting_for_grok` without restarting ComfyUI or the supervisor.

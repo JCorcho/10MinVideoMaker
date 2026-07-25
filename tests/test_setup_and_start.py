@@ -178,6 +178,35 @@ class SetupAndStartTests(unittest.TestCase):
                 {1: SceneState.PENDING},
             )
 
+    def test_launcher_abandons_saved_job_when_retry_is_declined(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = PipelineStateStore(root / "runtime" / "pipeline.sqlite3")
+            job = parse_job_payload(payload())
+            store.claim_job(job)
+            store.set_scene_state(
+                job.job_id,
+                1,
+                SceneState.FAILED,
+                error="unsafe or malformed payload",
+            )
+            store.transition(
+                PipelineState.ERROR,
+                job_id=job.job_id,
+                error="asset preparation failed",
+            )
+
+            with patch.object(setup_module, "PROJECT_ROOT", root):
+                retried = offer_saved_job_retry(input_func=_answers("n"))
+
+            self.assertIsNone(retried)
+            snapshot = store.snapshot()
+            record = store.scene_records(job.job_id)[0]
+            self.assertEqual(snapshot.state, PipelineState.IDLE)
+            self.assertIsNone(snapshot.job_id)
+            self.assertEqual(record.state, SceneState.CANCELLED)
+            self.assertIn("Abandoned by the user", record.error)
+
 
 if __name__ == "__main__":
     unittest.main()

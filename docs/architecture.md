@@ -66,6 +66,11 @@ jobs. The one-click launcher detects that saved job and offers an atomic retry: 
 are cleared, succeeded scenes remain untouched, and attempt counters remain durable. A partial asset failure still
 allows successful scenes to render and stitch.
 
+Declining that retry performs a separate atomic abandonment transition. Unfinished scenes are marked `cancelled`,
+their attempt history and the original job payload remain available for diagnosis, and the singleton pipeline state
+is cleared to `idle` with no active job. This prevents the supervisor from reopening the rejected job while allowing
+the next idle tick to request and accept a new payload.
+
 ## Production profile
 
 - Image/video size: 704×1248.

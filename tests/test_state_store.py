@@ -100,6 +100,53 @@ class StateStoreTests(unittest.TestCase):
         self.assertIsNone(record.prompt_id)
         self.assertEqual(record.t2i_attempts, 1)
 
+    def test_abandon_job_cancels_unfinished_scene_and_releases_pipeline(self) -> None:
+        self.store.claim_job(self.job)
+        self.store.begin_scene_stage(
+            self.job.job_id,
+            1,
+            PipelineState.RUNNING_T2I,
+        )
+        self.store.set_scene_prompt_id(self.job.job_id, 1, "prompt-123")
+        self.store.set_scene_state(
+            self.job.job_id,
+            1,
+            SceneState.FAILED,
+            error="unsafe or malformed payload",
+        )
+        self.store.transition(
+            PipelineState.ERROR,
+            job_id=self.job.job_id,
+            error="asset preparation failed",
+        )
+
+        self.assertEqual(self.store.abandon_job(self.job.job_id), [1])
+
+        snapshot = self.store.snapshot()
+        record = self.store.scene_records(self.job.job_id)[0]
+        self.assertEqual(snapshot.state, PipelineState.IDLE)
+        self.assertIsNone(snapshot.job_id)
+        self.assertIsNone(snapshot.error)
+        self.assertEqual(record.state, SceneState.CANCELLED)
+        self.assertEqual(
+            record.error,
+            "unsafe or malformed payload | "
+            "Abandoned by the user from the one-click launcher.",
+        )
+        self.assertIsNone(record.prompt_id)
+        self.assertEqual(record.t2i_attempts, 1)
+        self.assertEqual(self.store.load_job(self.job.job_id).job_id, self.job.job_id)
+
+        replacement_payload = payload()
+        replacement_payload["job_id"] = "20260724-1611"
+        replacement = parse_job_payload(replacement_payload)
+        self.store.claim_job(replacement)
+        self.assertEqual(self.store.snapshot().job_id, replacement.job_id)
+        self.assertEqual(
+            self.store.snapshot().state,
+            PipelineState.DOWNLOADING_ASSETS,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
