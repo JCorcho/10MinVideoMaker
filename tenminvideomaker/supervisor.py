@@ -7,6 +7,7 @@ import gc
 import logging
 import os
 from pathlib import Path
+import threading
 import time
 from typing import Any, Callable, Mapping
 
@@ -47,6 +48,7 @@ class SupervisorSettings:
     t2i_timeout_seconds: float = 3600.0
     i2v_timeout_seconds: float = 21600.0
     max_stage_attempts: int = 2
+    status_interval_seconds: float = 15.0
 
     @classmethod
     def from_environment(cls) -> "SupervisorSettings":
@@ -55,6 +57,9 @@ class SupervisorSettings:
             t2i_timeout_seconds=float(os.environ.get("TENMIN_T2I_TIMEOUT_SECONDS", "3600")),
             i2v_timeout_seconds=float(os.environ.get("TENMIN_I2V_TIMEOUT_SECONDS", "21600")),
             max_stage_attempts=int(os.environ.get("TENMIN_MAX_STAGE_ATTEMPTS", "2")),
+            status_interval_seconds=float(
+                os.environ.get("TENMIN_STATUS_INTERVAL_SECONDS", "15")
+            ),
         )
 
     def __post_init__(self) -> None:
@@ -64,6 +69,8 @@ class SupervisorSettings:
             raise ValueError("stage timeouts must be positive.")
         if self.max_stage_attempts < 1:
             raise ValueError("max_stage_attempts must be at least 1.")
+        if self.status_interval_seconds <= 0:
+            raise ValueError("status_interval_seconds must be positive.")
 
 
 class PipelineSupervisor:
@@ -101,10 +108,17 @@ class PipelineSupervisor:
     def tick(self) -> None:
         """Advance the durable pipeline until it reaches a polling wait state."""
         snapshot = self.store.snapshot()
+        LOGGER.debug(
+            "Supervisor tick: state=%s job=%s scene=%s.",
+            snapshot.state.value,
+            snapshot.job_id or "none",
+            snapshot.active_scene_id if snapshot.active_scene_id is not None else "none",
+        )
         if snapshot.state == PipelineState.IDLE:
             self._request_next_job(previous_job_id=None, succeeded=None)
             return
         if snapshot.state == PipelineState.WAITING_FOR_GROK:
+            LOGGER.info("Checking Gmail for an unread LTX_JOB_COMPLETE handoff.")
             payload = GmailPollingService(self.store, self.mail_client).poll_once()
             if payload:
                 LOGGER.info(
@@ -112,6 +126,8 @@ class PipelineSupervisor:
                     payload.job_id,
                     len(payload.scenes),
                 )
+            else:
+                LOGGER.info("No new valid job was found; remaining in waiting_for_grok.")
             return
         if not snapshot.job_id:
             raise FatalPipelineError(f"Pipeline state {snapshot.state} has no active job id.")
@@ -126,18 +142,66 @@ class PipelineSupervisor:
 
     def run_forever(self) -> None:
         """Poll every configured interval; long-running generation remains synchronous."""
-        LOGGER.info("10MinVideoMaker supervisor started.")
-        while True:
+        LOGGER.info(
+            "10MinVideoMaker supervisor started; safe status heartbeat every %g seconds.",
+            self.settings.status_interval_seconds,
+        )
+        stop_status = threading.Event()
+        status_thread = threading.Thread(
+            target=self._status_loop,
+            args=(stop_status,),
+            name="10MinVideoMaker-status",
+            daemon=True,
+        )
+        status_thread.start()
+        try:
+            while True:
+                try:
+                    try:
+                        self.tick()
+                    except FatalPipelineError as error:
+                        self._handle_fatal(error)
+                    except Exception:
+                        LOGGER.exception(
+                            "Supervisor tick failed; durable state was preserved."
+                        )
+                    LOGGER.info(
+                        "Next supervisor/mailbox check in %g seconds; heartbeat remains active.",
+                        self.settings.poll_interval_seconds,
+                    )
+                    self._sleep(self.settings.poll_interval_seconds)
+                except KeyboardInterrupt:
+                    LOGGER.info("10MinVideoMaker supervisor stopped.")
+                    return
+        finally:
+            stop_status.set()
+            status_thread.join(timeout=1.0)
+
+    def _status_loop(self, stop_status: threading.Event) -> None:
+        self._log_status()
+        while not stop_status.wait(self.settings.status_interval_seconds):
+            self._log_status()
+
+    def _log_status(self) -> None:
+        """Log a redacted progress snapshot that is safe for the visible console."""
+        try:
+            snapshot = self.store.snapshot()
             try:
-                self.tick()
-            except KeyboardInterrupt:
-                LOGGER.info("10MinVideoMaker supervisor stopped.")
-                return
-            except FatalPipelineError as error:
-                self._handle_fatal(error)
-            except Exception:
-                LOGGER.exception("Supervisor tick failed; durable state was preserved.")
-            self._sleep(self.settings.poll_interval_seconds)
+                running, pending = self.comfy.queue_counts()
+                queue_text = f"running={running} pending={pending}"
+            except (ComfyHttpError, AttributeError):
+                queue_text = "unavailable"
+            LOGGER.info(
+                "STATUS | state=%s | job=%s | scene=%s | ComfyUI queue=%s",
+                snapshot.state.value,
+                snapshot.job_id or "none",
+                snapshot.active_scene_id
+                if snapshot.active_scene_id is not None
+                else "none",
+                queue_text,
+            )
+        except Exception:
+            LOGGER.warning("STATUS | durable pipeline state could not be read.", exc_info=True)
 
     def process_job(self, job: JobPayload) -> None:
         LOGGER.info("Resolving assets for job %s.", job.job_id)
@@ -194,6 +258,11 @@ class PipelineSupervisor:
             self._release_memory()
             return
         self.store.transition(PipelineState.STITCHING, job_id=job.job_id)
+        LOGGER.info(
+            "Job %s: validating and stitching %s successful scene clip(s).",
+            job.job_id,
+            len(successful),
+        )
         try:
             streams = [self._video_probe(record.video_path) for record in successful]
             validate_video_profile(streams)
@@ -283,6 +352,11 @@ class PipelineSupervisor:
         frame_path = self._frame_path(job.job_id, scene.scene_id)
         if record.frame_path and Path(record.frame_path).is_file():
             frame_path = Path(record.frame_path)
+            LOGGER.info(
+                "Job %s scene %s: reusing cached T2I frame.",
+                job.job_id,
+                scene.scene_id,
+            )
         elif frame_path.is_file():
             self.store.set_scene_state(
                 job.job_id,
@@ -290,10 +364,25 @@ class PipelineSupervisor:
                 SceneState.PENDING,
                 frame_path=str(frame_path),
             )
+            LOGGER.info(
+                "Job %s scene %s: recovered deterministic T2I frame from disk.",
+                job.job_id,
+                scene.scene_id,
+            )
         else:
             if record.t2i_attempts >= self.settings.max_stage_attempts:
                 raise ComfyHttpError("T2I attempt limit reached.")
-            self.store.begin_scene_stage(job.job_id, scene.scene_id, PipelineState.RUNNING_T2I)
+            attempt = self.store.begin_scene_stage(
+                job.job_id,
+                scene.scene_id,
+                PipelineState.RUNNING_T2I,
+            )
+            LOGGER.info(
+                "Job %s scene %s: building and queueing T2I attempt %s.",
+                job.job_id,
+                scene.scene_id,
+                attempt,
+            )
             build = build_t2i_api_workflow(
                 job,
                 scene,
@@ -316,6 +405,11 @@ class PipelineSupervisor:
                 SceneState.PENDING,
                 frame_path=str(frame_path),
             )
+            LOGGER.info(
+                "Job %s scene %s: T2I finished and cached the deterministic frame.",
+                job.job_id,
+                scene.scene_id,
+            )
             self._release_memory()
 
         record = next(
@@ -324,6 +418,11 @@ class PipelineSupervisor:
         clip_path = self._clip_path(job.job_id, scene.scene_id)
         if record.video_path and Path(record.video_path).is_file():
             self.store.set_scene_state(job.job_id, scene.scene_id, SceneState.SUCCEEDED)
+            LOGGER.info(
+                "Job %s scene %s: reusing completed scene clip.",
+                job.job_id,
+                scene.scene_id,
+            )
             return
         if clip_path.is_file():
             self.store.set_scene_state(
@@ -332,11 +431,26 @@ class PipelineSupervisor:
                 SceneState.SUCCEEDED,
                 video_path=str(clip_path),
             )
+            LOGGER.info(
+                "Job %s scene %s: recovered deterministic scene clip from disk.",
+                job.job_id,
+                scene.scene_id,
+            )
             return
         if record.i2v_attempts >= self.settings.max_stage_attempts:
             raise ComfyHttpError("I2V attempt limit reached.")
 
-        self.store.begin_scene_stage(job.job_id, scene.scene_id, PipelineState.RUNNING_I2V)
+        attempt = self.store.begin_scene_stage(
+            job.job_id,
+            scene.scene_id,
+            PipelineState.RUNNING_I2V,
+        )
+        LOGGER.info(
+            "Job %s scene %s: building and queueing I2V attempt %s.",
+            job.job_id,
+            scene.scene_id,
+            attempt,
+        )
         build = build_i2v_api_workflow(
             job,
             scene,
@@ -359,6 +473,11 @@ class PipelineSupervisor:
             frame_path=str(frame_path),
             video_path=str(clip_path),
         )
+        LOGGER.info(
+            "Job %s scene %s: I2V finished and saved the deterministic clip.",
+            job.job_id,
+            scene.scene_id,
+        )
 
     def _resolve_assets(self, job: JobPayload) -> AssetPreparation:
         failures: dict[int, dict[str, str]] = {
@@ -375,18 +494,40 @@ class PipelineSupervisor:
             identity = lora_identity(lora)
             cache_key = (identity, expected_base_model)
             if cache_key not in cache:
+                stage = "I2V LTX 2.x" if expected_base_model else "T2I"
+                LOGGER.info("Asset check | stage=%s | LoRA=%s", stage, lora.name)
                 cache[cache_key] = self.asset_manager.resolve_or_download(
                     lora,
                     expected_base_model=expected_base_model,
                 )
                 result = cache[cache_key]
                 if result.succeeded and result.local_filename:
+                    LOGGER.info(
+                        "Asset ready | stage=%s | LoRA=%s | file=%s | source=%s",
+                        stage,
+                        lora.name,
+                        result.local_filename,
+                        "downloaded" if result.downloaded else "existing",
+                    )
                     filename_key = (
                         f"i2v:{identity}"
                         if expected_base_model == I2V_DYNAMIC_BASE_MODEL
                         else identity
                     )
                     resolved_filenames[filename_key] = result.local_filename
+                else:
+                    LOGGER.warning(
+                        "Asset failed | stage=%s | LoRA=%s | reason=%s",
+                        stage,
+                        lora.name,
+                        result.error or "unknown asset error",
+                    )
+            else:
+                LOGGER.debug(
+                    "Asset cache hit | LoRA=%s | validation=%s",
+                    lora.name,
+                    expected_base_model or "T2I",
+                )
             return cache[cache_key]
 
         def record_failure(scene_id: int, key: str, message: str) -> None:
@@ -402,14 +543,26 @@ class PipelineSupervisor:
                     global_result.error or f"Missing {job.character.lora.name}",
                 )
         for filename, weight in MANDATORY_I2V_LORAS:
+            LOGGER.info("Asset check | stage=I2V mandatory | LoRA=%s", filename)
             result = self.asset_manager.require_local(LocalLoraRequirement(filename, weight))
             if not result.succeeded:
+                LOGGER.warning(
+                    "Asset failed | stage=I2V mandatory | LoRA=%s | reason=%s",
+                    filename,
+                    result.error or "required local file is missing",
+                )
                 for scene in job.scenes:
                     record_failure(
                         scene.scene_id,
                         f"required:{filename.casefold()}",
                         result.error or f"Missing {filename}",
                     )
+            else:
+                LOGGER.info(
+                    "Asset ready | stage=I2V mandatory | LoRA=%s | file=%s",
+                    filename,
+                    result.local_filename or filename,
+                )
 
         for scene in job.scenes:
             for lora in effective_t2i_loras(scene, job.character):

@@ -16,6 +16,12 @@ only the unfinished stage is retried. A timed-out prompt is deleted if pending o
 prompt ID is the running project prompt. On process recovery, succeeded scenes and their deterministic artifacts are
 left untouched.
 
+`run_forever` owns a daemon status reporter with a configurable default interval of 15 seconds. Because it runs
+independently of the synchronous pipeline tick, it remains active while Gmail polling sleeps, the live ComfyUI route
+resolves/downloads an asset, or a long T2I/I2V prompt executes. Each line reads only the durable state snapshot and
+redacted queue totals (`running`/`pending`); workflow bodies, prompts, download URLs, and secrets are never logged.
+Phase-level INFO messages identify asset names/results, scene stage attempts, cache reuse, and assembly boundaries.
+
 LoRA resolution runs through a loopback-only custom ComfyUI route so the standalone supervisor uses the active
 server process's exact `folder_paths` roots and selectable filenames. Dynamic assets are de-duplicated by Civitai
 version ID, falling back to normalized download URL, rather than display name. This prevents one version repeated

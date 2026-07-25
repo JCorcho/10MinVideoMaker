@@ -125,6 +125,13 @@ OPTIONAL_SETTINGS = (
         _positive_number,
     ),
     OptionalSetting(
+        "TENMIN_STATUS_INTERVAL_SECONDS",
+        "Console heartbeat seconds",
+        "15",
+        "How often the visible supervisor prints its redacted status line.",
+        _positive_number,
+    ),
+    OptionalSetting(
         "TENMIN_T2I_TIMEOUT_SECONDS",
         "T2I timeout seconds",
         "3600",

@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import copy
 from fractions import Fraction
+import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from tenminvideomaker.assembly import VideoStreamInfo
 from tenminvideomaker.assets import AssetResolution
@@ -109,6 +111,9 @@ class FakeComfy:
     def alive(self):
         return True
 
+    def queue_counts(self):
+        return 1, 2
+
 
 class FakeAssembler:
     def __init__(self, final_path: Path):
@@ -133,6 +138,49 @@ class RetryOnceComfy(FakeComfy):
 
 
 class SupervisorTests(unittest.TestCase):
+    def test_status_heartbeat_logs_redacted_pipeline_and_queue_counts(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            job = parse_job_payload(payload())
+            store = PipelineStateStore(root / "pipeline.sqlite3")
+            store.claim_job(job)
+            supervisor = PipelineSupervisor(
+                store=store,
+                mail_client=FakeMailClient(),
+                asset_manager=FakeAssetManager(),
+                comfy=FakeComfy(root / "unused.png"),
+                settings=SupervisorSettings(status_interval_seconds=7),
+            )
+
+            with self.assertLogs("10MinVideoMaker.supervisor", level="INFO") as logs:
+                supervisor._log_status()
+
+            output = "\n".join(logs.output)
+            self.assertIn("STATUS | state=downloading_assets", output)
+            self.assertIn(f"job={job.job_id}", output)
+            self.assertIn("scene=none", output)
+            self.assertIn("ComfyUI queue=running=1 pending=2", output)
+            self.assertNotIn("secret-prompt", output)
+
+    def test_status_interval_loads_from_environment_and_must_be_positive(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "TENMIN_POLL_SECONDS": "300",
+                "TENMIN_T2I_TIMEOUT_SECONDS": "3600",
+                "TENMIN_I2V_TIMEOUT_SECONDS": "21600",
+                "TENMIN_MAX_STAGE_ATTEMPTS": "2",
+                "TENMIN_STATUS_INTERVAL_SECONDS": "9",
+            },
+            clear=True,
+        ):
+            self.assertEqual(
+                SupervisorSettings.from_environment().status_interval_seconds,
+                9,
+            )
+        with self.assertRaisesRegex(ValueError, "status_interval_seconds"):
+            SupervisorSettings(status_interval_seconds=0)
+
     def test_process_job_runs_t2i_then_i2v_stitches_and_requests_next(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()

@@ -49,6 +49,12 @@ Double-click `Start 10MinVideoMaker.bat` in the repository root. On first run it
 On later runs, valid required settings are reused and the launcher asks whether to change optional settings before
 starting. See `docs/user-guide.md` for OAuth setup details and safe setup-only commands.
 
+The visible supervisor console prints a redacted `STATUS` heartbeat every 15 seconds by default. It reports the
+durable state, active job/scene, and only ComfyUI's running/pending queue counts. It also announces Gmail checks,
+LoRA resolution, cached-artifact reuse, T2I/I2V attempts, and stitching. Change the interval through the optional
+**Console heartbeat seconds** setting (`TENMIN_STATUS_INTERVAL_SECONDS`); use the existing log-level option for
+additional `DEBUG` messages.
+
 Run `powershell -ExecutionPolicy Bypass -File scripts\install_windows_shortcuts.ps1` to install the project icon
 and launcher shortcut on the current user's Desktop and Start Menu. The shortcut can then be pinned through
 Windows' context menu.

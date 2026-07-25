@@ -20,6 +20,32 @@ class ComfyHttpTests(unittest.TestCase):
         with self.assertRaises(ComfyHttpError):
             find_video_output({"outputs": {"1": {"images": []}}})
 
+    def test_queue_counts_returns_only_redacted_totals(self) -> None:
+        client = ComfyHttpClient()
+        with patch.object(
+            client,
+            "_json_request",
+            return_value={
+                "queue_running": [[1, "secret-prompt", {"workflow": "hidden"}]],
+                "queue_pending": [
+                    [2, "another-secret", {"workflow": "hidden"}],
+                    [3, "third-secret", {"workflow": "hidden"}],
+                ],
+            },
+        ) as request:
+            self.assertEqual(client.queue_counts(), (1, 2))
+        request.assert_called_once_with("GET", "/queue", timeout=10)
+
+    def test_queue_counts_rejects_invalid_queue_shape(self) -> None:
+        client = ComfyHttpClient()
+        with patch.object(
+            client,
+            "_json_request",
+            return_value={"queue_running": "not-a-list", "queue_pending": []},
+        ):
+            with self.assertRaisesRegex(ComfyHttpError, "invalid queue lists"):
+                client.queue_counts()
+
     def test_lora_resolution_uses_project_route_and_long_download_timeout(self) -> None:
         client = ComfyHttpClient()
         payload = {"kind": "required", "filename": "DMD.safetensors", "weight": 1.0}

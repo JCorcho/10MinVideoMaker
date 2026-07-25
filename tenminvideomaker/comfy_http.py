@@ -60,6 +60,17 @@ class ComfyHttpClient:
         except ComfyHttpError:
             return False
 
+    def queue_counts(self) -> tuple[int, int]:
+        """Return running and pending prompt counts without exposing workflow contents."""
+        queue = self._json_request("GET", "/queue", timeout=10)
+        if not isinstance(queue, Mapping):
+            raise ComfyHttpError("ComfyUI returned an invalid queue response.")
+        running = queue.get("queue_running", [])
+        pending = queue.get("queue_pending", [])
+        if not isinstance(running, list) or not isinstance(pending, list):
+            raise ComfyHttpError("ComfyUI returned invalid queue lists.")
+        return len(running), len(pending)
+
     def queue_prompt(self, workflow: Mapping[str, Any]) -> str:
         response = self._json_request(
             "POST",

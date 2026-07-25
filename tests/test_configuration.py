@@ -67,6 +67,7 @@ class ConfigurationTests(unittest.TestCase):
                         "https://www.googleapis.com/auth/drive.readonly"
                     ),
                     "TENMIN_POLL_SECONDS": "300",
+                    "TENMIN_STATUS_INTERVAL_SECONDS": "15",
                     "NOT_ALLOWED": "ignored",
                 },
             )
@@ -79,6 +80,7 @@ class ConfigurationTests(unittest.TestCase):
                         "https://www.googleapis.com/auth/drive.readonly"
                     ),
                     "TENMIN_POLL_SECONDS": "300",
+                    "TENMIN_STATUS_INTERVAL_SECONDS": "15",
                 },
             )
             merged = load_project_environment(
@@ -90,6 +92,7 @@ class ConfigurationTests(unittest.TestCase):
             )
             self.assertEqual(merged["TENMIN_GMAIL_USERNAME"], "process@example.com")
             self.assertEqual(merged["TENMIN_POLL_SECONDS"], "300")
+            self.assertEqual(merged["TENMIN_STATUS_INTERVAL_SECONDS"], "15")
             self.assertEqual(merged["UNRELATED"], "preserved")
 
     @unittest.skipUnless(os.name == "nt", "Windows DPAPI is required")

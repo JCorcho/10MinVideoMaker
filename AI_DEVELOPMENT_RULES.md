@@ -19,6 +19,9 @@
   detailer; Pony uses 30-step `res_3m_ode` then 30-step `res_5s_ode`, followed by the reference
   `bbox/face_yolov8m.pt` detector and `FaceDetailer` settings.
 - Gmail polling and ComfyUI restart supervision run outside ComfyUI node execution. Nodes and the supervisor share one service layer so that authentication, state transitions, and validation cannot diverge.
+- The visible supervisor must emit a redacted status heartbeat during both polling sleeps and long blocking work.
+  It may report state, job/scene IDs, safe asset names, and queue counts, but never prompts, workflow bodies, URLs,
+  tokens, App Passwords, OAuth secrets, or Discord webhooks.
 - One-click setup remains project-local. Store non-secrets in ignored `.env`; encrypt App Passwords, OAuth client
   secrets, refresh tokens, Civitai tokens, and Discord webhooks with current-user Windows DPAPI in ignored
   `runtime/secrets.json`. Process environment
@@ -492,4 +495,23 @@
   - `python -m compileall -q tenminvideomaker tests scripts __init__.py`
   - embedded-Python unit tests and compilation
   - live no-render resolution of an existing Civitai `LTXV2` LoRA through the loopback route
+  - `git diff --check`
+
+### 2026-07-25 — active redacted console progress
+
+- Changed files: `.env.example`, `tenminvideomaker/comfy_http.py`, `supervisor.py`, `configuration.py`,
+  `scripts/setup_and_start.py`, focused tests in `tests/test_comfy_http.py`, `test_configuration.py`, and
+  `test_supervisor.py`, plus `README.md`, `docs/architecture.md`, `docs/user-guide.md`, and this file.
+- Behavior: the supervisor runs an independent status reporter every 15 seconds by default, so the console remains
+  active while the main loop sleeps, resolves assets, renders, or stitches. Heartbeats show durable state,
+  job/scene IDs, and redacted ComfyUI queue counts. INFO phase logs cover Gmail checks, LoRA results, cache reuse,
+  scene attempts, and assembly.
+- Privacy: queue workflow data and generation prompts are never formatted into the log. Authentication values,
+  download URLs, and the Discord webhook remain excluded.
+- Configuration: `TENMIN_STATUS_INTERVAL_SECONDS` is an allowlisted non-secret setting and appears as **Console
+  heartbeat seconds** in the same optional-settings editor as the other supervisor controls.
+- Verification commands:
+  - `python -m unittest discover -s tests -v`
+  - embedded-Python unit tests and compilation
+  - live supervisor restart while `waiting_for_grok`, followed by observed heartbeat output
   - `git diff --check`

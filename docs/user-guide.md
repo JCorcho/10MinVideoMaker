@@ -224,6 +224,23 @@ project's path-verified restart helper. The first supervisor tick sends the init
 every five minutes. Use `--once` for one durable state-machine step or `--no-restart` to disable controlled ComfyUI
 restart while diagnosing configuration.
 
+### Reading the live console
+
+The supervisor prints a heartbeat every 15 seconds even while a render or asset request is blocking the main loop:
+
+```text
+STATUS | state=running_i2v | job=20260725-1234 | scene=3 | ComfyUI queue=running=1 pending=0
+```
+
+Common states are `waiting_for_grok`, `downloading_assets`, `running_t2i`, `running_i2v`, `stitching`, and `error`.
+`running=1` means ComfyUI is actively executing a prompt; `running=0 pending=0` is normal during Gmail waits, asset
+metadata/download work, FFmpeg, or between jobs. Separate lines announce the exact safe phase, including each LoRA
+check/result and each scene attempt, so a zero GPU reading during non-render work is not mistaken for a hang.
+
+Change **Console heartbeat seconds** in the launcher's optional settings, or set
+`TENMIN_STATUS_INTERVAL_SECONDS`. The default is 15 seconds. `TENMIN_LOG_LEVEL=DEBUG` adds tick/cache details.
+Status output never includes prompts, workflow bodies, OAuth/App Passwords, Civitai tokens, or Discord webhooks.
+
 Do not start the supervisor merely to test installation: its first tick intentionally sends email, and a received job
 can download LoRAs and begin generation. Use the no-render checks below instead.
 
