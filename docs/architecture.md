@@ -55,9 +55,11 @@ forwards, and similarly named messages from entering the job state machine.
 Incoming job precedence is `.json` attachment, valid JSON in the plain-text body, then a supported
 `drive.google.com/file/d/...` (or `open?id=`/`uc?id=`) file link found in plain text or HTML. Drive folder links and
 arbitrary URLs are rejected. Downloads are capped at 5 MiB and may redirect only to approved Google download hosts.
-Public files are attempted anonymously; OAuth mode falls back to the Drive API for files shared with the configured
-Gmail account. Authentication/network failures leave the email unread for retry, while a successfully downloaded
-malformed payload is claimed as invalid under the existing mailbox rules.
+Public files are attempted anonymously. A sign-in redirect outside the approved content-host allowlist is classified
+as an access failure without consuming its response body, so OAuth mode falls back to the Drive API for files shared
+with the configured Gmail account. An authenticated 404 is reported as missing/not-shared rather than as an OAuth
+failure. Authentication/network failures leave the email unread for retry, while a successfully downloaded malformed
+payload is claimed as invalid under the existing mailbox rules.
 
 If every scene fails asset preparation, the supervisor transitions to `error` and stops polling for replacement
 jobs. The one-click launcher detects that saved job and offers an atomic retry: unfinished scene errors and prompt IDs

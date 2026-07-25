@@ -149,7 +149,11 @@ Payload precedence is:
 A malformed attachment is not silently replaced by body content. Drive folder links and non-Google URLs are ignored.
 The downloaded file must be UTF-8 JSON, no larger than 5 MiB, and must pass the same `job_id`/`scenes` contract. Ask
 Grok to share the file with the configured Gmail account; alternatively, **Anyone with the link** works without
-Drive OAuth.
+Drive OAuth. Merely including a Drive view URL does not grant access. In Google Drive, open **Share** and either add
+the configured Gmail address as a Viewer or set **General access** to **Anyone with the link — Viewer**. A private
+file's anonymous sign-in redirect automatically falls back to the authenticated Drive API. If that API returns 404,
+the file does not exist for—or has not been shared with—the authorized account; the completion email remains unread
+and will retry after its sharing is corrected.
 
 ## Supervisor settings
 

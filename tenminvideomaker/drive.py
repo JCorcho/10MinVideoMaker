@@ -85,7 +85,12 @@ def _read_response(response: Any, *, max_bytes: int) -> tuple[bytes, str]:
     final_url = response.geturl()
     parsed = urlparse(final_url)
     if parsed.scheme != "https" or not _allowed_download_host(parsed.hostname or ""):
-        raise DriveDownloadError("Google Drive redirected the download outside an approved Google host.")
+        # Anonymous Drive downloads commonly end at Google's sign-in surface for
+        # private files. Treat that as an access failure so OAuth callers can retry
+        # through the authenticated Drive API; the response body is never consumed.
+        raise _DriveAccessError(
+            "Google Drive redirected the anonymous download outside an approved content host."
+        )
     length = response.headers.get("Content-Length") if response.headers else None
     try:
         if length is not None and int(length) > max_bytes:
@@ -186,6 +191,12 @@ def download_google_drive_json(
         )
         return _decode_download(content, content_type)
     except DriveDownloadError as error:
+        if "HTTP 404" in str(error):
+            raise DriveDownloadError(
+                "Google Drive file was not found or is not shared with the authorized Gmail account. "
+                "Share the file directly with that account or set General access to "
+                "'Anyone with the link' (Viewer)."
+            ) from error
         raise DriveDownloadError(
             "Authenticated Google Drive download failed. Enable the Google Drive API in the OAuth "
             "project, share the file with this Gmail account, and reauthorize Drive read-only access."

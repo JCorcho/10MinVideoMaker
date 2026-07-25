@@ -107,6 +107,59 @@ class DriveTests(unittest.TestCase):
         )
         self.assertIn(f"/drive/v3/files/{FILE_ID}?alt=media", requests[1].full_url)
 
+    def test_private_redirect_falls_back_to_authenticated_drive_api(self) -> None:
+        requests = []
+
+        def opener(request, *, timeout):
+            requests.append(request)
+            if len(requests) == 1:
+                return _Response(
+                    b"<html>Google sign in</html>",
+                    url="https://accounts.google.com/ServiceLogin",
+                    content_type="text/html",
+                )
+            return _Response(
+                b'{"job_id":"private-redirect","scenes":[]}',
+                url=request.full_url,
+            )
+
+        text = download_google_drive_json(
+            SHARE_URL,
+            access_token="access-token",
+            opener=opener,
+        )
+
+        self.assertEqual(json.loads(text)["job_id"], "private-redirect")
+        self.assertEqual(len(requests), 2)
+        self.assertIn(f"/drive/v3/files/{FILE_ID}?alt=media", requests[1].full_url)
+        self.assertEqual(
+            requests[1].get_header("Authorization"),
+            "Bearer access-token",
+        )
+
+    def test_authenticated_404_reports_missing_file_sharing(self) -> None:
+        requests = []
+
+        def opener(request, *, timeout):
+            requests.append(request)
+            if len(requests) == 1:
+                return _Response(
+                    b"<html>Google sign in</html>",
+                    url="https://accounts.google.com/ServiceLogin",
+                    content_type="text/html",
+                )
+            raise HTTPError(request.full_url, 404, "Not Found", {}, None)
+
+        with self.assertRaisesRegex(
+            DriveDownloadError,
+            "not found or is not shared",
+        ):
+            download_google_drive_json(
+                SHARE_URL,
+                access_token="access-token",
+                opener=opener,
+            )
+
     def test_private_file_without_oauth_has_actionable_error(self) -> None:
         def opener(request, *, timeout):
             raise HTTPError(request.full_url, 403, "Forbidden", {}, None)

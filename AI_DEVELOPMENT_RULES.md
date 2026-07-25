@@ -344,3 +344,25 @@
 - Results: all 94 tests passed under system and Easy Install embedded Python; compilation and
   `git diff --check` passed. No Gmail message was sent, no Drive file was downloaded, no media was rendered, and no
   model was loaded.
+
+### 2026-07-24 — authenticated fallback for private Drive redirects
+
+- Changed files: `tenminvideomaker/drive.py`, `tests/test_drive.py`, `README.md`, `docs/architecture.md`,
+  `docs/user-guide.md`, `AI_DEVELOPMENT_RULES.md`.
+- Cause: a private Drive file sent the anonymous download route to Google's sign-in surface. The final-host guard
+  correctly rejected that response, but raised a terminal download error instead of the internal access-failure
+  signal, so the configured authenticated Drive API route was never attempted.
+- Routing: a rejected anonymous content-host redirect now enters the existing OAuth API fallback without consuming
+  the redirected response body. An authenticated API 404 is reported specifically as missing or not shared with the
+  authorized Gmail account. Transport failures continue to leave the completion email unread for retry.
+- Live diagnosis: Gmail SMTP/IMAP, Drive API validation, and the authorized Drive identity all succeeded. The
+  handoff file itself returned authenticated Drive API 404 for the correctly configured Gmail identity, confirming
+  that its sharing must be corrected by the file owner.
+- Reproduction: have a private Drive download resolve to a Google sign-in URL, then verify that the second request is
+  `drive/v3/files/{file_id}?alt=media` with bearer authentication. A 404 from that request must mention file sharing.
+- Verification commands:
+  - `python -m unittest discover -s tests -v`
+  - embedded-Python unit tests and compilation
+  - `git diff --check`
+- Results: all 96 tests passed under system and Easy Install embedded Python; compilation and
+  `git diff --check` passed. No Gmail message was sent, no media was rendered, and no model was loaded.

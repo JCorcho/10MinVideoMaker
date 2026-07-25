@@ -42,7 +42,7 @@ starting. See `docs/user-guide.md` for OAuth setup details and safe setup-only c
   replying to it.
 - **Poll Gmail Once** — searches unread mail for the exact completion subject `LTX_JOB_COMPLETE`, then performs
   attachment-first extraction and accepts body JSON or a Google Drive file link; scheduling belongs to the
-  supervisor.
+  supervisor. Private-file sign-in redirects fall back to the authenticated Drive API.
 - **Resolve LoRAs** — uses the live ComfyUI process's active LoRA roots, resolves dynamic assets, and verifies
   mandatory I2V LoRAs.
 - **Release Memory** — runs Python and CUDA cache cleanup.
