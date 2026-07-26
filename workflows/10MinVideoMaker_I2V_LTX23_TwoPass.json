@@ -1,6 +1,6 @@
 {
-  "last_node_id": 39,
-  "last_link_id": 58,
+  "last_node_id": 38,
+  "last_link_id": 57,
   "nodes": [
     {
       "id": 1,
@@ -143,7 +143,7 @@
           "type": "VAE",
           "links": [
             14,
-            53
+            52
           ],
           "slot_index": 0
         }
@@ -184,22 +184,29 @@
             "Age1_000000200.safetensors",
             "Ahegao-000014.safetensors",
             "AmpStumplessPony.safetensors",
+            "Aria_Zenless_Zone_Zero_ANIMA_ILLUSTRIOUS.safetensors",
+            "Aura_Sousou_no_Frieren_Anima_1.0.safetensors",
             "Beautiful face_alpha1.0_rank4_noxattn_last.safetensors",
             "Breast Size Slider - Illustrious - V2_alpha1.0_rank4_noxattn_last.safetensors",
             "Breast Slider - Pony_alpha1.0_rank4_noxattn_last.safetensors",
+            "Chainsaw_Man_Makima_Anima.safetensors",
             "Cr3ampi3_animation_sulphur-2_i2v_v1.0.safetensors",
             "Creampie_animation.safetensors",
             "CyberRealistic_AnimaTurbo_V4.2.safetensors",
             "DR34ML4Y.safetensors",
             "DR34ML4Y_LTXXX_V2.safetensors",
+            "DR34ML4Y_LTX_v3.safetensors",
             "DaSiWa_LTX23_NSFW_Bodyphysics_Fluid_Motion_Enhancer_v01.safetensors",
             "Darth TalonDG_Anima_V1.safetensors",
             "DetailerPony-000001.safetensors",
+            "Elsa_-_Frozen_-_Disney_-_Anima_LORA.safetensors",
             "Elsa_Frozen_-_Disney_Princess_-_Illustrious_XL_PONY_XL_SD_1.5_by_YeiyeiArt.safetensors",
             "Emonette__Miraculous_Ladybug__Pony.safetensors",
+            "Evelyn_Chevalier_Zenless_Zone_Zero_Anima_v1.0.safetensors",
             "Flux_2-Turbo-LoRA_comfyui.safetensors",
             "Frozen_elsa_textV1-PonyXL.safetensors",
             "Futa_on_Female-000051(1).safetensors",
+            "Human_Loona_Helluva_Boss_Anima_Character_Lora.safetensors",
             "JoyAI-Echo-content_r256.safetensors",
             "LTX-2.3_Deepthroat.safetensors",
             "LTX2.3_DMD_reshaped_r256.safetensors",
@@ -210,6 +217,7 @@
             "LTX23_Penile_Praxis_v4.safetensors",
             "Ladybug__Miraculous_Ladybug__Pony.safetensors",
             "Lena_Mossclaw_LTX_Local_v1.safetensors",
+            "Maleficent_Anima.safetensors",
             "Malina_The_Emperors_New_School_pony.safetensors",
             "MarinetteLTX.comfy.safetensors",
             "MarinetteLTX23_4000steps.comfy.safetensors",
@@ -235,12 +243,19 @@
             "Princess_Snow_White.safetensors",
             "Princess_Tiana.safetensors",
             "Puffy_Nipples_PonyXL.safetensors",
+            "Pussyjob_LTX-2.3.safetensors",
             "Pussyjob_LTX-2.3_Sulphur.safetensors",
             "Qinsleth_OC_Anima_IL_Pony_-_Anima_Preview_3.safetensors",
+            "Rapunzel_Anima.safetensors",
+            "Re_Zero_kara_Hajimeru_Isekai_Seikatsu_-_Shaula_Anima.safetensors",
             "RealSkin_xxXL_v1.safetensors",
+            "Riyo_Reaper_Anima.safetensors",
             "ShinySkinSlider3.0_800steps.safetensors",
+            "Silver_Wolf_Honkai_Star_Rail_Anima_Character_Lora.safetensors",
             "Thigh Size Slider V2_alpha1.0_rank4_noxattn_last.safetensors",
+            "Tifa_Lockhart_Final_Fantasy_VII_Anima.safetensors",
             "TomagoPony.safetensors",
+            "YoRHa_2-gou_B-gata_2B_2_B_-_Nier_Automata.safetensors",
             "annaXL.safetensors",
             "anna_Pony_LoRA_0.1-000002.safetensors",
             "checkpoint-e20_s400.safetensors",
@@ -327,22 +342,29 @@
             "Age1_000000200.safetensors",
             "Ahegao-000014.safetensors",
             "AmpStumplessPony.safetensors",
+            "Aria_Zenless_Zone_Zero_ANIMA_ILLUSTRIOUS.safetensors",
+            "Aura_Sousou_no_Frieren_Anima_1.0.safetensors",
             "Beautiful face_alpha1.0_rank4_noxattn_last.safetensors",
             "Breast Size Slider - Illustrious - V2_alpha1.0_rank4_noxattn_last.safetensors",
             "Breast Slider - Pony_alpha1.0_rank4_noxattn_last.safetensors",
+            "Chainsaw_Man_Makima_Anima.safetensors",
             "Cr3ampi3_animation_sulphur-2_i2v_v1.0.safetensors",
             "Creampie_animation.safetensors",
             "CyberRealistic_AnimaTurbo_V4.2.safetensors",
             "DR34ML4Y.safetensors",
             "DR34ML4Y_LTXXX_V2.safetensors",
+            "DR34ML4Y_LTX_v3.safetensors",
             "DaSiWa_LTX23_NSFW_Bodyphysics_Fluid_Motion_Enhancer_v01.safetensors",
             "Darth TalonDG_Anima_V1.safetensors",
             "DetailerPony-000001.safetensors",
+            "Elsa_-_Frozen_-_Disney_-_Anima_LORA.safetensors",
             "Elsa_Frozen_-_Disney_Princess_-_Illustrious_XL_PONY_XL_SD_1.5_by_YeiyeiArt.safetensors",
             "Emonette__Miraculous_Ladybug__Pony.safetensors",
+            "Evelyn_Chevalier_Zenless_Zone_Zero_Anima_v1.0.safetensors",
             "Flux_2-Turbo-LoRA_comfyui.safetensors",
             "Frozen_elsa_textV1-PonyXL.safetensors",
             "Futa_on_Female-000051(1).safetensors",
+            "Human_Loona_Helluva_Boss_Anima_Character_Lora.safetensors",
             "JoyAI-Echo-content_r256.safetensors",
             "LTX-2.3_Deepthroat.safetensors",
             "LTX2.3_DMD_reshaped_r256.safetensors",
@@ -353,6 +375,7 @@
             "LTX23_Penile_Praxis_v4.safetensors",
             "Ladybug__Miraculous_Ladybug__Pony.safetensors",
             "Lena_Mossclaw_LTX_Local_v1.safetensors",
+            "Maleficent_Anima.safetensors",
             "Malina_The_Emperors_New_School_pony.safetensors",
             "MarinetteLTX.comfy.safetensors",
             "MarinetteLTX23_4000steps.comfy.safetensors",
@@ -378,12 +401,19 @@
             "Princess_Snow_White.safetensors",
             "Princess_Tiana.safetensors",
             "Puffy_Nipples_PonyXL.safetensors",
+            "Pussyjob_LTX-2.3.safetensors",
             "Pussyjob_LTX-2.3_Sulphur.safetensors",
             "Qinsleth_OC_Anima_IL_Pony_-_Anima_Preview_3.safetensors",
+            "Rapunzel_Anima.safetensors",
+            "Re_Zero_kara_Hajimeru_Isekai_Seikatsu_-_Shaula_Anima.safetensors",
             "RealSkin_xxXL_v1.safetensors",
+            "Riyo_Reaper_Anima.safetensors",
             "ShinySkinSlider3.0_800steps.safetensors",
+            "Silver_Wolf_Honkai_Star_Rail_Anima_Character_Lora.safetensors",
             "Thigh Size Slider V2_alpha1.0_rank4_noxattn_last.safetensors",
+            "Tifa_Lockhart_Final_Fantasy_VII_Anima.safetensors",
             "TomagoPony.safetensors",
+            "YoRHa_2-gou_B-gata_2B_2_B_-_Nier_Automata.safetensors",
             "annaXL.safetensors",
             "anna_Pony_LoRA_0.1-000002.safetensors",
             "checkpoint-e20_s400.safetensors",
@@ -742,7 +772,7 @@
         "Node name for S&R": "VHS_LoadImagePath"
       },
       "widgets_values": [
-        "D:\\output\\10minfinals\\.work\\example-20260724-1610\\frames\\scene_0001.png",
+        "D:\\LTX_Supervisor_Storage\\jobs\\example-20260724-1610\\scenes\\scene_0001\\revisions\\0001\\frame.png",
         0,
         0
       ],
@@ -813,8 +843,8 @@
       },
       "widgets_values": [
         "lanczos",
-        352,
-        624,
+        384,
+        672,
         "disabled"
       ],
       "title": "Scale frame for first pass"
@@ -914,8 +944,8 @@
         "Node name for S&R": "EmptyLTXVLatentVideo"
       },
       "widgets_values": [
-        352,
-        624,
+        384,
+        672,
         193,
         1
       ],
@@ -1197,7 +1227,7 @@
       "widgets_values": [
         "lcm"
       ],
-      "title": "LCM first pass"
+      "title": "I2V first-pass sampler"
     },
     {
       "id": 20,
@@ -1552,8 +1582,8 @@
       },
       "widgets_values": [
         "lanczos",
-        704,
-        1248,
+        768,
+        1344,
         "disabled"
       ],
       "title": "Scale exact frame to production size"
@@ -1823,7 +1853,7 @@
       "widgets_values": [
         "lcm"
       ],
-      "title": "LCM upscale pass"
+      "title": "I2V upscale-pass sampler"
     },
     {
       "id": 31,
@@ -1985,7 +2015,7 @@
           "name": "audio_latent",
           "type": "LATENT",
           "links": [
-            52
+            51
           ],
           "slot_index": 1
         }
@@ -2027,7 +2057,8 @@
           "name": "IMAGE",
           "type": "IMAGE",
           "links": [
-            51
+            53,
+            55
           ],
           "slot_index": 0
         }
@@ -2040,78 +2071,6 @@
     },
     {
       "id": 35,
-      "type": "ImageScale",
-      "pos": [
-        7280,
-        0
-      ],
-      "size": [
-        360,
-        250
-      ],
-      "flags": {},
-      "order": 34,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "image",
-          "type": "IMAGE",
-          "link": 51
-        },
-        {
-          "name": "upscale_method",
-          "type": [
-            "nearest-exact",
-            "bilinear",
-            "area",
-            "bicubic",
-            "lanczos"
-          ],
-          "link": null
-        },
-        {
-          "name": "width",
-          "type": "INT",
-          "link": null
-        },
-        {
-          "name": "height",
-          "type": "INT",
-          "link": null
-        },
-        {
-          "name": "crop",
-          "type": [
-            "disabled",
-            "center"
-          ],
-          "link": null
-        }
-      ],
-      "outputs": [
-        {
-          "name": "IMAGE",
-          "type": "IMAGE",
-          "links": [
-            54,
-            56
-          ],
-          "slot_index": 0
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "ImageScale"
-      },
-      "widgets_values": [
-        "lanczos",
-        704,
-        1248,
-        "center"
-      ],
-      "title": "Normalize decoded video to exact 704x1248"
-    },
-    {
-      "id": 36,
       "type": "LTXVAudioVAEDecode",
       "pos": [
         6760,
@@ -2122,18 +2081,18 @@
         220
       ],
       "flags": {},
-      "order": 35,
+      "order": 34,
       "mode": 0,
       "inputs": [
         {
           "name": "samples",
           "type": "LATENT",
-          "link": 52
+          "link": 51
         },
         {
           "name": "audio_vae",
           "type": "VAE",
-          "link": 53
+          "link": 52
         }
       ],
       "outputs": [
@@ -2141,8 +2100,8 @@
           "name": "Audio",
           "type": "AUDIO",
           "links": [
-            55,
-            58
+            54,
+            57
           ],
           "slot_index": 0
         }
@@ -2154,10 +2113,10 @@
       "title": "Decode generated audio"
     },
     {
-      "id": 37,
+      "id": 36,
       "type": "VHS_VideoCombine",
       "pos": [
-        7800,
+        7280,
         0
       ],
       "size": [
@@ -2165,13 +2124,13 @@
         446
       ],
       "flags": {},
-      "order": 36,
+      "order": 35,
       "mode": 0,
       "inputs": [
         {
           "name": "images",
           "type": "IMAGE",
-          "link": 54
+          "link": 53
         },
         {
           "name": "frame_rate",
@@ -2223,7 +2182,7 @@
         {
           "name": "audio",
           "type": "AUDIO",
-          "link": 55
+          "link": 54
         },
         {
           "name": "pix_fmt",
@@ -2272,13 +2231,13 @@
         true,
         false
       ],
-      "title": "Save 704x1248 24 fps scene clip"
+      "title": "Save 768x1344 24 fps scene clip"
     },
     {
-      "id": 38,
+      "id": 37,
       "type": "DaSiWa_Watermark",
       "pos": [
-        7800,
+        7280,
         526
       ],
       "size": [
@@ -2286,13 +2245,13 @@
         558
       ],
       "flags": {},
-      "order": 37,
+      "order": 36,
       "mode": 0,
       "inputs": [
         {
           "name": "images",
           "type": "IMAGE",
-          "link": 56
+          "link": 55
         },
         {
           "name": "watermark_path",
@@ -2493,7 +2452,7 @@
           "name": "IMAGE",
           "type": "IMAGE",
           "links": [
-            57
+            56
           ],
           "slot_index": 0
         }
@@ -2521,10 +2480,10 @@
       "title": "Watermark Discord scene video"
     },
     {
-      "id": 39,
+      "id": 38,
       "type": "DiscordSendSaveVideo",
       "pos": [
-        8320,
+        7800,
         0
       ],
       "size": [
@@ -2532,13 +2491,13 @@
         810
       ],
       "flags": {},
-      "order": 38,
+      "order": 37,
       "mode": 0,
       "inputs": [
         {
           "name": "images",
           "type": "IMAGE",
-          "link": 57
+          "link": 56
         },
         {
           "name": "filename_prefix",
@@ -2598,7 +2557,7 @@
         {
           "name": "audio",
           "type": "AUDIO",
-          "link": 58
+          "link": 57
         },
         {
           "name": "include_video_info",
@@ -3113,47 +3072,47 @@
     ],
     [
       51,
-      34,
-      0,
-      35,
-      0,
-      "IMAGE"
-    ],
-    [
-      52,
       33,
       1,
-      36,
+      35,
       0,
       "LATENT"
     ],
     [
-      53,
+      52,
       3,
       0,
-      36,
+      35,
       1,
       "VAE"
+    ],
+    [
+      53,
+      34,
+      0,
+      36,
+      0,
+      "IMAGE"
     ],
     [
       54,
       35,
       0,
+      36,
+      7,
+      "AUDIO"
+    ],
+    [
+      55,
+      34,
+      0,
       37,
       0,
       "IMAGE"
     ],
     [
-      55,
-      36,
-      0,
-      37,
-      7,
-      "AUDIO"
-    ],
-    [
       56,
-      35,
+      37,
       0,
       38,
       0,
@@ -3161,17 +3120,9 @@
     ],
     [
       57,
+      35,
+      0,
       38,
-      0,
-      39,
-      0,
-      "IMAGE"
-    ],
-    [
-      58,
-      36,
-      0,
-      39,
       10,
       "AUDIO"
     ]
@@ -3183,7 +3134,7 @@
       "bounding": [
         -80,
         -80,
-        8840,
+        8320,
         3082
       ],
       "color": "#2b6f8a",
@@ -3201,8 +3152,8 @@
       ]
     },
     "10MinVideoMaker": {
-      "production_width": 704,
-      "production_height": 1248,
+      "production_width": 768,
+      "production_height": 1344,
       "fps": 24,
       "generated_from": "tenminvideomaker.workflow_builder"
     }

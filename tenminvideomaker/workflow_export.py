@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Any, Mapping
 
+from .constants import PRODUCTION_FPS, PRODUCTION_HEIGHT, PRODUCTION_WIDTH
 from .workflow_builder import validate_against_object_info
 
 _NODE_WIDTH = 360
@@ -200,9 +201,9 @@ def api_to_gui_workflow(
         "extra": {
             "ds": {"scale": 0.65, "offset": [120, 120]},
             "10MinVideoMaker": {
-                "production_width": 704,
-                "production_height": 1248,
-                "fps": 24,
+                "production_width": PRODUCTION_WIDTH,
+                "production_height": PRODUCTION_HEIGHT,
+                "fps": PRODUCTION_FPS,
                 "generated_from": "tenminvideomaker.workflow_builder",
             },
         },

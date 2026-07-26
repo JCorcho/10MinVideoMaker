@@ -15,8 +15,8 @@ state, source payloads, versioned frames and clips, generation manifests, finals
 files. The first GUI launch performs a non-destructive import of the former project runtime and recorded
 `D:\output\10minfinals` artifacts. Legacy source files are left untouched.
 
-The first completed master is `D:\output\10minfinals\20260724-2249_final.mp4`: 704×1248, 24 fps, stereo AAC,
-3,848 frames, and 160.35 seconds.
+Legacy first completed master: `D:\output\10minfinals\20260724-2249_final.mp4` at 704×1248, 24 fps, stereo AAC,
+3,848 frames, and 160.35 seconds. New jobs use 768×1344.
 
 T2I routing is model-specific: Anima uses its 30-step `er_sde`/`beta57` reference path without a detailer. Pony
 uses 30-step `res_3m_ode` followed by 30-step `res_5s_ode`, then the reference YOLO face bbox detector and
@@ -86,8 +86,8 @@ Windows' context menu.
 - **Resolve LoRAs** — uses the live ComfyUI process's active LoRA roots, resolves dynamic assets, verifies mandatory
   I2V LoRAs, accepts verified LTX 2.x dynamic LoRAs for LTX 2.3, and blocks LTX 1.x and image-model LoRAs from I2V.
 - **Release Memory** — runs Python and CUDA cache cleanup.
-- **Save Scene Frame** — atomically caches a deterministic 704×1248 PNG for the matching scene.
-- **Stitch Clips** — verifies every clip is 704×1248 at 24 fps before FFmpeg concat.
+- **Save Scene Frame** — atomically caches a deterministic 768×1344 PNG for the matching scene.
+- **Stitch Clips** — verifies every clip is 768×1344 at 24 fps before FFmpeg concat.
 
 Nodes that access Gmail, download assets, or stitch video have side effects and should only be queued deliberately.
 

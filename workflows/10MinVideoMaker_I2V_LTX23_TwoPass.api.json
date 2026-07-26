@@ -133,7 +133,7 @@
       "title": "Load exact cached T2I frame"
     },
     "inputs": {
-      "image": "D:\\output\\10minfinals\\.work\\example-20260724-1610\\frames\\scene_0001.png",
+      "image": "D:\\LTX_Supervisor_Storage\\jobs\\example-20260724-1610\\scenes\\scene_0001\\revisions\\0001\\frame.png",
       "custom_width": 0,
       "custom_height": 0
     }
@@ -149,8 +149,8 @@
         0
       ],
       "upscale_method": "lanczos",
-      "width": 352,
-      "height": 624,
+      "width": 384,
+      "height": 672,
       "crop": "disabled"
     }
   },
@@ -173,8 +173,8 @@
       "title": "Half-resolution video latent"
     },
     "inputs": {
-      "width": 352,
-      "height": 624,
+      "width": 384,
+      "height": 672,
       "length": 193,
       "batch_size": 1
     }
@@ -263,7 +263,7 @@
   "19": {
     "class_type": "KSamplerSelect",
     "_meta": {
-      "title": "LCM first pass"
+      "title": "I2V first-pass sampler"
     },
     "inputs": {
       "sampler_name": "lcm"
@@ -370,8 +370,8 @@
         0
       ],
       "upscale_method": "lanczos",
-      "width": 704,
-      "height": 1248,
+      "width": 768,
+      "height": 1344,
       "crop": "disabled"
     }
   },
@@ -457,7 +457,7 @@
   "30": {
     "class_type": "KSamplerSelect",
     "_meta": {
-      "title": "LCM upscale pass"
+      "title": "I2V upscale-pass sampler"
     },
     "inputs": {
       "sampler_name": "lcm"
@@ -536,22 +536,6 @@
     }
   },
   "35": {
-    "class_type": "ImageScale",
-    "_meta": {
-      "title": "Normalize decoded video to exact 704x1248"
-    },
-    "inputs": {
-      "image": [
-        "34",
-        0
-      ],
-      "upscale_method": "lanczos",
-      "width": 704,
-      "height": 1248,
-      "crop": "center"
-    }
-  },
-  "36": {
     "class_type": "LTXVAudioVAEDecode",
     "_meta": {
       "title": "Decode generated audio"
@@ -567,18 +551,18 @@
       ]
     }
   },
-  "37": {
+  "36": {
     "class_type": "VHS_VideoCombine",
     "_meta": {
-      "title": "Save 704x1248 24 fps scene clip"
+      "title": "Save 768x1344 24 fps scene clip"
     },
     "inputs": {
       "images": [
-        "35",
+        "34",
         0
       ],
       "audio": [
-        "36",
+        "35",
         0
       ],
       "frame_rate": 24.0,
@@ -593,14 +577,14 @@
       "trim_to_audio": false
     }
   },
-  "38": {
+  "37": {
     "class_type": "DaSiWa_Watermark",
     "_meta": {
       "title": "Watermark Discord scene video"
     },
     "inputs": {
       "images": [
-        "35",
+        "34",
         0
       ],
       "watermark_path": "wm.png",
@@ -620,18 +604,18 @@
       "random_seed": 0
     }
   },
-  "39": {
+  "38": {
     "class_type": "DiscordSendSaveVideo",
     "_meta": {
       "title": "Send metadata-free watermarked video to Discord"
     },
     "inputs": {
       "images": [
-        "38",
+        "37",
         0
       ],
       "audio": [
-        "36",
+        "35",
         0
       ],
       "filename_prefix": "10MinVideoMaker-example-20260724-1610-scene-0001",

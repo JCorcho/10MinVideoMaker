@@ -14,7 +14,7 @@
 - Versioned, GUI-format ComfyUI workflows belong in `workflows/`. Pair them with API-format test fixtures only when a workflow must be run headlessly.
 - Nodes must share routing and validation logic across every user surface. Do not create divergent editor and Wizard/modal implementations.
 - Before coding any node or workflow, obtain the live input/output contract from the local ComfyUI API. Do not infer third-party node inputs or output slots.
-- Production video geometry is fixed at 704×1248 and 24 fps. LTX I2V clips use the `8n + 1` frame rule, a maximum duration of 32 seconds, LCM for both sampler passes, the verified first-pass and upscale sigma schedules, and the LTX spatial upscaler.
+- Production video geometry is fixed at 768×1344 and 24 fps. LTX I2V clips use the `8n + 1` frame rule, a maximum duration of 32 seconds, LCM for both sampler passes, the verified first-pass and upscale sigma schedules, and the LTX spatial upscaler.
 - T2I retains the matching reference workflow sampler: Anima uses one 30-step `er_sde`/`beta57` pass and no
   detailer; Pony uses 30-step `res_3m_ode` then 30-step `res_5s_ode`, followed by the reference
   `bbox/face_yolov8m.pt` detector and `FaceDetailer` settings.
@@ -53,10 +53,9 @@
   authoritative until the live loader behavior changes.
 - The exact Grok schema uses `character.lora.base` to select Anima/Pony and
   `character.lora.recommended_weight` for the global T2I character LoRA. Scene LoRAs continue to use `weight`.
-- The LTX x2 spatial-upscale route uses an internal 352×624 first-pass latent and produces the fixed 704×1248
-  saved clip. Because 624 is not divisible by the live latent node's 32-pixel step, the spatial decode is
-  704×1216; route decoded frames through a final core `ImageScale` using Lanczos, 704×1248, and centered crop before
-  video combine. Do not expose or save an alternate production size.
+- The LTX x2 spatial-upscale route uses an internal 384×672 first-pass latent and produces the fixed 768×1344
+  saved clip. Every first-pass and production axis is divisible by 32; route decoded frames directly to video
+  combine. Do not expose or save an alternate production size or post-decode resize/crop stage.
 - I2V uses `VHS_VideoCombine` temporary output. The supervisor retrieves its exact history metadata through
   `/view` and writes the project clip into the matching versioned directory below
   `D:\LTX_Supervisor_Storage\jobs`; do not scan or move shared output folders.
@@ -129,7 +128,7 @@
   `AI_DEVELOPMENT_RULES.md`.
 - Architecture: seven V1-compatible node wrappers expose the shared contract, state, Gmail, asset, cleanup, and
   assembly services. Gmail polling nodes never sleep; the future supervisor owns the five-minute schedule.
-- Routing: the stitching node uses FFprobe before FFmpeg concat, rejecting any clip that differs from 704×1248
+- Routing: the stitching node uses FFprobe before FFmpeg concat, rejecting any clip that differs from 768×1344
   or 24 fps. Dynamic LoRAs are de-duplicated by case-insensitive name before resolution.
 - Live verification: all seven node types were returned by ComfyUI `/object_info`; the no-render
   `10MinVideoMaker_ReleaseMemory` API prompt completed successfully.
@@ -659,3 +658,27 @@
   date, then the stored creation timestamp. The job ID remains the API and state-machine key.
 - Reproduction: load a history containing more projects and scenes than fit vertically. Both left columns must
   scroll to their final card, while project cards and the selected-project heading show the readable label.
+
+### 2026-07-25 — divisible LTX 2.3 spatial-upscale geometry
+
+- Changed files: `tenminvideomaker/constants.py`, `tenminvideomaker/workflow_builder.py`,
+  `tenminvideomaker/workflow_export.py`, `tenminvideomaker/nodes.py`, focused assembly/node/supervisor/workflow
+  builder tests, regenerated `workflows/10MinVideoMaker_*`, `README.md`, `docs/architecture.md`,
+  `docs/user-guide.md`, and this file.
+- Decision: all new production image and video output is 768×1344 at 24 fps. This is a 4:7 ratio (about 1.59%
+  wider than exact 9:16), but it makes both x2-route stages valid on LTX's 32-pixel dimension grid:
+  384×672 first pass and 768×1344 final pass.
+- Routing: `EmptyLTXVLatentVideo` starts at 384×672 and the x2 spatial upscaler reaches 768×1344 exactly. The
+  prior 704×1216 correction `ImageScale` is removed; decoded video feeds `VHS_VideoCombine` and the parallel
+  Discord watermark branch directly, avoiding a post-decode crop/resize.
+- Reproduction: build `10MinVideoMaker_I2V_LTX23_TwoPass` and verify its first-pass `ImageScale` and
+  `EmptyLTXVLatentVideo` are both 384×672, all four route dimensions are divisible by 32, and no node titled
+  `Normalize decoded video` exists. Verify T2I and FFprobe preflight use 768×1344.
+- Verification commands:
+  - `python -m unittest discover -s tests -q`
+  - Easy Install embedded-Python full unit suite with repository inserted into `sys.path`
+  - `python -m compileall -q tenminvideomaker scripts tests`
+  - `git diff --check`
+- Results: 143 tests passed under both system Python and Easy Install embedded Python. Regenerated repository and
+  approved shared GUI workflows passed live `/object_info` validation with 384×672 first-pass and 768×1344 final
+  profile metadata. No render was queued or interrupted.

@@ -20,10 +20,10 @@ class AssemblyTests(unittest.TestCase):
         self.temporary_directory.cleanup()
 
     def test_profile_accepts_only_fixed_geometry_and_rate(self) -> None:
-        stream = VideoStreamInfo(self.clip, 704, 1248, Fraction(24, 1))
+        stream = VideoStreamInfo(self.clip, 768, 1344, Fraction(24, 1))
         self.assertEqual(validate_video_profile([stream]), (stream,))
-        with self.assertRaisesRegex(AssemblyError, "expected 704x1248"):
-            validate_video_profile([VideoStreamInfo(self.clip, 720, 1248, Fraction(24, 1))])
+        with self.assertRaisesRegex(AssemblyError, "expected 768x1344"):
+            validate_video_profile([VideoStreamInfo(self.clip, 736, 1344, Fraction(24, 1))])
 
     def test_concat_list_uses_absolute_escaped_paths(self) -> None:
         text = concat_list_text([self.clip])
@@ -52,10 +52,10 @@ class AssemblyTests(unittest.TestCase):
     def test_probe_reads_primary_video_profile(self) -> None:
         def runner(command, **_kwargs):
             self.assertIn("ffprobe", command[0])
-            return subprocess.CompletedProcess(command, 0, '{"streams":[{"width":704,"height":1248,"r_frame_rate":"24/1"}]}', "")
+            return subprocess.CompletedProcess(command, 0, '{"streams":[{"width":768,"height":1344,"r_frame_rate":"24/1"}]}', "")
 
         stream = probe_video(self.clip, runner=runner)
-        self.assertEqual(stream, VideoStreamInfo(self.clip, 704, 1248, Fraction(24, 1)))
+        self.assertEqual(stream, VideoStreamInfo(self.clip, 768, 1344, Fraction(24, 1)))
 
 
 if __name__ == "__main__":

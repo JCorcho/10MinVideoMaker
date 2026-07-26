@@ -4,10 +4,33 @@ from __future__ import annotations
 
 import math
 
-PRODUCTION_WIDTH = 704
-PRODUCTION_HEIGHT = 1248
+LTX_SPATIAL_DIMENSION_STEP = 32
+I2V_SPATIAL_SCALE_FACTOR = 2
+
+# 768x1344 is the nearest x2-spatial-upscale route to vertical 9:16 where
+# both the production and first-pass dimensions obey LTX's 32-pixel grid.
+PRODUCTION_WIDTH = 768
+PRODUCTION_HEIGHT = 1344
 PRODUCTION_FPS = 24
 MAX_SCENE_SECONDS = 32.0
+
+I2V_BASE_WIDTH = PRODUCTION_WIDTH // I2V_SPATIAL_SCALE_FACTOR
+I2V_BASE_HEIGHT = PRODUCTION_HEIGHT // I2V_SPATIAL_SCALE_FACTOR
+
+if (
+    PRODUCTION_WIDTH != I2V_BASE_WIDTH * I2V_SPATIAL_SCALE_FACTOR
+    or PRODUCTION_HEIGHT != I2V_BASE_HEIGHT * I2V_SPATIAL_SCALE_FACTOR
+    or any(
+        dimension % LTX_SPATIAL_DIMENSION_STEP
+        for dimension in (
+            PRODUCTION_WIDTH,
+            PRODUCTION_HEIGHT,
+            I2V_BASE_WIDTH,
+            I2V_BASE_HEIGHT,
+        )
+    )
+):
+    raise RuntimeError("LTX production and x2 first-pass dimensions must be exact multiples of 32.")
 
 I2V_SAMPLER = "lcm"
 I2V_FIRST_PASS_SIGMAS = (1.0, 0.99375, 0.9875, 0.98125, 0.975, 0.909375, 0.725, 0.421875, 0.0)

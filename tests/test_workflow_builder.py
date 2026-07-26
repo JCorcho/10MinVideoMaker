@@ -4,16 +4,19 @@ from pathlib import Path
 import unittest
 
 from tenminvideomaker.constants import (
+    I2V_BASE_HEIGHT,
+    I2V_BASE_WIDTH,
     I2V_FIRST_PASS_SIGMAS,
     I2V_SPATIAL_UPSCALER,
     I2V_UPSCALE_PASS_SIGMAS,
+    LTX_SPATIAL_DIMENSION_STEP,
+    PRODUCTION_HEIGHT,
+    PRODUCTION_WIDTH,
 )
 from tenminvideomaker.contracts import lora_identity, parse_job_payload
 from tenminvideomaker.delivery import DiscordDeliverySettings
 from tenminvideomaker.review import scene_review_document, validate_scene_edit
 from tenminvideomaker.workflow_builder import (
-    I2V_BASE_HEIGHT,
-    I2V_BASE_WIDTH,
     WorkflowBuildError,
     build_i2v_api_workflow,
     build_t2i_api_workflow,
@@ -70,7 +73,7 @@ class WorkflowBuilderTests(unittest.TestCase):
         self.assertEqual((sampler["sampler_name"], sampler["scheduler"]), ("er_sde", "beta57"))
         self.assertEqual((sampler["steps"], sampler["cfg"]), (30, 4.5))
         latent = nodes_of_type(build.api, "EmptySD3LatentImage")[0]["inputs"]
-        self.assertEqual((latent["width"], latent["height"]), (704, 1248))
+        self.assertEqual((latent["width"], latent["height"]), (PRODUCTION_WIDTH, PRODUCTION_HEIGHT))
         self.assertFalse(nodes_of_type(build.api, "KSamplerSelect"))
         self.assertFalse(nodes_of_type(build.api, "FaceDetailer"))
         self.assertFalse(nodes_of_type(build.api, "UltralyticsDetectorProvider"))
@@ -176,6 +179,18 @@ class WorkflowBuilderTests(unittest.TestCase):
             (latent["width"], latent["height"], latent["length"]),
             (I2V_BASE_WIDTH, I2V_BASE_HEIGHT, self.scene.frame_count),
         )
+        self.assertEqual((I2V_BASE_WIDTH, I2V_BASE_HEIGHT), (384, 672))
+        self.assertTrue(
+            all(
+                dimension % LTX_SPATIAL_DIMENSION_STEP == 0
+                for dimension in (
+                    PRODUCTION_WIDTH,
+                    PRODUCTION_HEIGHT,
+                    I2V_BASE_WIDTH,
+                    I2V_BASE_HEIGHT,
+                )
+            )
+        )
         combine = nodes_of_type(build.api, "VHS_VideoCombine")[0]["inputs"]
         self.assertEqual(combine["frame_rate"], 24.0)
         self.assertFalse(combine["save_output"])
@@ -238,33 +253,23 @@ class WorkflowBuilderTests(unittest.TestCase):
         self.assertFalse(sender["inputs"]["include_prompts_in_message"])
         self.assertFalse(sender["inputs"]["send_workflow_json"])
 
-    def test_i2v_normalizes_decoded_frames_to_exact_production_geometry(self) -> None:
+    def test_i2v_decodes_directly_to_exact_production_geometry(self) -> None:
         build = build_i2v_api_workflow(
             self.job,
             self.scene,
             Path(r"D:\output\10minfinals\.work\20260724-1610\frames\scene_0001.png"),
         )
-        normalized = next(
-            node
-            for node in nodes_of_type(build.api, "ImageScale")
-            if node.get("_meta", {}).get("title")
-            == "Normalize decoded video to exact 704x1248"
+        self.assertFalse(
+            any(
+                node.get("_meta", {}).get("title", "").startswith("Normalize decoded video")
+                for node in nodes_of_type(build.api, "ImageScale")
+            )
         )
-        self.assertEqual(
-            (
-                normalized["inputs"]["width"],
-                normalized["inputs"]["height"],
-                normalized["inputs"]["upscale_method"],
-                normalized["inputs"]["crop"],
-            ),
-            (704, 1248, "lanczos", "center"),
+        decode_id = next(
+            node_id for node_id, node in build.api.items() if node["class_type"] == "VAEDecode"
         )
-        decode_id = normalized["inputs"]["image"][0]
-        self.assertEqual(build.api[decode_id]["class_type"], "VAEDecode")
         combine = nodes_of_type(build.api, "VHS_VideoCombine")[0]
-        self.assertEqual(combine["inputs"]["images"][0], next(
-            node_id for node_id, node in build.api.items() if node is normalized
-        ))
+        self.assertEqual(combine["inputs"]["images"], [decode_id, 0])
 
     def test_i2v_mandatory_loras_are_always_first_and_exact(self) -> None:
         build = build_i2v_api_workflow(

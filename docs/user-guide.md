@@ -27,7 +27,7 @@ Double-click `Start 10MinVideoMaker.bat`. After the existing credential checks, 
 4. To revise a scene, enable **Mark for remake** and choose:
    - **Video Only** to reuse that revision's existing cached frame and run only I2V.
    - **Image + Video** to generate a new frame and force the matching I2V workflow to use it.
-5. Edit fields and add/remove LoRAs. Mandatory I2V DMD 1.0 and JoyAI 0.5 and the 704×1248/24 fps profile remain
+5. Edit fields and add/remove LoRAs. Mandatory I2V DMD 1.0 and JoyAI 0.5 and the 768×1344/24 fps profile remain
    locked safety invariants.
 6. Continue selecting scenes from this or other jobs. The tray keeps the edits until **Save & Remake** is clicked.
 7. If standard work is rendering, choose **Queue edits to run after current job finishes** or
@@ -62,7 +62,7 @@ Do not queue the example workflows for a real render without replacing the examp
 
 ## Fixed generation profile
 
-- Final image and video: 704×1248.
+- Final image and video: 768×1344.
 - Frame rate: 24 fps.
 - Frame count: smallest `8n + 1` value covering the requested duration.
 - Maximum scene length: 32 seconds.
@@ -90,7 +90,7 @@ Each production scene sends two metadata-free, watermarked Patreon previews thro
 DiscordSendSave nodes:
 
 - Image: `wm.png`, bottom-right, scale 0.70, transparency 0.40, 20-pixel padding; lossless PNG, quality 100.
-- Video: the same watermark settings on the final 704×1248 frame batch; H.264 MP4 with generated audio, 24 fps,
+- Video: the same watermark settings on the final 768×1344 frame batch; H.264 MP4 with generated audio, 24 fps,
   quality 65.
 
 The Discord nodes send to the webhook only. `save_output`, previews, prompt inclusion, workflow JSON, CDN URL
@@ -105,11 +105,9 @@ The GUI templates store a separate `fixed` seed-control value after each sampler
 canvas widgets aligned, so the Pony samplers visibly show 30 steps rather than incorrectly displaying CFG 6 in the
 steps field.
 
-The first LTX pass uses an internal 352×624 latent only because the mandated spatial model is x2. The decoded and
-saved production clip is always 704×1248. Because half of 1248 is 624, which is not on LTX's required 32-pixel
-half-resolution grid, the spatial pass itself decodes at 704×1216. The workflow immediately applies a Lanczos
-scale-to-fill and centered crop before `VHS_VideoCombine`; this preserves proportions and trims roughly nine pixels
-from each horizontal edge.
+The first LTX pass uses an internal 384×672 latent because the mandated spatial model is x2. Both first-pass axes
+and both final 768×1344 axes are divisible by 32, so the spatial pass decodes directly to the saved production
+clip. No post-decode crop or resize is applied.
 
 ## One-click setup and start
 

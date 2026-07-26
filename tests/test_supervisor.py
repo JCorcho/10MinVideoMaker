@@ -11,6 +11,7 @@ from unittest.mock import patch
 from tenminvideomaker.assembly import VideoStreamInfo
 from tenminvideomaker.assets import AssetResolution
 from tenminvideomaker.comfy_http import ComfyHttpError
+from tenminvideomaker.constants import PRODUCTION_HEIGHT, PRODUCTION_WIDTH
 from tenminvideomaker.contracts import parse_job_payload
 from tenminvideomaker.state_store import PipelineState, PipelineStateStore, SceneState
 from tenminvideomaker.supervisor import PipelineSupervisor, SupervisorSettings
@@ -255,8 +256,8 @@ class SupervisorTests(unittest.TestCase):
                 clip_path_factory=lambda _job, _scene: clip,
                 video_probe=lambda path: VideoStreamInfo(
                     Path(path),
-                    704,
-                    1248,
+                    PRODUCTION_WIDTH,
+                    PRODUCTION_HEIGHT,
                     Fraction(24, 1),
                 ),
             )
@@ -324,7 +325,7 @@ class SupervisorTests(unittest.TestCase):
                 / "clips"
                 / f"scene_{scene_id:04d}.mp4",
                 video_probe=lambda path: VideoStreamInfo(
-                    Path(path), 704, 1248, Fraction(24, 1)
+                    Path(path), PRODUCTION_WIDTH, PRODUCTION_HEIGHT, Fraction(24, 1)
                 ),
             )
 
@@ -356,7 +357,7 @@ class SupervisorTests(unittest.TestCase):
                 frame_path_factory=lambda _job, _scene: frame,
                 clip_path_factory=lambda _job, _scene: clip,
                 video_probe=lambda path: VideoStreamInfo(
-                    Path(path), 704, 1248, Fraction(24, 1)
+                    Path(path), PRODUCTION_WIDTH, PRODUCTION_HEIGHT, Fraction(24, 1)
                 ),
             )
 
@@ -400,7 +401,7 @@ class SupervisorTests(unittest.TestCase):
                 frame_path_factory=lambda _job, scene: frame if scene == 1 else root / "unused.png",
                 clip_path_factory=lambda _job, scene: clip if scene == 1 else root / "unused.mp4",
                 video_probe=lambda path: VideoStreamInfo(
-                    Path(path), 704, 1248, Fraction(24, 1)
+                    Path(path), PRODUCTION_WIDTH, PRODUCTION_HEIGHT, Fraction(24, 1)
                 ),
             )
 
@@ -503,7 +504,7 @@ class SupervisorTests(unittest.TestCase):
                 assembler=assembler,
                 settings=SupervisorSettings(1, 10, 10, 2),
                 video_probe=lambda path: VideoStreamInfo(
-                    Path(path), 704, 1216, Fraction(24, 1)
+                    Path(path), PRODUCTION_WIDTH, PRODUCTION_HEIGHT - 32, Fraction(24, 1)
                 ),
             )
 
@@ -511,7 +512,10 @@ class SupervisorTests(unittest.TestCase):
 
             snapshot = store.snapshot()
             self.assertEqual(snapshot.state, PipelineState.ERROR)
-            self.assertIn("expected 704x1248", snapshot.error)
+            self.assertIn(
+                f"expected {PRODUCTION_WIDTH}x{PRODUCTION_HEIGHT}",
+                snapshot.error,
+            )
             self.assertEqual(
                 store.scene_states(job.job_id),
                 {1: SceneState.SUCCEEDED},

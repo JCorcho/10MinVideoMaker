@@ -96,11 +96,11 @@
   "8": {
     "class_type": "EmptySD3LatentImage",
     "_meta": {
-      "title": "704x1248 production latent"
+      "title": "768x1344 production latent"
     },
     "inputs": {
-      "width": 704,
-      "height": 1248,
+      "width": 768,
+      "height": 1344,
       "batch_size": 1
     }
   },
@@ -161,7 +161,8 @@
         0
       ],
       "job_id": "example-20260724-1610",
-      "scene_id": 1
+      "scene_id": 1,
+      "revision": 1
     }
   },
   "12": {

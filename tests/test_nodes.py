@@ -32,7 +32,7 @@ class NodeSurfaceTests(unittest.TestCase):
 
         result = TenMinValidateJobNode().execute(json.dumps(payload()))
         self.assertEqual(result[0], "20260724-1610")
-        self.assertEqual(result[2:], (1, 704, 1248, 24))
+        self.assertEqual(result[2:], (1, 768, 1344, 24))
 
     def test_status_node_is_forced_to_reexecute(self) -> None:
         self.assertNotEqual(

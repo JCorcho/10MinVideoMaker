@@ -8,6 +8,8 @@ from typing import Any, Iterable, Mapping
 
 from .assets import predictable_lora_filename
 from .constants import (
+    I2V_BASE_HEIGHT,
+    I2V_BASE_WIDTH,
     I2V_DYNAMIC_BASE_MODEL,
     I2V_FIRST_PASS_SIGMAS,
     I2V_SAMPLER,
@@ -36,8 +38,6 @@ PONY_CHECKPOINT = "cyberrealisticPony_v180Coreshift.safetensors"
 
 LTX_CHECKPOINT = "10Eros_v1.4_fp8mixed_learned.safetensors"
 LTX_TEXT_ENCODER = "gemma-3-12b-it-ablit-norms-biproj-fp8mixed.safetensors"
-I2V_BASE_WIDTH = PRODUCTION_WIDTH // 2
-I2V_BASE_HEIGHT = PRODUCTION_HEIGHT // 2
 
 
 class WorkflowBuildError(ValueError):
@@ -314,7 +314,7 @@ def build_t2i_api_workflow(
     latent_type = "EmptySD3LatentImage" if family == "anima" else "EmptyLatentImage"
     latent = graph.add(
         latent_type,
-        "704x1248 production latent",
+        f"{PRODUCTION_WIDTH}x{PRODUCTION_HEIGHT} production latent",
         width=PRODUCTION_WIDTH,
         height=PRODUCTION_HEIGHT,
         batch_size=1,
@@ -841,15 +841,6 @@ def build_i2v_api_workflow(
         samples=graph.output(final_split, 0),
         vae=graph.output(checkpoint, 2),
     )
-    production_video = graph.add(
-        "ImageScale",
-        "Normalize decoded video to exact 704x1248",
-        image=graph.output(decoded_video),
-        upscale_method="lanczos",
-        width=PRODUCTION_WIDTH,
-        height=PRODUCTION_HEIGHT,
-        crop="center",
-    )
     decoded_audio = graph.add(
         "LTXVAudioVAEDecode",
         "Decode generated audio",
@@ -859,8 +850,8 @@ def build_i2v_api_workflow(
     filename_prefix = _scene_prefix(job.job_id, "clips", scene.scene_id)
     combined = graph.add(
         "VHS_VideoCombine",
-        "Save 704x1248 24 fps scene clip",
-        images=graph.output(production_video),
+        f"Save {PRODUCTION_WIDTH}x{PRODUCTION_HEIGHT} 24 fps scene clip",
+        images=graph.output(decoded_video),
         audio=graph.output(decoded_audio),
         frame_rate=float(PRODUCTION_FPS),
         loop_count=0,
@@ -875,7 +866,7 @@ def build_i2v_api_workflow(
     )
     _add_discord_video_delivery(
         graph,
-        graph.output(production_video),
+        graph.output(decoded_video),
         graph.output(decoded_audio),
         job,
         scene,

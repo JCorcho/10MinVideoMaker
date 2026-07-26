@@ -248,7 +248,10 @@ class TenMinReleaseMemoryNode(_AlwaysRun):
 
 class TenMinSaveSceneFrameNode(_AlwaysRun):
     CATEGORY = "10MinVideoMaker/Artifacts"
-    DESCRIPTION = "Atomically caches the exact 704x1248 scene frame at a deterministic project path."
+    DESCRIPTION = (
+        f"Atomically caches the exact {PRODUCTION_WIDTH}x{PRODUCTION_HEIGHT} scene frame "
+        "at a deterministic project path."
+    )
     FUNCTION = "execute"
     RETURN_TYPES = ("STRING",)
     RETURN_NAMES = ("frame_path",)
@@ -275,7 +278,10 @@ class TenMinSaveSceneFrameNode(_AlwaysRun):
 
 class TenMinStitchClipsNode(_AlwaysRun):
     CATEGORY = "10MinVideoMaker/Assembly"
-    DESCRIPTION = "FFprobes 704x1248/24 fps clips, then concatenates them to the final project output."
+    DESCRIPTION = (
+        f"FFprobes {PRODUCTION_WIDTH}x{PRODUCTION_HEIGHT}/{PRODUCTION_FPS} fps clips, "
+        "then concatenates them to the final project output."
+    )
     FUNCTION = "execute"
     RETURN_TYPES = ("STRING", "STRING")
     RETURN_NAMES = ("final_video_path", "status")

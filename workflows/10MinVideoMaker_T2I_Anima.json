@@ -193,9 +193,9 @@
             "qwen_image_vae_cybv2.safetensors",
             "taeltx2_3.safetensors",
             "wan_2.1_vae.safetensors",
-            "taesd",
-            "taesd3",
             "taef1",
+            "taesd3",
+            "taesd",
             "taesdxl",
             "pixel_space"
           ],
@@ -253,22 +253,29 @@
             "Age1_000000200.safetensors",
             "Ahegao-000014.safetensors",
             "AmpStumplessPony.safetensors",
+            "Aria_Zenless_Zone_Zero_ANIMA_ILLUSTRIOUS.safetensors",
+            "Aura_Sousou_no_Frieren_Anima_1.0.safetensors",
             "Beautiful face_alpha1.0_rank4_noxattn_last.safetensors",
             "Breast Size Slider - Illustrious - V2_alpha1.0_rank4_noxattn_last.safetensors",
             "Breast Slider - Pony_alpha1.0_rank4_noxattn_last.safetensors",
+            "Chainsaw_Man_Makima_Anima.safetensors",
             "Cr3ampi3_animation_sulphur-2_i2v_v1.0.safetensors",
             "Creampie_animation.safetensors",
             "CyberRealistic_AnimaTurbo_V4.2.safetensors",
             "DR34ML4Y.safetensors",
             "DR34ML4Y_LTXXX_V2.safetensors",
+            "DR34ML4Y_LTX_v3.safetensors",
             "DaSiWa_LTX23_NSFW_Bodyphysics_Fluid_Motion_Enhancer_v01.safetensors",
             "Darth TalonDG_Anima_V1.safetensors",
             "DetailerPony-000001.safetensors",
+            "Elsa_-_Frozen_-_Disney_-_Anima_LORA.safetensors",
             "Elsa_Frozen_-_Disney_Princess_-_Illustrious_XL_PONY_XL_SD_1.5_by_YeiyeiArt.safetensors",
             "Emonette__Miraculous_Ladybug__Pony.safetensors",
+            "Evelyn_Chevalier_Zenless_Zone_Zero_Anima_v1.0.safetensors",
             "Flux_2-Turbo-LoRA_comfyui.safetensors",
             "Frozen_elsa_textV1-PonyXL.safetensors",
             "Futa_on_Female-000051(1).safetensors",
+            "Human_Loona_Helluva_Boss_Anima_Character_Lora.safetensors",
             "JoyAI-Echo-content_r256.safetensors",
             "LTX-2.3_Deepthroat.safetensors",
             "LTX2.3_DMD_reshaped_r256.safetensors",
@@ -279,6 +286,7 @@
             "LTX23_Penile_Praxis_v4.safetensors",
             "Ladybug__Miraculous_Ladybug__Pony.safetensors",
             "Lena_Mossclaw_LTX_Local_v1.safetensors",
+            "Maleficent_Anima.safetensors",
             "Malina_The_Emperors_New_School_pony.safetensors",
             "MarinetteLTX.comfy.safetensors",
             "MarinetteLTX23_4000steps.comfy.safetensors",
@@ -304,12 +312,19 @@
             "Princess_Snow_White.safetensors",
             "Princess_Tiana.safetensors",
             "Puffy_Nipples_PonyXL.safetensors",
+            "Pussyjob_LTX-2.3.safetensors",
             "Pussyjob_LTX-2.3_Sulphur.safetensors",
             "Qinsleth_OC_Anima_IL_Pony_-_Anima_Preview_3.safetensors",
+            "Rapunzel_Anima.safetensors",
+            "Re_Zero_kara_Hajimeru_Isekai_Seikatsu_-_Shaula_Anima.safetensors",
             "RealSkin_xxXL_v1.safetensors",
+            "Riyo_Reaper_Anima.safetensors",
             "ShinySkinSlider3.0_800steps.safetensors",
+            "Silver_Wolf_Honkai_Star_Rail_Anima_Character_Lora.safetensors",
             "Thigh Size Slider V2_alpha1.0_rank4_noxattn_last.safetensors",
+            "Tifa_Lockhart_Final_Fantasy_VII_Anima.safetensors",
             "TomagoPony.safetensors",
+            "YoRHa_2-gou_B-gata_2B_2_B_-_Nier_Automata.safetensors",
             "annaXL.safetensors",
             "anna_Pony_LoRA_0.1-000002.safetensors",
             "checkpoint-e20_s400.safetensors",
@@ -415,22 +430,29 @@
             "Age1_000000200.safetensors",
             "Ahegao-000014.safetensors",
             "AmpStumplessPony.safetensors",
+            "Aria_Zenless_Zone_Zero_ANIMA_ILLUSTRIOUS.safetensors",
+            "Aura_Sousou_no_Frieren_Anima_1.0.safetensors",
             "Beautiful face_alpha1.0_rank4_noxattn_last.safetensors",
             "Breast Size Slider - Illustrious - V2_alpha1.0_rank4_noxattn_last.safetensors",
             "Breast Slider - Pony_alpha1.0_rank4_noxattn_last.safetensors",
+            "Chainsaw_Man_Makima_Anima.safetensors",
             "Cr3ampi3_animation_sulphur-2_i2v_v1.0.safetensors",
             "Creampie_animation.safetensors",
             "CyberRealistic_AnimaTurbo_V4.2.safetensors",
             "DR34ML4Y.safetensors",
             "DR34ML4Y_LTXXX_V2.safetensors",
+            "DR34ML4Y_LTX_v3.safetensors",
             "DaSiWa_LTX23_NSFW_Bodyphysics_Fluid_Motion_Enhancer_v01.safetensors",
             "Darth TalonDG_Anima_V1.safetensors",
             "DetailerPony-000001.safetensors",
+            "Elsa_-_Frozen_-_Disney_-_Anima_LORA.safetensors",
             "Elsa_Frozen_-_Disney_Princess_-_Illustrious_XL_PONY_XL_SD_1.5_by_YeiyeiArt.safetensors",
             "Emonette__Miraculous_Ladybug__Pony.safetensors",
+            "Evelyn_Chevalier_Zenless_Zone_Zero_Anima_v1.0.safetensors",
             "Flux_2-Turbo-LoRA_comfyui.safetensors",
             "Frozen_elsa_textV1-PonyXL.safetensors",
             "Futa_on_Female-000051(1).safetensors",
+            "Human_Loona_Helluva_Boss_Anima_Character_Lora.safetensors",
             "JoyAI-Echo-content_r256.safetensors",
             "LTX-2.3_Deepthroat.safetensors",
             "LTX2.3_DMD_reshaped_r256.safetensors",
@@ -441,6 +463,7 @@
             "LTX23_Penile_Praxis_v4.safetensors",
             "Ladybug__Miraculous_Ladybug__Pony.safetensors",
             "Lena_Mossclaw_LTX_Local_v1.safetensors",
+            "Maleficent_Anima.safetensors",
             "Malina_The_Emperors_New_School_pony.safetensors",
             "MarinetteLTX.comfy.safetensors",
             "MarinetteLTX23_4000steps.comfy.safetensors",
@@ -466,12 +489,19 @@
             "Princess_Snow_White.safetensors",
             "Princess_Tiana.safetensors",
             "Puffy_Nipples_PonyXL.safetensors",
+            "Pussyjob_LTX-2.3.safetensors",
             "Pussyjob_LTX-2.3_Sulphur.safetensors",
             "Qinsleth_OC_Anima_IL_Pony_-_Anima_Preview_3.safetensors",
+            "Rapunzel_Anima.safetensors",
+            "Re_Zero_kara_Hajimeru_Isekai_Seikatsu_-_Shaula_Anima.safetensors",
             "RealSkin_xxXL_v1.safetensors",
+            "Riyo_Reaper_Anima.safetensors",
             "ShinySkinSlider3.0_800steps.safetensors",
+            "Silver_Wolf_Honkai_Star_Rail_Anima_Character_Lora.safetensors",
             "Thigh Size Slider V2_alpha1.0_rank4_noxattn_last.safetensors",
+            "Tifa_Lockhart_Final_Fantasy_VII_Anima.safetensors",
             "TomagoPony.safetensors",
+            "YoRHa_2-gou_B-gata_2B_2_B_-_Nier_Automata.safetensors",
             "annaXL.safetensors",
             "anna_Pony_LoRA_0.1-000002.safetensors",
             "checkpoint-e20_s400.safetensors",
@@ -678,11 +708,11 @@
         "Node name for S&R": "EmptySD3LatentImage"
       },
       "widgets_values": [
-        704,
-        1248,
+        768,
+        1344,
         1
       ],
-      "title": "704x1248 production latent"
+      "title": "768x1344 production latent"
     },
     {
       "id": 9,
@@ -908,7 +938,7 @@
       ],
       "size": [
         360,
-        220
+        222
       ],
       "flags": {},
       "order": 10,
@@ -928,6 +958,11 @@
           "name": "scene_id",
           "type": "INT",
           "link": null
+        },
+        {
+          "name": "revision",
+          "type": "INT",
+          "link": null
         }
       ],
       "outputs": [
@@ -943,6 +978,7 @@
       },
       "widgets_values": [
         "example-20260724-1610",
+        1,
         1
       ],
       "title": "Cache deterministic scene frame"
@@ -952,7 +988,7 @@
       "type": "DaSiWa_Watermark",
       "pos": [
         3120,
-        300
+        302
       ],
       "size": [
         360,
@@ -1531,8 +1567,8 @@
       ]
     },
     "10MinVideoMaker": {
-      "production_width": 704,
-      "production_height": 1248,
+      "production_width": 768,
+      "production_height": 1344,
       "fps": 24,
       "generated_from": "tenminvideomaker.workflow_builder"
     }

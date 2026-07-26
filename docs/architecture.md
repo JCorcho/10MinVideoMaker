@@ -72,7 +72,7 @@ and is never returned to the supervisor or logs. Each failed asset is reported i
 without cancelling unrelated scenes. Mandatory DMD and JoyAI I2V LoRAs remain local-only because no trusted download
 URL was supplied for them.
 
-Before stitching, FFmpeg preflight verifies every successful clip is 704×1248 at 24 fps. The concat operation uses
+Before stitching, FFmpeg preflight verifies every successful clip is 768×1344 at 24 fps. The concat operation uses
 stream copy and emits `D:\LTX_Supervisor_Storage\finals\{job_id}_final.mp4`.
 
 VHS writes scene video to its temporary ComfyUI output and returns metadata through prompt history. The supervisor
@@ -138,7 +138,7 @@ active job. This prevents the supervisor from reopening the rejected job without
 
 ## Production profile
 
-- Image/video size: 704×1248.
+- Image/video size: 768×1344.
 - Frame rate: 24 fps.
 - LTX frame count: `8n + 1`, derived by rounding up to cover a scene's requested duration.
 - Maximum LTX scene duration: 32 seconds.
@@ -160,12 +160,9 @@ GUI workflow export inserts ComfyUI's separate `fixed` seed-control widget after
 That widget is not part of the API input contract, but it is required in `widgets_values`; omitting it shifts every
 later canvas field and can display CFG as the step count.
 
-The x2 spatial upscaler requires a half-resolution first-pass latent. Its internal dimensions are 352×624 so the
-requested production dimensions are represented at half scale. However, `EmptyLTXVLatentVideo` quantizes each
-half-resolution side to a 32-pixel grid. Although 1248 is divisible by 32, its half-height 624 is not; the live x2
-route therefore decodes at 704×1216. A final core `ImageScale` performs Lanczos scale-to-fill and a centered crop to
-the only saved production size, 704×1248. This removes about nine pixels from each horizontal edge, preserves
-subject proportions, and does not expose an alternate output resolution.
+The x2 spatial upscaler uses a 384×672 first-pass latent and emits the fixed 768×1344 production clip. Every axis is
+divisible by 32 (`384=12×32`, `672=21×32`, `768=24×32`, `1344=42×32`), so `EmptyLTXVLatentVideo` does not quantize
+either side. The decoded video connects directly to `VHS_VideoCombine`; no final crop or resize exists in the route.
 
 Assembly profile failures are caught explicitly. The supervisor transitions the saved job to `error`, preserves
 completed clips, and stops requesting replacement jobs instead of repeating the same failing stitch every polling
