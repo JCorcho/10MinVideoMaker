@@ -1,12 +1,14 @@
-"""Launch the loopback supervisor GUI and its single supervisor worker."""
+"""Launch the supervisor GUI and its single supervisor worker."""
 
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import logging
 import os
 from pathlib import Path
 import signal
+import socket
 import sys
 import threading
 import time
@@ -16,6 +18,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from tenminvideomaker.comfy_http import ComfyHttpClient, ComfyHttpError
+from tenminvideomaker.configuration import load_project_environment
 from tenminvideomaker.gui_app import create_gui_app
 from tenminvideomaker.gui_service import SupervisorController
 from tenminvideomaker.ownership import (
@@ -38,6 +41,48 @@ SAFE_TAKEOVER_STATES = frozenset(
         PipelineState.ERROR,
     }
 )
+LAN_ENABLED_ENV = "TENMIN_GUI_LAN_ENABLED"
+LAN_PASSWORD_ENV = "TENMIN_GUI_LAN_PASSWORD"
+LAN_USERNAME = "10min"
+
+
+def _enabled(value: str) -> bool:
+    return value.strip().casefold() in {"1", "true", "yes", "on"}
+
+
+def _private_ipv4_addresses() -> tuple[str, ...]:
+    addresses: set[str] = set()
+    try:
+        candidates = socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)
+    except socket.gaierror:
+        return ()
+    for item in candidates:
+        address = item[4][0]
+        try:
+            parsed = ipaddress.ip_address(address)
+        except ValueError:
+            continue
+        if parsed.is_private and not parsed.is_loopback:
+            addresses.add(str(parsed))
+    return tuple(sorted(addresses))
+
+
+def _gui_binding(
+    args: argparse.Namespace,
+    environment: dict[str, str],
+) -> tuple[str, str | None]:
+    requested_lan = args.lan or (not args.host and _enabled(environment.get(LAN_ENABLED_ENV, "")))
+    if args.host and args.host not in {"127.0.0.1", "localhost"}:
+        raise SystemExit("--host may only select a loopback address; use --lan for mobile access.")
+    if not requested_lan:
+        return args.host or "127.0.0.1", None
+    password = environment.get(LAN_PASSWORD_ENV, "")
+    if len(password) < 12:
+        raise SystemExit(
+            "LAN access needs a 12+ character password. Run the launcher, choose optional settings, "
+            "then Configure mobile LAN access."
+        )
+    return "0.0.0.0", password
 
 
 def _save_frame_revision_loaded(comfy: ComfyHttpClient) -> bool:
@@ -100,8 +145,13 @@ def _take_over_idle_legacy_supervisor(process_ids: tuple[int, ...]) -> None:
 
 def argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--host", default=None)
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument(
+        "--lan",
+        action="store_true",
+        help="Bind the GUI to private LAN interfaces after password configuration.",
+    )
     parser.add_argument(
         "--no-browser",
         action="store_true",
@@ -125,8 +175,6 @@ def argument_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = argument_parser().parse_args(argv)
-    if args.host not in {"127.0.0.1", "localhost"}:
-        raise SystemExit("The supervisor GUI may bind only to loopback.")
     if not 1 <= args.port <= 65535:
         raise SystemExit("Port must be from 1 to 65535.")
 
@@ -134,6 +182,8 @@ def main(argv: list[str] | None = None) -> int:
         level=os.environ.get("TENMIN_LOG_LEVEL", "INFO"),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    environment = load_project_environment(PROJECT_ROOT)
+    host, lan_password = _gui_binding(args, environment)
     other_processes = legacy_supervisor_process_ids()
     if other_processes:
         if args.no_take_over:
@@ -160,19 +210,27 @@ def main(argv: list[str] | None = None) -> int:
             "wait for manual review" if args.hold_new_jobs_for_review else "start automatically",
         )
         controller = SupervisorController(supervisor, storage)
-        app = create_gui_app(controller, storage, PROJECT_ROOT)
+        app = create_gui_app(controller, storage, PROJECT_ROOT, lan_password=lan_password)
         controller.start()
+        if lan_password:
+            addresses = _private_ipv4_addresses()
+            address_text = ", ".join(f"http://{address}:{args.port}/" for address in addresses)
+            LOGGER.warning(
+                "LAN GUI active. Sign in as %s with the configured LAN password. Phone URL: %s",
+                LAN_USERNAME,
+                address_text or f"http://<this-PC-LAN-IP>:{args.port}/",
+            )
         if not args.no_browser:
             threading.Timer(
                 1.0,
-                lambda: webbrowser.open(f"http://{args.host}:{args.port}/"),
+                lambda: webbrowser.open(f"http://127.0.0.1:{args.port}/"),
             ).start()
         try:
             import uvicorn
 
             uvicorn.run(
                 app,
-                host=args.host,
+                host=host,
                 port=args.port,
                 log_level="info",
                 access_log=False,

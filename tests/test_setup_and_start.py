@@ -10,6 +10,7 @@ from scripts.setup_and_start import (
     _local_comfy_url,
     configure_civitai,
     configure_discord,
+    configure_lan_access,
     configure_gmail,
     edit_optional_settings,
     oauth_drive_scopes_ready,
@@ -167,6 +168,19 @@ class SetupAndStartTests(unittest.TestCase):
                 {},
                 secret_input=lambda _prompt: "https://example.com/not-discord",
             )
+
+    def test_lan_setup_requires_a_password_and_can_disable_access(self) -> None:
+        environment = {}
+        configure_lan_access(
+            environment,
+            input_func=_answers("y"),
+            secret_input=lambda _prompt: "mobile-password",
+        )
+        self.assertEqual(environment["TENMIN_GUI_LAN_ENABLED"], "true")
+        self.assertEqual(environment["TENMIN_GUI_LAN_PASSWORD"], "mobile-password")
+        configure_lan_access(environment, input_func=_answers("n"))
+        self.assertEqual(environment["TENMIN_GUI_LAN_ENABLED"], "false")
+        self.assertNotIn("TENMIN_GUI_LAN_PASSWORD", environment)
 
     def test_comfy_url_is_restricted_to_the_authorized_local_server(self) -> None:
         self.assertTrue(_local_comfy_url("http://127.0.0.1:8188"))

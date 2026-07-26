@@ -2,7 +2,8 @@
 
 The pipeline has three layers that call the same pure-Python services:
 
-- **Loopback GUI**: a FastAPI/vanilla-JavaScript frontend at `127.0.0.1:8765`. It maps stored jobs to
+- **GUI**: a FastAPI/vanilla-JavaScript frontend at `127.0.0.1:8765` by default. Optional private-LAN binding uses
+  HTTP Basic credentials stored with Windows DPAPI, while loopback access remains credential-free. It maps stored jobs to
   human-readable controls, previews versioned media, accepts approvals and revision batches, and never exposes raw
   filesystem paths or raw JSON.
 - **Single-owner supervisor controller**: one worker owns Gmail polling, automatic jobs, remake batches, ComfyUI API
@@ -100,6 +101,14 @@ client secrets, refresh tokens, Civitai tokens, and the Discord webhook live in
 Explicit process environment variables take precedence over saved project values. OAuth uses a loopback desktop
 callback, PKCE, state validation, offline access, the full Gmail IMAP/SMTP scope, and read-only Google Drive scope.
 `GmailClient` exchanges the stored refresh token for short-lived access tokens and caches them only in memory.
+
+LAN mode is explicit (`TENMIN_GUI_LAN_ENABLED`) and requires the DPAPI-protected
+`TENMIN_GUI_LAN_PASSWORD`; startup refuses a LAN bind without a 12+ character password. The GUI binds `0.0.0.0` only
+when enabled, applies Basic authentication to every non-loopback request (static files, APIs, media, and events), and
+uses fixed username `10min`. It never exposes ComfyUI `:8188`; Windows Firewall remains user-controlled and should be
+limited to Private networks. The mobile stylesheet changes the three-column desktop workspace into independently
+scrollable history/scene sections followed by a one-column detail/editor view. LoRA pickers derive options live from
+`LoraLoader` and `LoraLoaderModelOnly` contracts, preserving stage separation and server-visible filenames.
 
 Outbound requests use `Run the LTX video pipeline`; inbound jobs use a separate exact subject,
 `LTX_JOB_COMPLETE`. The completion must be a new unread message. IMAP narrows candidates by that subject, then the

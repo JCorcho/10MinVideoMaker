@@ -23,6 +23,7 @@ SECRET_KEYS = frozenset(
         "TENMIN_GMAIL_OAUTH_REFRESH_TOKEN",
         "TENMIN_CIVITAI_TOKEN",
         "TENMIN_DISCORD_WEBHOOK_URL",
+        "TENMIN_GUI_LAN_PASSWORD",
     }
 )
 
@@ -44,6 +45,7 @@ CONFIG_KEYS = frozenset(
         "TENMIN_FFPROBE",
         "TENMIN_LOG_LEVEL",
         "TENMIN_REQUIRE_HUMAN_REVIEW",
+        "TENMIN_GUI_LAN_ENABLED",
     }
 )
 

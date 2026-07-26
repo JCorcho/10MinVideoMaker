@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 from dataclasses import asdict
 from datetime import datetime
 import json
 from pathlib import Path
+import secrets
 from typing import Any, Mapping
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from .comfy_http import ComfyHttpError
@@ -96,6 +99,32 @@ def _combo_values(document: Mapping[str, Any], node_type: str, input_name: str) 
     return []
 
 
+def _unique_sorted(values: list[str]) -> list[str]:
+    return sorted(dict.fromkeys(values), key=str.casefold)
+
+
+def _is_loopback_client(host: str | None) -> bool:
+    return host in {"127.0.0.1", "::1", "::ffff:127.0.0.1"}
+
+
+def _lan_request_authorized(request: Request, password: str) -> bool:
+    if _is_loopback_client(request.client.host if request.client else None):
+        return True
+    authorization = request.headers.get("authorization", "")
+    scheme, _, encoded = authorization.partition(" ")
+    if scheme.casefold() != "basic" or not encoded:
+        return False
+    try:
+        decoded = base64.b64decode(encoded, validate=True).decode("utf-8")
+    except (binascii.Error, UnicodeDecodeError):
+        return False
+    username, separator, supplied_password = decoded.partition(":")
+    return bool(separator) and secrets.compare_digest(username, "10min") and secrets.compare_digest(
+        supplied_password,
+        password,
+    )
+
+
 def _materialize_original_revisions(
     controller: SupervisorController,
     storage: StorageLayout,
@@ -135,6 +164,8 @@ def create_gui_app(
     controller: SupervisorController,
     storage: StorageLayout,
     project_root: str | Path,
+    *,
+    lan_password: str | None = None,
 ) -> FastAPI:
     project_root = Path(project_root)
     web_root = project_root / "web"
@@ -144,6 +175,16 @@ def create_gui_app(
         docs_url=None,
         redoc_url=None,
     )
+
+    if lan_password:
+        @app.middleware("http")
+        async def require_lan_password(request: Request, call_next: Any) -> Response:
+            if not _lan_request_authorized(request, lan_password):
+                return Response(
+                    status_code=401,
+                    headers={"WWW-Authenticate": 'Basic realm="10MinVideoMaker LAN"'},
+                )
+            return await call_next(request)
 
     @app.get("/api/status")
     async def status() -> dict[str, Any]:
@@ -304,14 +345,22 @@ def create_gui_app(
         try:
             sampler_select = controller.supervisor.comfy.object_info("KSamplerSelect")
             sampler = controller.supervisor.comfy.object_info("KSampler")
+            t2i_loader = controller.supervisor.comfy.object_info("LoraLoader")
+            i2v_loader = controller.supervisor.comfy.object_info("LoraLoaderModelOnly")
         except ComfyHttpError as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
         samplers = _combo_values(sampler_select, "KSamplerSelect", "sampler_name")
         if not samplers:
             samplers = _combo_values(sampler, "KSampler", "sampler_name")
         return {
-            "samplers": samplers,
-            "schedulers": _combo_values(sampler, "KSampler", "scheduler"),
+            "samplers": _unique_sorted(samplers),
+            "schedulers": _unique_sorted(_combo_values(sampler, "KSampler", "scheduler")),
+            "t2i_loras": _unique_sorted(
+                _combo_values(t2i_loader, "LoraLoader", "lora_name")
+            ),
+            "i2v_loras": _unique_sorted(
+                _combo_values(i2v_loader, "LoraLoaderModelOnly", "lora_name")
+            ),
         }
 
     @app.get("/api/media/{job_id}/{scene_id}/{revision}/{kind}")

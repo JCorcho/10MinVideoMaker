@@ -39,6 +39,7 @@ class ConfigurationTests(unittest.TestCase):
                     "TENMIN_GMAIL_APP_PASSWORD": "sixteencharacters",
                     "TENMIN_CIVITAI_TOKEN": "civitai-secret",
                     "TENMIN_DISCORD_WEBHOOK_URL": FAKE_DISCORD_WEBHOOK,
+                    "TENMIN_GUI_LAN_PASSWORD": "mobile-password",
                     "IGNORED": "not-allowed",
                 }
             )
@@ -46,6 +47,7 @@ class ConfigurationTests(unittest.TestCase):
             self.assertNotIn("sixteencharacters", serialized)
             self.assertNotIn("civitai-secret", serialized)
             self.assertNotIn("token-secret", serialized)
+            self.assertNotIn("mobile-password", serialized)
             self.assertNotIn("not-allowed", serialized)
             self.assertEqual(
                 store.load(),
@@ -53,6 +55,7 @@ class ConfigurationTests(unittest.TestCase):
                     "TENMIN_CIVITAI_TOKEN": "civitai-secret",
                     "TENMIN_DISCORD_WEBHOOK_URL": FAKE_DISCORD_WEBHOOK,
                     "TENMIN_GMAIL_APP_PASSWORD": "sixteencharacters",
+                    "TENMIN_GUI_LAN_PASSWORD": "mobile-password",
                 },
             )
 
@@ -70,6 +73,7 @@ class ConfigurationTests(unittest.TestCase):
                     ),
                     "TENMIN_POLL_SECONDS": "300",
                     "TENMIN_STATUS_INTERVAL_SECONDS": "15",
+                    "TENMIN_GUI_LAN_ENABLED": "true",
                     "NOT_ALLOWED": "ignored",
                 },
             )
@@ -83,6 +87,7 @@ class ConfigurationTests(unittest.TestCase):
                     ),
                     "TENMIN_POLL_SECONDS": "300",
                     "TENMIN_STATUS_INTERVAL_SECONDS": "15",
+                    "TENMIN_GUI_LAN_ENABLED": "true",
                 },
             )
             merged = load_project_environment(
@@ -96,6 +101,7 @@ class ConfigurationTests(unittest.TestCase):
             self.assertEqual(merged["TENMIN_GMAIL_USERNAME"], "process@example.com")
             self.assertEqual(merged["TENMIN_POLL_SECONDS"], "300")
             self.assertEqual(merged["TENMIN_STATUS_INTERVAL_SECONDS"], "15")
+            self.assertEqual(merged["TENMIN_GUI_LAN_ENABLED"], "true")
             self.assertEqual(merged["UNRELATED"], "preserved")
 
     def test_non_project_callers_cannot_write_the_production_storage_root(self) -> None:

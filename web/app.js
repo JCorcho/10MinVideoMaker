@@ -5,7 +5,7 @@ const state = {
   sceneData: null,
   working: null,
   drafts: new Map(),
-  options: { samplers: [], schedulers: [] },
+  options: { samplers: [], schedulers: [], t2i_loras: [], i2v_loras: [] },
   pendingBatch: null,
   status: null,
 };
@@ -160,6 +160,9 @@ async function selectScene(sceneId) {
     $(`input[name="remake-mode"][value="${draft.remake_mode}"]`).checked = true;
   }
   setEditable(Boolean(draft));
+  if (window.matchMedia("(max-width: 760px)").matches) {
+    requestAnimationFrame(() => $("#scene-detail").scrollIntoView({ behavior: "smooth", block: "start" }));
+  }
 }
 
 function renderRevisionPicker() {
@@ -216,16 +219,19 @@ function renderContext(selector, data) {
 
 function renderLoraEditor(selector, title, loras, stage, allowMany) {
   const root = $(selector);
+  const localLoras = state.options[stage === "i2v" ? "i2v_loras" : "t2i_loras"] || [];
   root.innerHTML = `
     <div class="lora-heading"><h4>${title}</h4>${allowMany ? `<button type="button" class="secondary add-lora" data-stage="${stage}">+ Add LoRA</button>` : ""}</div>
     <div class="lora-list">${loras.map((lora, index) => `
       <div class="lora-card">
         <div class="lora-heading"><strong>${escapeHtml(lora.name || "New LoRA")}</strong>${allowMany ? `<button type="button" class="remove-lora" data-stage="${stage}" data-index="${index}">Remove</button>` : ""}</div>
         <div class="field-grid">
+          <label class="local-lora-field">Installed local file<select data-lora-picker="true" data-lora-stage="${stage}" data-lora-index="${index}">${localLoraOptions(localLoras, lora.name)}</select></label>
           <label>Name<input data-lora-stage="${stage}" data-lora-index="${index}" data-lora-key="name" value="${attribute(lora.name)}"></label>
           <label>Download URL<input data-lora-stage="${stage}" data-lora-index="${index}" data-lora-key="download_url" value="${attribute(lora.download_url)}"></label>
           <label>Weight<input type="number" step="0.05" min="-4" max="4" data-lora-stage="${stage}" data-lora-index="${index}" data-lora-key="weight" value="${attribute(lora.weight)}"></label>
         </div>
+        <p class="local-lora-note">Picker fills Name from live ComfyUI files. Keep valid URL; I2V still verifies LTX 2.x compatibility.</p>
       </div>`).join("")}</div>`;
   root.querySelector(".add-lora")?.addEventListener("click", () => {
     state.working[stage].loras.push({ name: "New LoRA", download_url: "https://civitai.com/api/download/models/", weight: 1 });
@@ -237,6 +243,17 @@ function renderLoraEditor(selector, title, loras, stage, allowMany) {
     renderForm();
     setEditable(true);
   }));
+}
+
+function localLoraName(value) {
+  return String(value || "").split(/[\\/]/).pop();
+}
+
+function localLoraOptions(loras, currentName) {
+  const selected = loras.find((item) => localLoraName(item).toLowerCase() === String(currentName || "").toLowerCase()) || "";
+  return [`<option value="">Choose installed file…</option>`, ...loras.map((item) =>
+    `<option value="${attribute(item)}" ${item === selected ? "selected" : ""}>${escapeHtml(item)}</option>`
+  )].join("");
 }
 
 function renderPasses() {
@@ -322,6 +339,19 @@ function bindInputs() {
         : state.working[stage].loras[Number(input.dataset.loraIndex)];
       target[input.dataset.loraKey] = input.type === "number" ? Number(input.value) : input.value;
       saveDraft();
+    });
+  });
+  $$("[data-lora-picker]").forEach((picker) => {
+    picker.addEventListener("change", () => {
+      if (!picker.value) return;
+      const stage = picker.dataset.loraStage;
+      const target = stage === "character"
+        ? state.working.character.global_lora
+        : state.working[stage].loras[Number(picker.dataset.loraIndex)];
+      target.name = localLoraName(picker.value);
+      saveDraft();
+      renderForm();
+      setEditable(true);
     });
   });
 }

@@ -6,8 +6,9 @@ An independent ComfyUI custom-node project for building a guided long-form video
 
 The durable job contract, SQLite state machine, Gmail/Google Drive transport, LoRA resolver, FFmpeg assembly
 service, interactive ComfyUI nodes, scene-specific Anima/Pony/LTX workflow builders, and supervisor are
-implemented. The supervisor now runs behind a loopback-only FastAPI browser UI at
-`http://127.0.0.1:8765/`. New Grok jobs start automatically for unattended operation, while historical complete,
+implemented. The supervisor normally runs behind a loopback FastAPI browser UI at
+`http://127.0.0.1:8765/`. Optional password-protected private-LAN access supports phone review without exposing
+ComfyUI. New Grok jobs start automatically for unattended operation, while historical complete,
 partial, failed, and cancelled jobs can be reviewed without displaying raw JSON.
 
 All new persistent runtime data lives under `D:\LTX_Supervisor_Storage`: settings and encrypted secrets, SQLite
@@ -63,6 +64,8 @@ workflow, and version history. Mark any number of scenes across jobs, choose **V
 If an automated render is active, the UI asks whether to queue edits afterward or cancel only this project's
 current prompts and run the edits immediately. Project cards use the readable
 `Character · MM/DD/YYYY` label, and the project and scene columns scroll independently.
+It is mobile responsive and its T2I/I2V LoRA pickers query the running ComfyUI loader contracts, so each picker
+shows locally selectable files for its own model route.
 
 For a testing or review-only launch, run `Start 10MinVideoMaker.bat --hold-new-jobs-for-review`. In that session,
 new Gmail handoffs enter **Awaiting review** and require **Approve & Queue Job**. The normal launcher always

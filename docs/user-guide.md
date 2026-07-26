@@ -4,7 +4,7 @@
 
 The project can validate incoming jobs, poll/send Gmail, resolve LoRAs, build and queue per-scene generation graphs,
 cache the exact T2I frame, download the matching I2V clip, validate/stitch completed clips, request the next job, and
-recover unfinished scenes. Its loopback browser GUI adds a historical job library, human-readable parameter editing,
+recover unfinished scenes. Its browser GUI adds a historical job library, human-readable parameter editing,
 versioned previews, and multi-scene remake batches. Incoming jobs auto-start by default; manual approval is an
 optional test/review launch mode.
 
@@ -14,7 +14,13 @@ version-controlled custom-node source already in this repository.
 ## Human-review GUI
 
 Double-click `Start 10MinVideoMaker.bat`. After the existing credential checks, the launcher opens
-`http://127.0.0.1:8765/`. The server binds only to this computer.
+`http://127.0.0.1:8765/`. Default binding is only this computer.
+
+For phone use, choose **Change optional environment settings** then **Configure mobile LAN access**. Enable it and
+set a 12+ character password. The next GUI start binds to the private LAN and logs a phone URL such as
+`http://192.168.x.x:8765/`. Sign in with username `10min` and that password. This is HTTP Basic on a trusted private
+LAN, not HTTPS: do not port-forward it, do not use public/untrusted Wi-Fi, and never expose ComfyUI port 8188. If
+Windows Firewall asks, allow this GUI only on **Private** networks.
 
 1. Select a job in **Project library**, then select a scene.
    Project names use `Character · MM/DD/YYYY`; the internal job ID remains hidden as the routing key. The project
@@ -27,7 +33,9 @@ Double-click `Start 10MinVideoMaker.bat`. After the existing credential checks, 
 4. To revise a scene, enable **Mark for remake** and choose:
    - **Video Only** to reuse that revision's existing cached frame and run only I2V.
    - **Image + Video** to generate a new frame and force the matching I2V workflow to use it.
-5. Edit fields and add/remove LoRAs. Mandatory I2V DMD 1.0 and JoyAI 0.5 and the 768×1344/24 fps profile remain
+5. Edit fields and add/remove LoRAs. Each T2I/I2V editor has an **Installed local file** picker populated live from
+   its matching ComfyUI LoRA loader. Selecting it fills the LoRA name; retain a valid HTTPS download URL for durable
+   asset identity. I2V choices remain subject to the LTX 2.x compatibility gate. Mandatory I2V DMD 1.0 and JoyAI 0.5 and the 768×1344/24 fps profile remain
    locked safety invariants.
 6. Continue selecting scenes from this or other jobs. The tray keeps the edits until **Save & Remake** is clicked.
 7. If standard work is rendering, choose **Queue edits to run after current job finishes** or

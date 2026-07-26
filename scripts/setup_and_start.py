@@ -47,6 +47,8 @@ from tenminvideomaker.storage import StorageLayout
 
 APP_PASSWORD_URL = "https://myaccount.google.com/apppasswords"
 CIVITAI_API_KEYS_URL = "https://civitai.com/user/account"
+LAN_ENABLED_ENV = "TENMIN_GUI_LAN_ENABLED"
+LAN_PASSWORD_ENV = "TENMIN_GUI_LAN_PASSWORD"
 
 
 @dataclass(frozen=True)
@@ -392,6 +394,49 @@ def configure_discord(
     environment[DISCORD_WEBHOOK_ENV] = webhook
 
 
+def configure_lan_access(
+    environment: dict[str, str],
+    *,
+    input_func: Callable[[str], str] = input,
+    secret_input: Callable[[str], str] = getpass,
+) -> None:
+    """Store explicit, password-protected private-LAN GUI access."""
+    print("\nMobile LAN GUI access")
+    print("---------------------")
+    print(
+        "This exposes the supervisor on your private LAN only. It requires HTTP Basic "
+        "sign-in and must never be port-forwarded or used on an untrusted network."
+    )
+    enabled_now = environment.get(LAN_ENABLED_ENV, "").strip().casefold() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if not _yes_no(
+        "Enable mobile LAN access?",
+        default=enabled_now,
+        input_func=input_func,
+    ):
+        environment[LAN_ENABLED_ENV] = "false"
+        environment.pop(LAN_PASSWORD_ENV, None)
+        return
+    if environment.get(LAN_PASSWORD_ENV, "").strip() and not _yes_no(
+        "Change the protected LAN password?",
+        default=False,
+        input_func=input_func,
+    ):
+        environment[LAN_ENABLED_ENV] = "true"
+        return
+    while True:
+        password = secret_input("Set a 12+ character LAN password: ").strip()
+        if len(password) >= 12:
+            break
+        print("LAN password must contain at least 12 characters.")
+    environment[LAN_ENABLED_ENV] = "true"
+    environment[LAN_PASSWORD_ENV] = password
+
+
 def edit_optional_settings(
     environment: dict[str, str],
     *,
@@ -415,6 +460,7 @@ def edit_optional_settings(
         auth_index = len(OPTIONAL_SETTINGS) + 1
         civitai_index = auth_index + 1
         discord_index = civitai_index + 1
+        lan_index = discord_index + 1
         print(f"  {auth_index:2}. Reconfigure Gmail authentication")
         token_status = (
             "configured"
@@ -431,6 +477,10 @@ def edit_optional_settings(
             f"  {discord_index:2}. Configure/change Discord webhook "
             f"({discord_status})"
         )
+        lan_status = "enabled" if environment.get(LAN_ENABLED_ENV, "").casefold() in {
+            "1", "true", "yes", "on"
+        } else "disabled"
+        print(f"  {lan_index:2}. Configure mobile LAN access ({lan_status})")
         print("   0. Save and continue")
         choice = input_func("Choose a setting to change [0]: ").strip() or "0"
         if choice == "0":
@@ -460,6 +510,13 @@ def edit_optional_settings(
         if number == discord_index:
             configure_discord(
                 environment,
+                secret_input=secret_input,
+            )
+            continue
+        if number == lan_index:
+            configure_lan_access(
+                environment,
+                input_func=input_func,
                 secret_input=secret_input,
             )
             continue

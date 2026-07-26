@@ -19,7 +19,9 @@
   detailer; Pony uses 30-step `res_3m_ode` then 30-step `res_5s_ode`, followed by the reference
   `bbox/face_yolov8m.pt` detector and `FaceDetailer` settings.
 - Gmail polling and ComfyUI restart supervision run outside ComfyUI node execution. Nodes and the supervisor share one service layer so that authentication, state transitions, and validation cannot diverge.
-- The supported supervisor surface is a loopback-only FastAPI browser GUI plus one worker. New Gmail jobs
+- The supported supervisor surface is a loopback FastAPI browser GUI plus one worker. Explicitly enabled private-LAN
+  mode binds only the GUI to `0.0.0.0` behind HTTP Basic credentials stored with Windows DPAPI; ComfyUI remains loopback.
+  New Gmail jobs
   auto-start by default for 24/7 operation. The `--hold-new-jobs-for-review` GUI launch option enters jobs in
   `awaiting_review` for testing and requires explicit approval. A cross-process project lock must prevent the
   legacy console supervisor and GUI worker from owning the state machine simultaneously.
@@ -682,3 +684,28 @@
 - Results: 143 tests passed under both system Python and Easy Install embedded Python. Regenerated repository and
   approved shared GUI workflows passed live `/object_info` validation with 384×672 first-pass and 768×1344 final
   profile metadata. No render was queued or interrupted.
+
+### 2026-07-26 — mobile GUI, protected LAN access, and local LoRA pickers
+
+- Changed files: `configuration.py`, `gui_app.py`, `scripts/run_gui.py`, `scripts/setup_and_start.py`,
+  `web/app.js`, `web/styles.css`, focused GUI/configuration/setup tests, `.env.example`, `README.md`,
+  `docs/architecture.md`, `docs/user-guide.md`, and this file.
+- LAN routing: default remains `127.0.0.1:8765`; the optional launcher action stores a non-secret enable flag and a
+  12+ character DPAPI-protected password. Only that explicit mode binds the GUI to `0.0.0.0`; every non-loopback
+  browser/API/media/event request must authenticate as fixed user `10min`. ComfyUI remains loopback-only.
+- Mobile routing: below 760px the workspace becomes stacked, library/scene sections retain their own scroll regions,
+  detail controls become one column, and selecting a scene moves the viewport to its editor.
+- LoRA routing: `/api/options` queries live `LoraLoader` and `LoraLoaderModelOnly` contracts. T2I and I2V use their
+  separate option lists. Picking a local filename fills the human-facing name only; existing contract validation,
+  download identity, and the I2V LTX 2.x gate remain authoritative.
+- Reproduction: configure **Mobile LAN access** in launcher optional settings, restart GUI while no ComfyUI prompt is
+  active, open logged private-IP URL on a phone, and sign in. Mark a scene for remake and use each stage's local LoRA
+  picker; submit only after reviewing the existing URL and I2V compatibility.
+- Verification commands:
+  - `python -m unittest discover -s tests -q`
+  - `python -m compileall -q tenminvideomaker scripts tests`
+  - `node --check web/app.js`
+  - `git diff --check`
+- Results: 144 embedded-Python tests passed. Live no-render ComfyUI contracts exposed 115 selectable LoRA filenames
+  for each of `LoraLoader` and `LoraLoaderModelOnly`. No generation, download, or ComfyUI restart occurred during
+  validation.

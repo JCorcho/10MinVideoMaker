@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 from types import SimpleNamespace
 import tempfile
@@ -35,17 +36,30 @@ class GuiStaticAssetTests(unittest.TestCase):
         )
         self.assertIn("job.display_name || job.job_id", script)
         self.assertIn("summary?.display_name || job.job_id", script)
+        self.assertIn("@media (max-width: 760px)", styles)
+        self.assertIn("data-lora-picker", script)
+        self.assertIn("scrollIntoView", script)
 
 
 @unittest.skipUnless(TestClient is not None, "FastAPI is supplied by the embedded Python")
 class GuiAppTests(unittest.TestCase):
     def test_gui_review_hold_flag_is_opt_in(self) -> None:
-        from scripts.run_gui import argument_parser
+        from scripts.run_gui import _gui_binding, argument_parser
 
         parser = argument_parser()
         self.assertFalse(parser.parse_args([]).hold_new_jobs_for_review)
         self.assertTrue(
             parser.parse_args(["--hold-new-jobs-for-review"]).hold_new_jobs_for_review
+        )
+        self.assertTrue(parser.parse_args(["--lan"]).lan)
+        with self.assertRaisesRegex(SystemExit, "12\\+ character password"):
+            _gui_binding(parser.parse_args(["--lan"]), {})
+        self.assertEqual(
+            _gui_binding(
+                parser.parse_args(["--lan"]),
+                {"TENMIN_GUI_LAN_PASSWORD": "mobile-password"},
+            ),
+            ("0.0.0.0", "mobile-password"),
         )
 
     def test_launcher_restarts_only_for_stale_contract_and_empty_queue(self) -> None:
@@ -98,6 +112,20 @@ class GuiAppTests(unittest.TestCase):
 
             class FakeComfy:
                 def object_info(self, node_type):
+                    if node_type == "LoraLoader":
+                        return {
+                            node_type: {
+                                "input": {"required": {"lora_name": [["Elsa.safetensors"]]}}
+                            }
+                        }
+                    if node_type == "LoraLoaderModelOnly":
+                        return {
+                            node_type: {
+                                "input": {
+                                    "required": {"lora_name": [["LTX/Dance.safetensors"]]}
+                                }
+                            }
+                        }
                     values = ["lcm", "euler"] if node_type == "KSamplerSelect" else ["euler"]
                     return {
                         node_type: {
@@ -126,6 +154,10 @@ class GuiAppTests(unittest.TestCase):
             app = create_gui_app(controller, storage, Path(__file__).parents[1])
             client = TestClient(app)
 
+            options = client.get("/api/options").json()
+            self.assertEqual(options["t2i_loras"], ["Elsa.safetensors"])
+            self.assertEqual(options["i2v_loras"], ["LTX/Dance.safetensors"])
+
             jobs = client.get("/api/jobs").json()
             self.assertEqual(jobs[0]["job_id"], job.job_id)
             self.assertEqual(jobs[0]["display_name"], "Elsa · 07/24/2026")
@@ -149,6 +181,24 @@ class GuiAppTests(unittest.TestCase):
             )
             self.assertEqual(draft.status_code, 200)
             self.assertFalse(draft.json()["active_render"])
+
+            secured_client = TestClient(
+                create_gui_app(
+                    controller,
+                    storage,
+                    Path(__file__).parents[1],
+                    lan_password="mobile-password",
+                )
+            )
+            self.assertEqual(secured_client.get("/api/status").status_code, 401)
+            credentials = base64.b64encode(b"10min:mobile-password").decode("ascii")
+            self.assertEqual(
+                secured_client.get(
+                    "/api/status",
+                    headers={"Authorization": f"Basic {credentials}"},
+                ).status_code,
+                200,
+            )
 
 
 if __name__ == "__main__":
