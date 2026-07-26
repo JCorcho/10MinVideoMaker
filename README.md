@@ -57,7 +57,8 @@ Double-click `Start 10MinVideoMaker.bat` in the repository root. On first run it
    HTTP health, then launches the edit-and-review GUI plus its single supervisor worker.
 
 On later runs, valid required settings are reused and the launcher asks whether to change optional settings before
-starting. See `docs/user-guide.md` for OAuth setup details and safe setup-only commands.
+starting. That one optional-settings prompt defaults to **No** automatically after ten seconds, so unattended starts
+continue without input. See `docs/user-guide.md` for OAuth setup details and safe setup-only commands.
 
 The browser UI shows pipeline/ComfyUI status, a job library, scene previews, every generation parameter used by the
 workflow, and version history. Mark any number of scenes across jobs, choose **Video Only** or
@@ -65,8 +66,10 @@ workflow, and version history. Mark any number of scenes across jobs, choose **V
 If an automated render is active, the UI asks whether to queue edits afterward or cancel only this project's
 current prompts and run the edits immediately. Project cards use the readable
 `Character · MM/DD/YYYY` label, and the project and scene columns scroll independently.
-It is mobile responsive and its T2I/I2V LoRA pickers query the running ComfyUI loader contracts, so each picker
-shows locally selectable files for its own model route.
+On phone-width screens, it uses a deliberate drill-down flow: project list, then selected project's scene list,
+then the scene editor with a sticky scene switcher. The video uses native HTML5 controls and mobile fullscreen.
+Its T2I/I2V LoRA pickers query the running ComfyUI loader contracts, so each picker shows locally selectable files
+for its own model route.
 
 For a testing or review-only launch, run `Start 10MinVideoMaker.bat --hold-new-jobs-for-review`. In that session,
 new Gmail handoffs enter **Awaiting review** and require **Approve & Queue Job**. The normal launcher always

@@ -728,3 +728,25 @@
     and `tests` paths inserted into `sys.path`
   - `python -m compileall -q tenminvideomaker scripts tests`
   - `git diff --check`
+
+### 2026-07-26 — unattended optional settings and mobile drill-down
+
+- Changed files: `scripts/setup_and_start.py`, `web/index.html`, `web/styles.css`, `web/app.js`, focused setup/GUI
+  tests, `README.md`, `docs/architecture.md`, `docs/user-guide.md`, and this file.
+- Console routing: only **Change optional environment settings before starting? [y/N]** uses a ten-second Windows
+  console timeout. On expiry or invalid input it safely chooses its existing **No** default; all credential,
+  destructive/recovery, and other confirmation prompts remain explicit.
+- Mobile routing: at `max-width: 760px`, the browser exposes exactly one view at a time—projects, selected project's
+  scenes, or selected scene detail. Back controls reverse the hierarchy, while a sticky detail-level dropdown changes
+  scenes without returning to the list. The desktop grid is unaffected outside that media query.
+- Media routing: scene videos retain native `controls` and add `playsinline`/`webkit-playsinline`; the isolated,
+  full-size video surface preserves browser-native mobile fullscreen controls above the media background.
+- Reproduction: leave the optional-settings console question unanswered for ten seconds and verify startup continues.
+  On a phone-width browser, select project → scene, switch scenes through the sticky dropdown, return through both
+  back controls, and open a rendered video through its native fullscreen control.
+- Verification commands:
+  - Easy Install embedded-Python focused `test_setup_and_start.py` and `test_gui_app.py` suites with repository
+    and `tests` paths inserted into `sys.path`
+  - `node --check web/app.js`
+  - `python -m compileall -q tenminvideomaker scripts tests`
+  - `git diff --check`

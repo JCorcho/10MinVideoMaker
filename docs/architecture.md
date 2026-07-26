@@ -5,7 +5,9 @@ The pipeline has three layers that call the same pure-Python services:
 - **GUI**: a FastAPI/vanilla-JavaScript frontend at `127.0.0.1:8765` by default. Optional private-LAN binding uses
   HTTP Basic credentials stored with Windows DPAPI, while loopback access remains credential-free. It maps stored jobs to
   human-readable controls, previews versioned media, accepts approvals and revision batches, and never exposes raw
-  filesystem paths or raw JSON.
+  filesystem paths or raw JSON. At the 760px breakpoint, a frontend-only state machine presents the project list,
+  selected-project scene list, and selected-scene editor as mutually exclusive drill-down views; desktop retains its
+  simultaneous three-panel layout.
 - **Single-owner supervisor controller**: one worker owns Gmail polling, automatic jobs, remake batches, ComfyUI API
   job submission, retries, assembly, and controlled restart requests. A cross-process lock prevents the legacy
   console supervisor and GUI worker from running together.

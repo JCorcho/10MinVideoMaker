@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import time
 from typing import Callable
 from urllib.parse import urlparse
 import webbrowser
@@ -179,13 +180,67 @@ OPTIONAL_SETTINGS = (
 )
 
 
+def _console_input_with_timeout(prompt: str, timeout_seconds: float) -> str | None:
+    """Read one Windows-console line without blocking beyond the requested deadline."""
+    if os.name != "nt":  # This project launches on Windows; keep diagnostics usable elsewhere.
+        return input(prompt)
+    try:
+        import msvcrt
+    except ImportError:  # pragma: no cover - Windows always supplies msvcrt.
+        return input(prompt)
+
+    print(prompt, end="", flush=True)
+    deadline = time.monotonic() + timeout_seconds
+    characters: list[str] = []
+    while time.monotonic() < deadline:
+        if not msvcrt.kbhit():
+            time.sleep(0.05)
+            continue
+        character = msvcrt.getwch()
+        if character in {"\r", "\n"}:
+            print()
+            return "".join(characters)
+        if character == "\x03":
+            raise KeyboardInterrupt
+        if character == "\b":
+            if characters:
+                characters.pop()
+                print("\b \b", end="", flush=True)
+            continue
+        if character in {"\x00", "\xe0"}:  # Discard a Windows special-key prefix and its scan code.
+            msvcrt.getwch()
+            continue
+        characters.append(character)
+        print(character, end="", flush=True)
+    print()
+    return None
+
+
 def _yes_no(
     prompt: str,
     *,
     default: bool,
     input_func: Callable[[str], str] = input,
+    timeout_seconds: float | None = None,
 ) -> bool:
     suffix = " [Y/n] " if default else " [y/N] "
+    if timeout_seconds is not None and input_func is input:
+        response = _console_input_with_timeout(prompt + suffix, timeout_seconds)
+        if response is None:
+            print(
+                f"No response within {timeout_seconds:g} seconds; "
+                f"using {'Yes' if default else 'No'}."
+            )
+            return default
+        normalized = response.strip().casefold()
+        if not normalized:
+            return default
+        if normalized in {"y", "yes"}:
+            return True
+        if normalized in {"n", "no"}:
+            return False
+        print(f"Please enter y or n; using {'Yes' if default else 'No'}.")
+        return default
     while True:
         response = input_func(prompt + suffix).strip().casefold()
         if not response:
@@ -652,6 +707,7 @@ def setup_environment(
         "Change optional environment settings before starting?",
         default=False,
         input_func=input_func,
+        timeout_seconds=10,
     ):
         edit_optional_settings(
             environment,

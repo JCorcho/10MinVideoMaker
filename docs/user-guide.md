@@ -20,11 +20,25 @@ You do not need to start ComfyUI manually after a PC reboot. The GUI launch uses
 console launcher: if `http://127.0.0.1:8188` is down, it starts the verified Easy Install `Start ComfyUI.bat`, which
 preserves its Sage Attention startup configuration, and waits for the API before starting the supervisor.
 
+If you leave **Change optional environment settings before starting? [y/N]** unanswered, the Windows console waits
+ten seconds, prints that it is using **No**, and continues automatically. This timeout applies only to that optional
+settings question; credential and recovery decisions still wait for your explicit input.
+
 For phone use, choose **Change optional environment settings** then **Configure mobile LAN access**. Enable it and
 set a 12+ character password. The next GUI start binds to the private LAN and logs a phone URL such as
 `http://192.168.x.x:8765/`. Sign in with username `10min` and that password. This is HTTP Basic on a trusted private
 LAN, not HTTPS: do not port-forward it, do not use public/untrusted Wi-Fi, and never expose ComfyUI port 8188. If
 Windows Firewall asks, allow this GUI only on **Private** networks.
+
+On a phone the interface intentionally uses one screen at a time:
+
+1. Start with **Projects** only.
+2. Selecting a project replaces that list with its **Scenes** and a **← Projects** button.
+3. Selecting a scene replaces the list with its details. A sticky **Scenes** button and compact scene dropdown stay
+   at the top, so you can switch scenes or return to the list without losing the project.
+
+The generated video uses the device's native HTML5 controls. Tap its fullscreen control for true device fullscreen;
+the video remains inline while you review parameters, then returns to the same scene editor when closed.
 
 1. Select a job in **Project library**, then select a scene.
    Project names use `Character · MM/DD/YYYY`; the internal job ID remains hidden as the routing key. The project

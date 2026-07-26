@@ -15,6 +15,7 @@ from scripts.setup_and_start import (
     configure_gmail,
     edit_optional_settings,
     ensure_comfyui,
+    _yes_no,
     oauth_drive_scopes_ready,
     offer_saved_job_retry,
     required_gmail_ready,
@@ -188,6 +189,20 @@ class SetupAndStartTests(unittest.TestCase):
         self.assertTrue(_local_comfy_url("http://127.0.0.1:8188"))
         self.assertTrue(_local_comfy_url("http://localhost:8188"))
         self.assertFalse(_local_comfy_url("https://example.com:8188"))
+
+    def test_optional_settings_timeout_uses_no_default(self) -> None:
+        with patch.object(setup_module, "_console_input_with_timeout", return_value=None) as reader:
+            self.assertFalse(
+                _yes_no(
+                    "Change optional environment settings before starting?",
+                    default=False,
+                    timeout_seconds=10,
+                )
+            )
+        reader.assert_called_once_with(
+            "Change optional environment settings before starting? [y/N] ",
+            10,
+        )
 
     def test_gui_shared_comfy_guard_starts_the_verified_local_launcher(self) -> None:
         client = Mock()

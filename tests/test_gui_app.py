@@ -24,6 +24,7 @@ class GuiStaticAssetTests(unittest.TestCase):
         web_root = Path(__file__).parents[1] / "web"
         styles = (web_root / "styles.css").read_text(encoding="utf-8")
         script = (web_root / "app.js").read_text(encoding="utf-8")
+        markup = (web_root / "index.html").read_text(encoding="utf-8")
 
         self.assertRegex(
             styles,
@@ -38,7 +39,25 @@ class GuiStaticAssetTests(unittest.TestCase):
         self.assertIn("summary?.display_name || job.job_id", script)
         self.assertIn("@media (max-width: 760px)", styles)
         self.assertIn("data-lora-picker", script)
-        self.assertIn("scrollIntoView", script)
+        self.assertIn("scrollMobilePanel", script)
+
+        self.assertIn('data-mobile-view="projects"', markup)
+        self.assertIn('id="back-to-projects"', markup)
+        self.assertIn('id="mobile-scene-switcher"', markup)
+        self.assertIn('id="mobile-scene-select"', markup)
+        self.assertIn('id="back-to-scenes"', markup)
+        self.assertIn("backToProjects", script)
+        self.assertIn("backToScenes", script)
+        self.assertIn("renderMobileScenePicker", script)
+        self.assertIn('body[data-mobile-view="projects"] .library-panel', styles)
+        self.assertIn('body[data-mobile-view="scenes"] .scenes-panel', styles)
+        self.assertIn('body[data-mobile-view="detail"] .detail-panel', styles)
+
+        self.assertRegex(markup, r'<video[^>]*controls[^>]*playsinline[^>]*webkit-playsinline')
+        self.assertRegex(
+            styles,
+            r"(?s)\.media-stage video\s*\{[^}]*width:\s*100%;[^}]*height:\s*100%;",
+        )
 
 
 @unittest.skipUnless(TestClient is not None, "FastAPI is supplied by the embedded Python")

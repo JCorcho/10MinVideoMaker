@@ -96,8 +96,9 @@ button:disabled { opacity: .42; cursor: not-allowed; }
 .media-grid { display: grid; grid-template-columns: minmax(220px, .8fr) minmax(330px, 1.2fr); gap: 12px; padding: 0 24px 16px; }
 .media-card { margin: 0; border: 1px solid var(--line); background: var(--panel); border-radius: 12px; overflow: hidden; }
 .media-card figcaption { padding: 10px 12px; color: var(--muted); font-size: 12px; border-bottom: 1px solid var(--line); }
-.media-stage { min-height: 260px; height: 42vh; display: grid; place-items: center; background: #070a10; }
+.media-stage { min-height: 260px; height: 42vh; display: grid; place-items: center; isolation: isolate; background: #070a10; }
 .media-stage img, .media-stage video { max-width: 100%; max-height: 100%; object-fit: contain; }
+.media-stage video { position: relative; z-index: 1; display: block; width: 100%; height: 100%; background: #000; }
 
 .remake-toolbar { position: sticky; top: 0; z-index: 3; display: flex; align-items: center; gap: 16px; padding: 12px 24px; border-block: 1px solid var(--line); background: rgba(17, 23, 34, .95); backdrop-filter: blur(10px); }
 .switch-label { display: flex; align-items: center; gap: 8px; font-weight: 700; }
@@ -148,6 +149,9 @@ details > div { margin-top: 12px; }
 .toast.error { border-color: #7e3743; color: #ffabb3; }
 .muted { color: var(--muted); font-size: 12px; }
 .hidden { display: none !important; }
+.mobile-only { display: none; }
+.scene-heading-actions { display: flex; align-items: center; gap: 8px; }
+.mobile-scene-switcher { display: none; }
 
 @media (max-width: 1250px) {
   .workspace { grid-template-columns: 245px 285px minmax(500px, 1fr); }
@@ -155,24 +159,32 @@ details > div { margin-top: 12px; }
 }
 
 @media (max-width: 760px) {
-  body { overflow-y: auto; }
+  body { height: 100dvh; overflow: hidden; }
   .topbar { position: sticky; top: 0; z-index: 10; height: auto; min-height: 72px; flex-wrap: wrap; gap: 10px; padding: 10px 14px; }
   .topbar h1 { font-size: 19px; }
   .status-pill { order: 3; width: 100%; margin-left: 0; text-align: center; font-size: 11px; padding: 7px 9px; }
   #submit-batch { margin-left: auto; min-height: 44px; }
-  .workspace { height: auto; min-height: calc(100vh - 72px); overflow: visible; display: flex; flex-direction: column; }
-  .panel { overflow: visible; border-right: 0; border-bottom: 1px solid var(--line); }
-  .library-panel, .scenes-panel { max-height: 38vh; }
-  .detail-panel { overflow: visible; }
+  .workspace { height: calc(100dvh - var(--mobile-topbar-height, 72px)); min-height: 0; overflow: hidden; display: block; }
+  .panel { display: none; height: 100%; overflow: hidden; border-right: 0; border-bottom: 0; }
+  body[data-mobile-view="projects"] .library-panel,
+  body[data-mobile-view="scenes"] .scenes-panel,
+  body[data-mobile-view="detail"] .detail-panel { display: flex; }
+  .library-panel, .scenes-panel { max-height: none; }
+  .detail-panel { overflow-y: auto; background: #0e141e; }
   .panel-heading { min-height: 62px; padding: 11px 14px; }
-  .scroll-list { max-height: 29vh; }
+  .scroll-list { max-height: none; }
   .metadata { padding: 8px 14px; }
+  #back-to-projects { display: inline-flex; align-items: center; }
+  .mobile-scene-switcher { position: sticky; top: 0; z-index: 8; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: end; gap: 8px; padding: 8px 14px; border-bottom: 1px solid var(--line); background: rgba(13, 18, 28, .98); backdrop-filter: blur(10px); }
+  .mobile-scene-switcher label { display: grid; min-width: 0; gap: 3px; color: var(--muted); font-size: 10px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+  .mobile-scene-switcher select { width: 100%; min-width: 0; }
   .detail-heading { align-items: start; flex-direction: column; gap: 10px; padding: 16px 14px 12px; }
   .revision-picker { width: 100%; }
   .media-grid, .pass-grid, .context-grid, .field-grid.two, .field-grid.three, .lora-card .field-grid { grid-template-columns: 1fr; }
   .media-grid { padding: 0 14px 12px; gap: 10px; }
-  .media-stage { min-height: 210px; height: min(56vh, 440px); }
-  .remake-toolbar { top: 0; align-items: stretch; flex-direction: column; gap: 9px; padding: 11px 14px; }
+  .media-stage { min-height: 210px; height: min(56dvh, 440px); }
+  .media-stage video { width: 100%; height: 100%; }
+  .remake-toolbar { top: 62px; align-items: stretch; flex-direction: column; gap: 9px; padding: 11px 14px; }
   .segmented { display: grid; grid-template-columns: 1fr 1fr; }
   .segmented label { text-align: center; }
   #parameter-form { padding: 0 14px 68px; }

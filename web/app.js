@@ -1,5 +1,6 @@
 const state = {
   jobs: [],
+  scenes: [],
   selectedJob: null,
   selectedScene: null,
   sceneData: null,
@@ -12,6 +13,42 @@ const state = {
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
+const mobileQuery = window.matchMedia("(max-width: 760px)");
+
+function mobileView() {
+  if (!mobileQuery.matches) {
+    document.body.removeAttribute("data-mobile-view");
+    document.documentElement.style.removeProperty("--mobile-topbar-height");
+    return;
+  }
+  document.body.dataset.mobileView = !state.selectedJob
+    ? "projects"
+    : state.selectedScene == null
+      ? "scenes"
+      : "detail";
+  document.documentElement.style.setProperty(
+    "--mobile-topbar-height",
+    `${$(".topbar").offsetHeight}px`,
+  );
+}
+
+function scrollMobilePanel(selector) {
+  if (!mobileQuery.matches) return;
+  requestAnimationFrame(() => $(selector)?.scrollTo({ top: 0, behavior: "smooth" }));
+}
+
+function renderMobileScenePicker() {
+  const select = $("#mobile-scene-select");
+  const scenes = state.scenes || [];
+  select.disabled = !scenes.length;
+  select.innerHTML = [
+    `<option value="" disabled ${state.selectedScene == null ? "selected" : ""}>Choose a scene…</option>`,
+    ...scenes.map((scene) =>
+      `<option value="${scene.scene_id}">${String(scene.scene_id).padStart(2, "0")} · ${escapeHtml(scene.title)}</option>`
+    ),
+  ].join("");
+  if (state.selectedScene != null) select.value = String(state.selectedScene);
+}
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -109,6 +146,8 @@ async function loadJobs() {
   renderJobs();
   if (state.selectedJob) {
     await selectJob(state.selectedJob);
+  } else {
+    mobileView();
   }
 }
 
@@ -126,12 +165,16 @@ async function selectJob(jobId) {
   state.selectedJob = jobId;
   state.selectedScene = null;
   state.sceneData = null;
+  state.scenes = [];
   renderJobs();
+  renderMobileScenePicker();
+  mobileView();
   const job = await api(`/api/jobs/${encodeURIComponent(jobId)}`);
   const summary = state.jobs.find((item) => item.job_id === jobId);
   $("#job-title").textContent = job.display_name || summary?.display_name || job.job_id;
   $("#job-meta").textContent = `${job.character.name} · ${job.character.series} · ${job.character.base_model}`;
-  $("#scenes").innerHTML = job.scenes.map((scene) => `
+  state.scenes = job.scenes;
+  $("#scenes").innerHTML = state.scenes.map((scene) => `
     <button class="list-card" data-scene="${scene.scene_id}">
       <strong>${String(scene.scene_id).padStart(2, "0")} · ${escapeHtml(scene.title)}</strong>
       <div class="card-row">${badge(scene.state)}<span>${scene.revision_count} version${scene.revision_count === 1 ? "" : "s"}</span></div>
@@ -139,10 +182,14 @@ async function selectJob(jobId) {
   `).join("");
   $$("[data-scene]").forEach((button) => button.addEventListener("click", () => selectScene(Number(button.dataset.scene))));
   $("#approve-job").classList.toggle("hidden", state.status?.pipeline_state !== "awaiting_review" || state.status?.job_id !== jobId);
+  renderMobileScenePicker();
+  mobileView();
+  scrollMobilePanel(".scenes-panel");
 }
 
 async function selectScene(sceneId) {
   state.selectedScene = sceneId;
+  mobileView();
   state.sceneData = await api(`/api/jobs/${encodeURIComponent(state.selectedJob)}/scenes/${sceneId}`);
   const key = `${state.selectedJob}:${sceneId}`;
   state.working = clone(state.drafts.get(key)?.parameters || state.sceneData.parameters);
@@ -160,9 +207,37 @@ async function selectScene(sceneId) {
     $(`input[name="remake-mode"][value="${draft.remake_mode}"]`).checked = true;
   }
   setEditable(Boolean(draft));
-  if (window.matchMedia("(max-width: 760px)").matches) {
-    requestAnimationFrame(() => $("#scene-detail").scrollIntoView({ behavior: "smooth", block: "start" }));
-  }
+  renderMobileScenePicker();
+  mobileView();
+  scrollMobilePanel(".detail-panel");
+}
+
+function backToProjects() {
+  state.selectedJob = null;
+  state.selectedScene = null;
+  state.sceneData = null;
+  state.working = null;
+  state.scenes = [];
+  $("#job-title").textContent = "Choose a project";
+  $("#job-meta").textContent = "";
+  $("#scenes").innerHTML = "";
+  $("#scene-detail").classList.add("hidden");
+  $("#empty-state").classList.remove("hidden");
+  renderJobs();
+  renderMobileScenePicker();
+  mobileView();
+  scrollMobilePanel(".library-panel");
+}
+
+function backToScenes() {
+  state.selectedScene = null;
+  state.sceneData = null;
+  state.working = null;
+  $("#scene-detail").classList.add("hidden");
+  $("#empty-state").classList.remove("hidden");
+  renderMobileScenePicker();
+  mobileView();
+  scrollMobilePanel(".scenes-panel");
 }
 
 function renderRevisionPicker() {
@@ -427,6 +502,7 @@ function updateStatus(status) {
   element.textContent = `${humanize(status.pipeline_state)}${status.job_id ? ` · ${status.job_id}` : ""} · ${intake} · Comfy ${status.comfyui_running}/${status.comfyui_pending}`;
   element.className = `status-pill ${!status.comfyui_healthy || status.pipeline_error ? "error" : status.active_render ? "busy" : "healthy"}`;
   $("#approve-job").classList.toggle("hidden", status.pipeline_state !== "awaiting_review" || status.job_id !== state.selectedJob);
+  mobileView();
 }
 
 function escapeHtml(value) {
@@ -440,6 +516,12 @@ function attribute(value) {
 }
 
 $("#refresh").addEventListener("click", loadJobs);
+$("#back-to-projects").addEventListener("click", backToProjects);
+$("#back-to-scenes").addEventListener("click", backToScenes);
+$("#mobile-scene-select").addEventListener("change", (event) => {
+  const sceneId = Number(event.target.value);
+  if (Number.isInteger(sceneId) && sceneId > 0) selectScene(sceneId);
+});
 $("#revision-select").addEventListener("change", renderMedia);
 $("#mark-remake").addEventListener("change", () => {
   const key = `${state.selectedJob}:${state.selectedScene}`;
@@ -474,9 +556,13 @@ async function init() {
     toast(`Live sampler options unavailable: ${error.message}`, true);
   }
   await loadJobs();
+  mobileView();
   const stream = new EventSource("/api/events");
   stream.onmessage = (event) => updateStatus(JSON.parse(event.data));
   stream.onerror = () => updateStatus({ pipeline_state: "disconnected", comfyui_healthy: false, comfyui_running: 0, comfyui_pending: 0 });
 }
+
+window.addEventListener("resize", mobileView);
+mobileQuery.addEventListener?.("change", mobileView);
 
 init().catch((error) => toast(error.message, true));
