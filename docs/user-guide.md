@@ -16,6 +16,10 @@ version-controlled custom-node source already in this repository.
 Double-click `Start 10MinVideoMaker.bat`. After the existing credential checks, the launcher opens
 `http://127.0.0.1:8765/`. Default binding is only this computer.
 
+You do not need to start ComfyUI manually after a PC reboot. The GUI launch uses the same local health guard as the
+console launcher: if `http://127.0.0.1:8188` is down, it starts the verified Easy Install `Start ComfyUI.bat`, which
+preserves its Sage Attention startup configuration, and waits for the API before starting the supervisor.
+
 For phone use, choose **Change optional environment settings** then **Configure mobile LAN access**. Enable it and
 set a 12+ character password. The next GUI start binds to the private LAN and logs a phone URL such as
 `http://192.168.x.x:8765/`. Sign in with username `10min` and that password. This is HTTP Basic on a trusted private

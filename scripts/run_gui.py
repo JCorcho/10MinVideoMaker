@@ -29,6 +29,7 @@ from tenminvideomaker.ownership import (
 from tenminvideomaker.state_store import PipelineState, PipelineStateStore
 from tenminvideomaker.storage import StorageLayout, migrate_legacy_storage
 
+from scripts.setup_and_start import ensure_comfyui
 from scripts.run_supervisor import build_supervisor, restart_comfyui
 
 
@@ -184,6 +185,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     environment = load_project_environment(PROJECT_ROOT)
     host, lan_password = _gui_binding(args, environment)
+    ensure_comfyui(environment)
     other_processes = legacy_supervisor_process_ids()
     if other_processes:
         if args.no_take_over:

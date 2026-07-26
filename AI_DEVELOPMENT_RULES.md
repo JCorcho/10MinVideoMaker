@@ -709,3 +709,22 @@
 - Results: 144 embedded-Python tests passed. Live no-render ComfyUI contracts exposed 115 selectable LoRA filenames
   for each of `LoraLoader` and `LoraLoaderModelOnly`. No generation, download, or ComfyUI restart occurred during
   validation.
+
+### 2026-07-26 — post-reboot GUI ComfyUI startup guard
+
+- Changed files: `scripts/setup_and_start.py`, `scripts/run_gui.py`, focused setup/GUI tests, `README.md`,
+  `docs/architecture.md`, `docs/user-guide.md`, and this file.
+- Cause: `Start 10MinVideoMaker.bat` runs setup with `--setup-only` before it launches `run_gui.py`. That path
+  skipped the existing local ComfyUI health/start guard, so a GUI launch immediately queried `/object_info` and
+  failed with connection refused after a PC reboot.
+- Repair: `ensure_comfyui` is the shared guard for both the console and GUI launchers. When the authorized loopback
+  API is unavailable, it invokes only the existing path-verified restart helper, which starts the unchanged Easy
+  Install `Start ComfyUI.bat` and therefore preserves Sage Attention flags. The GUI waits for health before any
+  node-contract query or supervisor ownership action.
+- Reproduction: restart the PC, leave ComfyUI closed, then double-click `Start 10MinVideoMaker.bat`. The launcher
+  must report that it is starting the verified local server and open the GUI only after port 8188 is healthy.
+- Verification commands:
+  - Easy Install embedded-Python focused `test_setup_and_start.py` and `test_gui_app.py` suites with repository
+    and `tests` paths inserted into `sys.path`
+  - `python -m compileall -q tenminvideomaker scripts tests`
+  - `git diff --check`

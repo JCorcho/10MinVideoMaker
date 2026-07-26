@@ -62,6 +62,12 @@ class GuiAppTests(unittest.TestCase):
             ("0.0.0.0", "mobile-password"),
         )
 
+    def test_gui_launcher_uses_shared_comfy_startup_guard(self) -> None:
+        from scripts.run_gui import ensure_comfyui
+        from scripts.setup_and_start import ensure_comfyui as shared_guard
+
+        self.assertIs(ensure_comfyui, shared_guard)
+
     def test_launcher_restarts_only_for_stale_contract_and_empty_queue(self) -> None:
         from scripts.run_gui import _ensure_current_node_contract
         from tenminvideomaker.ownership import OwnershipError

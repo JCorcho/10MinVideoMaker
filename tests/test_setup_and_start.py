@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import scripts.setup_and_start as setup_module
@@ -13,6 +14,7 @@ from scripts.setup_and_start import (
     configure_lan_access,
     configure_gmail,
     edit_optional_settings,
+    ensure_comfyui,
     oauth_drive_scopes_ready,
     offer_saved_job_retry,
     required_gmail_ready,
@@ -186,6 +188,24 @@ class SetupAndStartTests(unittest.TestCase):
         self.assertTrue(_local_comfy_url("http://127.0.0.1:8188"))
         self.assertTrue(_local_comfy_url("http://localhost:8188"))
         self.assertFalse(_local_comfy_url("https://example.com:8188"))
+
+    def test_gui_shared_comfy_guard_starts_the_verified_local_launcher(self) -> None:
+        client = Mock()
+        client.alive.side_effect = [False, True]
+        completed = SimpleNamespace(returncode=0, stdout="", stderr="")
+        storage = SimpleNamespace(state_root=Path(r"D:\\LTX_Supervisor_Storage"))
+        with (
+            patch.object(setup_module, "ComfyHttpClient", return_value=client),
+            patch.object(setup_module.StorageLayout, "configured", return_value=storage),
+            patch.object(setup_module.subprocess, "run", return_value=completed) as run,
+        ):
+            ensure_comfyui({"TENMIN_COMFY_URL": "http://127.0.0.1:8188"})
+
+        command = run.call_args.args[0]
+        self.assertIn("restart_comfyui.ps1", " ".join(command))
+        self.assertIn("-EasyInstallRoot", command)
+        self.assertIn("-ProjectRuntimeRoot", command)
+        self.assertEqual(client.alive.call_count, 2)
 
     def test_launcher_offers_to_retry_saved_failed_job(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

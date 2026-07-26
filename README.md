@@ -52,8 +52,9 @@ Double-click `Start 10MinVideoMaker.bat` in the repository root. On first run it
    `D:\LTX_Supervisor_Storage\config`.
 5. Securely collects the Discord Patreon-delivery webhook when missing.
 6. Shows the optional settings editor when requested, including a Discord webhook replacement action.
-7. Validates Gmail and configured Drive access without sending a message, performs a ComfyUI health check, and
-   launches the edit-and-review GUI plus its single supervisor worker.
+7. Validates Gmail and configured Drive access without sending a message. If the authorized local ComfyUI API is
+   down, it starts the unchanged Easy Install `Start ComfyUI.bat` launcher (which retains Sage Attention), waits for
+   HTTP health, then launches the edit-and-review GUI plus its single supervisor worker.
 
 On later runs, valid required settings are reused and the launcher asks whether to change optional settings before
 starting. See `docs/user-guide.md` for OAuth setup details and safe setup-only commands.

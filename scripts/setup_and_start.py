@@ -549,7 +549,13 @@ def _validate_gmail(environment: dict[str, str]) -> None:
         print("Gmail authentication succeeded. Public Google Drive links are supported.")
 
 
-def _ensure_comfyui(environment: dict[str, str]) -> None:
+def ensure_comfyui(environment: dict[str, str]) -> None:
+    """Start the authorized local ComfyUI launcher when its API is unavailable.
+
+    The verified Easy Install launcher owns the Sage Attention flags, so this
+    deliberately starts ``Start ComfyUI.bat`` rather than constructing a new
+    Python command line here.
+    """
     comfy_url = environment.get("TENMIN_COMFY_URL", "http://127.0.0.1:8188")
     client = ComfyHttpClient(comfy_url)
     if client.alive():
@@ -587,6 +593,10 @@ def _ensure_comfyui(environment: dict[str, str]) -> None:
     if not client.alive():
         raise RuntimeError(f"ComfyUI did not become healthy at {comfy_url}.")
     print("ComfyUI started successfully.")
+
+
+# Keep the original private name for callers from earlier project revisions.
+_ensure_comfyui = ensure_comfyui
 
 
 def setup_environment(
@@ -744,7 +754,7 @@ def main() -> int:
         if args.setup_only:
             print("\nSetup is complete. The supervisor was not started.")
             return 0
-        _ensure_comfyui(environment)
+        ensure_comfyui(environment)
         offer_saved_job_retry(
             comfy_client=ComfyHttpClient(
                 environment.get("TENMIN_COMFY_URL", "http://127.0.0.1:8188")
