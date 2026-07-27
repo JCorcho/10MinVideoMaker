@@ -221,9 +221,26 @@ def _history_error(record: Mapping[str, Any], prompt_id: str) -> str:
     return f"ComfyUI prompt {prompt_id} failed."
 
 
-def find_video_output(record: Mapping[str, Any]) -> Mapping[str, Any]:
-    """Find the saved or temporary MP4 metadata returned by VHS_VideoCombine."""
-    stack: list[Any] = [record.get("outputs", {})]
+def find_video_output(
+    record: Mapping[str, Any],
+    output_node_id: str,
+) -> Mapping[str, Any]:
+    """Find an MP4 only beneath the designated raw VHS output node.
+
+    A workflow can contain additional MP4-producing delivery nodes. Their
+    output must never be chosen for the durable clean scene clip.
+    """
+    if not isinstance(output_node_id, str) or not output_node_id:
+        raise ComfyHttpError("The designated raw video output node ID is required.")
+    outputs = record.get("outputs", {})
+    if not isinstance(outputs, Mapping):
+        raise ComfyHttpError("ComfyUI completed I2V with invalid output metadata.")
+    selected_output = outputs.get(output_node_id)
+    if selected_output is None:
+        raise ComfyHttpError(
+            f"ComfyUI completed I2V without output from raw video node {output_node_id}."
+        )
+    stack: list[Any] = [selected_output]
     while stack:
         value = stack.pop()
         if isinstance(value, Mapping):
@@ -233,4 +250,6 @@ def find_video_output(record: Mapping[str, Any]) -> Mapping[str, Any]:
             stack.extend(value.values())
         elif isinstance(value, list):
             stack.extend(value)
-    raise ComfyHttpError("ComfyUI completed I2V but returned no MP4 output metadata.")
+    raise ComfyHttpError(
+        f"ComfyUI raw video node {output_node_id} returned no MP4 output metadata."
+    )

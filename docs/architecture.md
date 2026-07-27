@@ -79,8 +79,9 @@ Before stitching, FFmpeg preflight verifies every successful clip is 768×1344 a
 stream copy and emits `D:\LTX_Supervisor_Storage\finals\{job_id}_final.mp4`.
 
 VHS writes scene video to its temporary ComfyUI output and returns metadata through prompt history. The supervisor
-downloads that exact output through the local HTTP API into the matching versioned scene directory under
-`D:\LTX_Supervisor_Storage\jobs`; it does not scan or move unrelated shared output files.
+downloads only the `WorkflowBuild.output_node_id` VHS output through the local HTTP API into the matching versioned
+scene directory under `D:\LTX_Supervisor_Storage\jobs`; it never scans other output nodes, including Discord
+delivery, or moves unrelated shared output files.
 
 Output delivery is a parallel branch, not a replacement for durable artifacts. The clean T2I result feeds the
 deterministic frame saver and the I2V cache; a second edge passes through `DaSiWa_Watermark` into

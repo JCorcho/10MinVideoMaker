@@ -33,7 +33,8 @@ Every newly generated scene also has a metadata-free Patreon delivery branch. Th
 watermark is applied only to Discord media: images are sent as lossless PNG at quality 100, and videos are sent as
 H.264 with generated audio at quality 65 and 24 fps. Both DiscordSendSave nodes have `save_output`, prompt inclusion,
 workflow JSON, CDN logging, and GitHub updates disabled. Clean cached frames and deterministic scene clips remain
-unwatermarked for I2V reuse and master assembly.
+unwatermarked for I2V reuse and master assembly. The supervisor selects the durable video only from the designated
+raw VHS output node; it never scans Discord delivery outputs for an MP4.
 
 To avoid model-reload thrash on the 16 GB GPU, an automatic job has two sequential model-residency phases: it creates
 every required T2I frame first, unloads the image model once, then creates every required LTX clip. A multi-scene

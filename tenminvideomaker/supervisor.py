@@ -702,7 +702,7 @@ class PipelineSupervisor:
             prompt_id,
             timeout_seconds=self.settings.i2v_timeout_seconds,
         )
-        metadata = find_video_output(history)
+        metadata = find_video_output(history, build.output_node_id)
         self.comfy.download_output(metadata, clip_path)
         self.store.set_scene_state(
             job.job_id,

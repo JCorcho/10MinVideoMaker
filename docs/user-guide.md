@@ -121,7 +121,8 @@ DiscordSendSave nodes:
 
 The Discord nodes send to the webhook only. `save_output`, previews, prompt inclusion, workflow JSON, CDN URL
 storage, and GitHub updates are disabled. The clean deterministic T2I PNG remains the I2V input, and the clean
-temporary VHS clip remains the master-assembly input; watermarking cannot feed back into generation.
+temporary VHS clip remains the master-assembly input; watermarking cannot feed back into generation. The supervisor
+stores a durable clip only from the designated raw VHS node output, never from the Discord delivery node.
 
 The webhook is encrypted in `D:\LTX_Supervisor_Storage\config\secrets.json` with Windows DPAPI. The versioned workflow files contain only a
 nonfunctional placeholder, while the approved shared workflow copies receive the configured webhook during export.

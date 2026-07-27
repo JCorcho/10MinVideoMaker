@@ -384,7 +384,7 @@ class SupervisorController:
             timeout_seconds=self.supervisor.settings.i2v_timeout_seconds,
         )
         self.supervisor.comfy.download_output(
-            find_video_output(history),
+            find_video_output(history, build.output_node_id),
             item.clip_path,
         )
         self.store.update_scene_revision(

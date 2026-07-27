@@ -14,11 +14,31 @@ class ComfyHttpTests(unittest.TestCase):
             "type": "temp",
         }
         record = {"outputs": {"36": {"gifs": [metadata]}}}
-        self.assertIs(find_video_output(record), metadata)
+        self.assertIs(find_video_output(record, "36"), metadata)
+
+    def test_ignores_watermarked_delivery_mp4_from_another_output_node(self) -> None:
+        raw_metadata = {
+            "filename": "scene_0001_raw.mp4",
+            "subfolder": "10MinVideoMaker/job/clips",
+            "type": "temp",
+        }
+        watermarked_metadata = {
+            "filename": "discord-watermarked.mp4",
+            "subfolder": "output",
+            "type": "output",
+        }
+        record = {
+            "outputs": {
+                "raw-vhs": {"gifs": [raw_metadata]},
+                "discord-delivery": {"gifs": [watermarked_metadata]},
+            }
+        }
+
+        self.assertIs(find_video_output(record, "raw-vhs"), raw_metadata)
 
     def test_missing_video_metadata_is_an_error(self) -> None:
         with self.assertRaises(ComfyHttpError):
-            find_video_output({"outputs": {"1": {"images": []}}})
+            find_video_output({"outputs": {"1": {"images": []}}}, "1")
 
     def test_queue_counts_returns_only_redacted_totals(self) -> None:
         client = ComfyHttpClient()

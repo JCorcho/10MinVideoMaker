@@ -750,3 +750,23 @@
   - `node --check web/app.js`
   - `python -m compileall -q tenminvideomaker scripts tests`
   - `git diff --check`
+
+### 2026-07-26 — pin durable video downloads to the raw VHS output
+
+- Changed files: `tenminvideomaker/comfy_http.py`, `supervisor.py`, `gui_service.py`, focused HTTP regression tests,
+  `README.md`, `docs/architecture.md`, `docs/user-guide.md`, and this file.
+- Cause: the completed ComfyUI history may contain both the raw `VHS_VideoCombine` MP4 and the watermarked
+  `DiscordSendSaveVideo` MP4. The prior helper searched all output nodes for the first MP4 and could store the
+  Discord version as the durable scene clip.
+- Repair: `WorkflowBuild.output_node_id` is now mandatory when selecting video metadata. Normal jobs and GUI remake
+  batches search only below that raw VHS node. Missing/invalid raw output metadata fails safely instead of falling
+  back to any other MP4.
+- Recovery: a historical watermarked `video.mp4` has no clean replacement in the project-owned revision folder.
+  Re-run it as **Video Only** from its clean cached `frame.png` after this fix is active; do not regenerate T2I.
+- Reproduction: construct history with a raw VHS MP4 and a watermarked Discord MP4 under different output node IDs.
+  Selecting the raw node must return only the raw metadata regardless of mapping order.
+- Verification commands:
+  - Easy Install embedded-Python focused `test_comfy_http.py`, supervisor, and GUI-service suites with repository
+    and `tests` paths inserted into `sys.path`
+  - `python -m compileall -q tenminvideomaker scripts tests`
+  - `git diff --check`
