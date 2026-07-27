@@ -770,3 +770,23 @@
     and `tests` paths inserted into `sys.path`
   - `python -m compileall -q tenminvideomaker scripts tests`
   - `git diff --check`
+
+### 2026-07-26 — revision-specific remake review values
+
+- Changed files: `web/app.js`, `tests/test_gui_app.py`, `README.md`, `docs/architecture.md`,
+  `docs/user-guide.md`, and this file.
+- Cause: the scene-detail endpoint already returned each immutable revision's saved parameter document, but the
+  browser changed only the selected revision's frame/video URLs. The form always remained bound to the original
+  source-scene document, so reviewing a remake could display version 1 prompts and sampler settings.
+- Repair: selecting **Result version** now changes preview and working form together. New unsent edits are held per
+  selected source revision in the browser, while the remake tray contains only the scene/version currently chosen
+  for submission. Turning off **Mark for remake** discards those temporary edits and restores the selected immutable
+  revision record.
+- Reproduction: create revisions 2 and 3 with distinct T2I prompt/I2V sampler values, select each item in the
+  result-version dropdown, and verify its fields match its generation manifest before marking it for another remake.
+- Verification commands:
+  - Easy Install embedded-Python `tests/test_gui_app.py`
+  - `python -m unittest discover -s tests -q`
+  - `node --check web/app.js`
+  - `python -m compileall -q tenminvideomaker scripts tests`
+  - `git diff --check`

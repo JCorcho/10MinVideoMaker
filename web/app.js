@@ -6,6 +6,7 @@ const state = {
   sceneData: null,
   working: null,
   drafts: new Map(),
+  revisionDrafts: new Map(),
   options: { samplers: [], schedulers: [], t2i_loras: [], i2v_loras: [] },
   pendingBatch: null,
   status: null,
@@ -192,15 +193,17 @@ async function selectScene(sceneId) {
   mobileView();
   state.sceneData = await api(`/api/jobs/${encodeURIComponent(state.selectedJob)}/scenes/${sceneId}`);
   const key = `${state.selectedJob}:${sceneId}`;
-  state.working = clone(state.drafts.get(key)?.parameters || state.sceneData.parameters);
+  const draft = state.drafts.get(key);
   $("#empty-state").classList.add("hidden");
   $("#scene-detail").classList.remove("hidden");
-  $("#scene-heading").textContent = state.working.title;
-  $("#scene-kicker").textContent = `Scene ${sceneId} · ${state.sceneData.record.state}`;
   $$("[data-scene]").forEach((button) => button.classList.toggle("selected", Number(button.dataset.scene) === sceneId));
-  renderRevisionPicker();
+  renderRevisionPicker(draft?.source_revision);
+  state.working = clone(
+    revisionDraft(draft, selectedRevision())?.parameters
+      || revisionParameters(selectedRevision()),
+  );
+  renderSceneHeading(selectedRevision());
   renderForm();
-  const draft = state.drafts.get(key);
   $("#mark-remake").checked = Boolean(draft);
   $("#remake-mode").classList.toggle("hidden", !draft);
   if (draft) {
@@ -240,17 +243,44 @@ function backToScenes() {
   scrollMobilePanel(".scenes-panel");
 }
 
-function renderRevisionPicker() {
+function revisionDraftKey(revision) {
+  return `${state.selectedJob}:${state.selectedScene}:${revision}`;
+}
+
+function selectedRevision() {
+  const revision = Number($("#revision-select").value);
+  return state.sceneData?.revisions.find((item) => item.revision === revision) || null;
+}
+
+function revisionParameters(revision) {
+  return revision?.parameters || state.sceneData.parameters;
+}
+
+function revisionDraft(activeDraft, revision) {
+  if (!revision) return null;
+  return state.revisionDrafts.get(revisionDraftKey(revision.revision))
+    || (activeDraft?.source_revision === revision.revision ? activeDraft : null);
+}
+
+function renderSceneHeading(revision) {
+  $("#scene-heading").textContent = state.working.title;
+  const version = revision ? ` · Version ${revision.revision}` : "";
+  $("#scene-kicker").textContent = `Scene ${state.selectedScene} · ${state.sceneData.record.state}${version}`;
+}
+
+function renderRevisionPicker(preferredRevision = null) {
   const select = $("#revision-select");
   select.innerHTML = state.sceneData.revisions.map((revision) =>
     `<option value="${revision.revision}">Version ${revision.revision} · ${humanize(revision.state)}${revision.revision === 1 ? " · original" : ""}</option>`
   ).join("");
-  select.value = state.sceneData.revisions[0]?.revision || "";
+  const requested = Number(preferredRevision);
+  const available = state.sceneData.revisions.some((item) => item.revision === requested);
+  select.value = available ? requested : state.sceneData.revisions[0]?.revision || "";
   renderMedia();
 }
 
 function renderMedia() {
-  const revision = state.sceneData.revisions.find((item) => item.revision === Number($("#revision-select").value));
+  const revision = selectedRevision();
   const image = $("#frame-preview");
   const video = $("#video-preview");
   image.src = revision?.frame_url || "";
@@ -258,6 +288,19 @@ function renderMedia() {
   video.src = revision?.video_url || "";
   video.style.visibility = revision?.video_url ? "visible" : "hidden";
   video.load();
+}
+
+function selectRevisionParameters() {
+  const key = `${state.selectedJob}:${state.selectedScene}`;
+  const revision = selectedRevision();
+  if (!revision) return;
+  const saved = revisionDraft(state.drafts.get(key), revision);
+  state.working = clone(saved?.parameters || revisionParameters(revision));
+  renderSceneHeading(revision);
+  renderMedia();
+  renderForm();
+  if ($("#mark-remake").checked) saveDraft();
+  setEditable($("#mark-remake").checked);
 }
 
 function renderForm() {
@@ -444,12 +487,16 @@ function saveDraft() {
   const key = `${state.selectedJob}:${state.selectedScene}`;
   if (!$("#mark-remake").checked) return;
   const mode = $('input[name="remake-mode"]:checked').value;
-  state.drafts.set(key, {
+  const sourceRevision = selectedRevision()?.revision || 1;
+  const draft = {
     job_id: state.selectedJob,
     scene_id: state.selectedScene,
+    source_revision: sourceRevision,
     remake_mode: mode,
     parameters: clone(state.working),
-  });
+  };
+  state.drafts.set(key, draft);
+  state.revisionDrafts.set(revisionDraftKey(sourceRevision), draft);
   updateDraftCount();
 }
 
@@ -484,6 +531,7 @@ async function submitPendingBatch(policy) {
     });
     toast(`Remake batch queued with ${state.drafts.size} scene edit(s).`);
     state.drafts.clear();
+    state.revisionDrafts.clear();
     state.pendingBatch = null;
     $("#collision-modal").classList.add("hidden");
     updateDraftCount();
@@ -522,14 +570,18 @@ $("#mobile-scene-select").addEventListener("change", (event) => {
   const sceneId = Number(event.target.value);
   if (Number.isInteger(sceneId) && sceneId > 0) selectScene(sceneId);
 });
-$("#revision-select").addEventListener("change", renderMedia);
+$("#revision-select").addEventListener("change", selectRevisionParameters);
 $("#mark-remake").addEventListener("change", () => {
   const key = `${state.selectedJob}:${state.selectedScene}`;
   if ($("#mark-remake").checked) {
     saveDraft();
   } else {
     state.drafts.delete(key);
-    state.working = clone(state.sceneData.parameters);
+    for (const draftKey of state.revisionDrafts.keys()) {
+      if (draftKey.startsWith(`${key}:`)) state.revisionDrafts.delete(draftKey);
+    }
+    state.working = clone(revisionParameters(selectedRevision()));
+    renderSceneHeading(selectedRevision());
     renderForm();
     updateDraftCount();
   }

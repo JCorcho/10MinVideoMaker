@@ -37,6 +37,11 @@ folder, and finals live in `D:\LTX_Supervisor_Storage\finals`. The first GUI lau
 database, configured secrets/settings, payloads, and only media recorded by this project into the new layout.
 Migration never deletes or rewrites the legacy source.
 
+The GUI revision picker uses the selected revision's stored human-readable parameter document—not the source scene
+document—for both preview and editor state. A selected revision can therefore be inspected or used as the basis for
+a new remake with its exact prior prompts, seeds, LoRAs, sampler choices, sigmas, and routing values. Temporary
+browser edits are kept per source revision while the remake tray retains only the currently selected scene edit.
+
 Edits are validated by reconstructing the typed job contract, then passed as explicit workflow overrides. This
 keeps the global character LoRA, stage LoRA separation, mandatory DMD/Joy chain, Pony detailer, samplers, schedulers,
 sigmas, CFG, denoise, chunking, upscaler, seeds, prompts, and fixed production profile in one routing

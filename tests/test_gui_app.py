@@ -37,6 +37,9 @@ class GuiStaticAssetTests(unittest.TestCase):
         )
         self.assertIn("job.display_name || job.job_id", script)
         self.assertIn("summary?.display_name || job.job_id", script)
+        self.assertIn("selectRevisionParameters", script)
+        self.assertIn("revision?.parameters", script)
+        self.assertIn('addEventListener("change", selectRevisionParameters)', script)
         self.assertIn("@media (max-width: 760px)", styles)
         self.assertIn("data-lora-picker", script)
         self.assertIn("scrollMobilePanel", script)
@@ -191,6 +194,21 @@ class GuiAppTests(unittest.TestCase):
             scene = client.get(f"/api/jobs/{job.job_id}/scenes/1").json()
             self.assertIn("first_pass", scene["parameters"]["i2v"])
             self.assertNotIn("payload_json", scene)
+            original_prompt = scene["parameters"]["t2i"]["prompt"]
+            remake_parameters = {
+                **scene["parameters"],
+                "t2i": {
+                    **scene["parameters"]["t2i"],
+                    "prompt": "A deliberately revised scene prompt.",
+                },
+                "i2v": {
+                    **scene["parameters"]["i2v"],
+                    "first_pass": {
+                        **scene["parameters"]["i2v"]["first_pass"],
+                        "sampler": "euler",
+                    },
+                },
+            }
             draft = client.post(
                 "/api/remake-batches",
                 json={
@@ -199,13 +217,29 @@ class GuiAppTests(unittest.TestCase):
                             "job_id": job.job_id,
                             "scene_id": 1,
                             "remake_mode": "image_and_video",
-                            "parameters": scene["parameters"],
+                            "parameters": remake_parameters,
                         }
                     ]
                 },
             )
             self.assertEqual(draft.status_code, 200)
             self.assertFalse(draft.json()["active_render"])
+            scene_after_remake = client.get(
+                f"/api/jobs/{job.job_id}/scenes/1"
+            ).json()
+            revisions = {
+                item["revision"]: item
+                for item in scene_after_remake["revisions"]
+            }
+            self.assertEqual(revisions[1]["parameters"]["t2i"]["prompt"], original_prompt)
+            self.assertEqual(
+                revisions[2]["parameters"]["t2i"]["prompt"],
+                "A deliberately revised scene prompt.",
+            )
+            self.assertEqual(
+                revisions[2]["parameters"]["i2v"]["first_pass"]["sampler"],
+                "euler",
+            )
 
             secured_client = TestClient(
                 create_gui_app(

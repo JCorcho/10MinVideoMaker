@@ -45,6 +45,9 @@ the video remains inline while you review parameters, then returns to the same s
    library and scene list each scroll independently when they contain more rows than fit on screen.
 2. Review the source frame, generated video, prompts, seeds, character and stage LoRAs, T2I passes, Pony face
    detailer, I2V samplers and sigma schedules, chunking, upscaler, and fixed production profile.
+   **Result version** selects one immutable generation record: its preview and every form field change together to
+   the exact settings used for that version. This makes an older remake safe to inspect or use as the starting point
+   for a new remake without silently reverting to version 1.
 3. New Gmail handoffs start automatically. To test an incoming payload before it starts, launch with
    `Start 10MinVideoMaker.bat --hold-new-jobs-for-review`; that session shows **Approve & Queue Job** for each
    newly claimed handoff.

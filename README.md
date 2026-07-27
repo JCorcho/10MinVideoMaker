@@ -64,6 +64,8 @@ continue without input. See `docs/user-guide.md` for OAuth setup details and saf
 The browser UI shows pipeline/ComfyUI status, a job library, scene previews, every generation parameter used by the
 workflow, and version history. Mark any number of scenes across jobs, choose **Video Only** or
 **Image + Video**, edit parameters, then use **Save & Remake**. Image-only remakes are deliberately impossible.
+Selecting a historical result version loads that version's exact saved prompts, seeds, LoRAs, samplers, sigma
+schedules, and other workflow settings into the review form; it never substitutes the original scene parameters.
 If an automated render is active, the UI asks whether to queue edits afterward or cancel only this project's
 current prompts and run the edits immediately. Project cards use the readable
 `Character · MM/DD/YYYY` label, and the project and scene columns scroll independently.
