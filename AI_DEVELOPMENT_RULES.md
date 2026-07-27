@@ -90,6 +90,10 @@
   Both senders must disable local output, prompt/workflow metadata, CDN logging, and GitHub updates. Never commit the
   real webhook; runtime graphs load it from DPAPI, versioned templates use a placeholder, and approved shared GUI
   copies may receive the configured secret during export.
+- Manual project finals are explicit, durable FFmpeg-only requests. Snapshot each included scene's latest successful
+  revision at click time and concatenate that immutable selection only after active project work has ended. The
+  per-scene inclusion flag is manual-final-only: automatic first-run assembly must retain its own all-successful
+  routing and never be suppressed by GUI exclusions.
 
 ## Implementation and testing
 
@@ -787,6 +791,28 @@
 - Verification commands:
   - Easy Install embedded-Python `tests/test_gui_app.py`
   - `python -m unittest discover -s tests -q`
+  - `node --check web/app.js`
+  - `python -m compileall -q tenminvideomaker scripts tests`
+  - `git diff --check`
+
+### 2026-07-26 — explicit manual project finals after remakes
+
+- Changed files: `tenminvideomaker/state_store.py`, `tenminvideomaker/gui_service.py`,
+  `tenminvideomaker/gui_app.py`, `web/index.html`, `web/styles.css`, `web/app.js`, focused state/GUI-service/GUI-app
+  tests, `README.md`, `docs/architecture.md`, `docs/user-guide.md`, and this file.
+- Architecture: a manual-final request persists a snapshot of every included scene's latest successful immutable
+  revision and clip path. A request runs in the existing single GUI worker only once normal project work is idle;
+  it validates the fixed profile and uses the standard FFmpeg copy concat to overwrite the project final. It never
+  queues a ComfyUI graph, loads a model, or changes pipeline state.
+- Routing: `include_in_manual_final` is a durable per-scene GUI choice. It filters only manual-final request
+  snapshots; the automatic first-run completion concat continues to use all successful original scene records.
+- Reproduction: remake a scene, exclude an unwanted scene through its scene editor, then press **Render project
+  final** beneath the selected project's scenes. The request must use the newest successful revision for every
+  included scene, wait behind active work, and fail clearly if an included scene lacks a successful video.
+- Verification commands:
+  - `python -m unittest discover -s tests -p "test_state_store.py" -v`
+  - `python -m unittest discover -s tests -p "test_gui_service.py" -v`
+  - Easy Install embedded-Python `tests/test_gui_app.py`
   - `node --check web/app.js`
   - `python -m compileall -q tenminvideomaker scripts tests`
   - `git diff --check`

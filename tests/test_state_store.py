@@ -7,6 +7,7 @@ import unittest
 from tenminvideomaker.contracts import parse_job_payload
 from tenminvideomaker.state_store import (
     JobState,
+    ManualFinalState,
     PipelineState,
     PipelineStateStore,
     RemakeBatchState,
@@ -68,6 +69,56 @@ class StateStoreTests(unittest.TestCase):
         batch = self.store.list_remake_batches()[0]
         self.assertEqual(batch.state, RemakeBatchState.QUEUED)
         self.assertEqual(batch.item_count, 2)
+
+    def test_manual_final_snapshots_latest_included_successful_revision(self) -> None:
+        self.store.claim_job(self.job)
+        original = Path(self.temporary_directory.name) / "original.mp4"
+        remake = Path(self.temporary_directory.name) / "remake.mp4"
+        original.write_bytes(b"original")
+        remake.write_bytes(b"remake")
+        self.store.set_scene_state(
+            self.job.job_id,
+            1,
+            SceneState.SUCCEEDED,
+            video_path=str(original),
+        )
+        self.store.create_scene_revision(
+            self.job.job_id,
+            1,
+            remake_mode=RemakeMode.IMAGE_AND_VIDEO,
+            parameters={"version": 1},
+            state=SceneState.SUCCEEDED,
+            video_path=str(original),
+        )
+        self.store.create_scene_revision(
+            self.job.job_id,
+            1,
+            remake_mode=RemakeMode.VIDEO_ONLY,
+            parameters={"version": 2},
+            state=SceneState.SUCCEEDED,
+            video_path=str(remake),
+        )
+
+        request = self.store.queue_manual_final(self.job.job_id)
+
+        self.assertEqual(request.state, ManualFinalState.QUEUED)
+        self.assertEqual(
+            self.store.manual_final_selection(request.request_id)[0].revision,
+            2,
+        )
+        self.store.set_scene_manual_final_inclusion(
+            self.job.job_id,
+            1,
+            included=False,
+        )
+        self.assertFalse(self.store.scene_records(self.job.job_id)[0].include_in_manual_final)
+        self.store.set_manual_final_state(
+            request.request_id,
+            ManualFinalState.SUCCEEDED,
+            output_path=str(Path(self.temporary_directory.name) / "final.mp4"),
+        )
+        with self.assertRaisesRegex(StateTransitionError, "At least one scene"):
+            self.store.queue_manual_final(self.job.job_id)
 
     def test_job_cannot_be_claimed_twice(self) -> None:
         self.store.claim_job(self.job)

@@ -59,6 +59,13 @@ class RemakeBatchState(StrEnum):
     CANCELLED = "cancelled"
 
 
+class ManualFinalState(StrEnum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+
+
 class StateTransitionError(RuntimeError):
     """Raised when an operation would violate the single-job state machine."""
 
@@ -82,6 +89,7 @@ class SceneRecord:
     t2i_attempts: int
     i2v_attempts: int
     prompt_id: str | None
+    include_in_manual_final: bool
 
 
 @dataclass(frozen=True)
@@ -131,6 +139,24 @@ class RemakeItemRecord:
     revision: int
     state: SceneState
     error: str | None
+
+
+@dataclass(frozen=True)
+class ManualFinalRecord:
+    request_id: str
+    job_id: str
+    state: ManualFinalState
+    output_path: str | None
+    error: str | None
+    created_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True)
+class ManualFinalSceneSelection:
+    scene_id: int
+    revision: int
+    video_path: str
 
 
 def _utc_now() -> str:
@@ -189,6 +215,7 @@ class PipelineStateStore:
                     t2i_attempts INTEGER NOT NULL DEFAULT 0,
                     i2v_attempts INTEGER NOT NULL DEFAULT 0,
                     prompt_id TEXT,
+                    include_in_manual_final INTEGER NOT NULL DEFAULT 1,
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY (job_id, scene_id),
                     FOREIGN KEY (job_id) REFERENCES jobs(job_id)
@@ -234,6 +261,17 @@ class PipelineStateStore:
                     FOREIGN KEY (job_id, scene_id, revision)
                         REFERENCES scene_revisions(job_id, scene_id, revision)
                 );
+                CREATE TABLE IF NOT EXISTS manual_final_requests (
+                    request_id TEXT PRIMARY KEY,
+                    job_id TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    selection_json TEXT NOT NULL,
+                    output_path TEXT,
+                    error TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (job_id) REFERENCES jobs(job_id)
+                );
                 """
             )
             scene_columns = {
@@ -243,9 +281,21 @@ class PipelineStateStore:
                 ("t2i_attempts", "INTEGER NOT NULL DEFAULT 0"),
                 ("i2v_attempts", "INTEGER NOT NULL DEFAULT 0"),
                 ("prompt_id", "TEXT"),
+                ("include_in_manual_final", "INTEGER NOT NULL DEFAULT 1"),
             ):
                 if column not in scene_columns:
                     connection.execute(f"ALTER TABLE scenes ADD COLUMN {column} {declaration}")
+            manual_final_columns = {
+                row["name"]
+                for row in connection.execute(
+                    "PRAGMA table_info(manual_final_requests)"
+                ).fetchall()
+            }
+            if "selection_json" not in manual_final_columns:
+                connection.execute(
+                    "ALTER TABLE manual_final_requests "
+                    "ADD COLUMN selection_json TEXT NOT NULL DEFAULT '[]'"
+                )
             job_columns = {
                 row["name"] for row in connection.execute("PRAGMA table_info(jobs)").fetchall()
             }
@@ -968,13 +1018,248 @@ class PipelineStateStore:
             for row in rows
         )
 
+    def set_scene_manual_final_inclusion(
+        self,
+        job_id: str,
+        scene_id: int,
+        *,
+        included: bool,
+    ) -> None:
+        """Persist a scene's opt-in state for manually requested final assembly only."""
+        self.initialize()
+        with self._connection() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE scenes
+                SET include_in_manual_final = ?, updated_at = ?
+                WHERE job_id = ? AND scene_id = ?
+                """,
+                (int(included), _utc_now(), job_id, scene_id),
+            )
+            if cursor.rowcount != 1:
+                raise StateTransitionError(f"Unknown scene {scene_id} for job {job_id}.")
+
+    def queue_manual_final(self, job_id: str) -> ManualFinalRecord:
+        """Snapshot current manual-final choices without changing automatic job assembly."""
+        self.initialize()
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            exists = connection.execute(
+                "SELECT 1 FROM jobs WHERE job_id = ?", (job_id,)
+            ).fetchone()
+            if exists is None:
+                raise StateTransitionError(f"Unknown job {job_id}.")
+            active = connection.execute(
+                """
+                SELECT request_id, job_id, state, output_path, error, created_at, updated_at
+                FROM manual_final_requests
+                WHERE job_id = ? AND state IN (?, ?)
+                ORDER BY created_at DESC LIMIT 1
+                """,
+                (job_id, ManualFinalState.QUEUED, ManualFinalState.RUNNING),
+            ).fetchone()
+            if active is not None:
+                return self._manual_final_record(active)
+
+            selection = self._manual_final_selection(connection, job_id)
+            request_id = uuid4().hex
+            now = _utc_now()
+            connection.execute(
+                """
+                INSERT INTO manual_final_requests (
+                    request_id, job_id, state, selection_json, output_path, error,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, NULL, NULL, ?, ?)
+                """,
+                (
+                    request_id,
+                    job_id,
+                    ManualFinalState.QUEUED,
+                    json.dumps(selection, ensure_ascii=False, sort_keys=True),
+                    now,
+                    now,
+                ),
+            )
+        return ManualFinalRecord(
+            request_id=request_id,
+            job_id=job_id,
+            state=ManualFinalState.QUEUED,
+            output_path=None,
+            error=None,
+            created_at=now,
+            updated_at=now,
+        )
+
+    def next_queued_manual_final(self) -> ManualFinalRecord | None:
+        self.initialize()
+        with self._connection() as connection:
+            row = connection.execute(
+                """
+                SELECT request_id, job_id, state, output_path, error, created_at, updated_at
+                FROM manual_final_requests
+                WHERE state = ?
+                ORDER BY created_at ASC LIMIT 1
+                """,
+                (ManualFinalState.QUEUED,),
+            ).fetchone()
+        return self._manual_final_record(row) if row is not None else None
+
+    def latest_manual_final(self, job_id: str) -> ManualFinalRecord | None:
+        self.initialize()
+        with self._connection() as connection:
+            row = connection.execute(
+                """
+                SELECT request_id, job_id, state, output_path, error, created_at, updated_at
+                FROM manual_final_requests
+                WHERE job_id = ?
+                ORDER BY created_at DESC LIMIT 1
+                """,
+                (job_id,),
+            ).fetchone()
+        return self._manual_final_record(row) if row is not None else None
+
+    def latest_manual_final_any(self) -> ManualFinalRecord | None:
+        self.initialize()
+        with self._connection() as connection:
+            row = connection.execute(
+                """
+                SELECT request_id, job_id, state, output_path, error, created_at, updated_at
+                FROM manual_final_requests
+                ORDER BY created_at DESC LIMIT 1
+                """
+            ).fetchone()
+        return self._manual_final_record(row) if row is not None else None
+
+    def manual_final_selection(
+        self,
+        request_id: str,
+    ) -> tuple[ManualFinalSceneSelection, ...]:
+        self.initialize()
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT selection_json FROM manual_final_requests WHERE request_id = ?",
+                (request_id,),
+            ).fetchone()
+        if row is None:
+            raise StateTransitionError(f"Unknown manual final request {request_id}.")
+        try:
+            values = json.loads(row["selection_json"])
+            return tuple(
+                ManualFinalSceneSelection(
+                    scene_id=int(item["scene_id"]),
+                    revision=int(item["revision"]),
+                    video_path=str(item["video_path"]),
+                )
+                for item in values
+            )
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+            raise StateTransitionError(
+                f"Manual final request {request_id} has an invalid saved selection."
+            ) from error
+
+    def set_manual_final_state(
+        self,
+        request_id: str,
+        state: ManualFinalState,
+        *,
+        output_path: str | None = None,
+        error: str | None = None,
+    ) -> None:
+        self.initialize()
+        with self._connection() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE manual_final_requests
+                SET state = ?, output_path = COALESCE(?, output_path), error = ?, updated_at = ?
+                WHERE request_id = ?
+                """,
+                (state, output_path, error, _utc_now(), request_id),
+            )
+            if cursor.rowcount != 1:
+                raise StateTransitionError(f"Unknown manual final request {request_id}.")
+
+    def set_job_final_path(self, job_id: str, final_path: str) -> None:
+        self.initialize()
+        with self._connection() as connection:
+            cursor = connection.execute(
+                "UPDATE jobs SET final_path = ?, updated_at = ? WHERE job_id = ?",
+                (final_path, _utc_now(), job_id),
+            )
+            if cursor.rowcount != 1:
+                raise StateTransitionError(f"Unknown job {job_id}.")
+
+    @staticmethod
+    def _manual_final_record(row: sqlite3.Row) -> ManualFinalRecord:
+        return ManualFinalRecord(
+            request_id=row["request_id"],
+            job_id=row["job_id"],
+            state=ManualFinalState(row["state"]),
+            output_path=row["output_path"],
+            error=row["error"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+    @staticmethod
+    def _manual_final_selection(
+        connection: sqlite3.Connection,
+        job_id: str,
+    ) -> list[dict[str, Any]]:
+        scenes = connection.execute(
+            """
+            SELECT scene_id, state, video_path
+            FROM scenes
+            WHERE job_id = ? AND include_in_manual_final = 1
+            ORDER BY scene_id
+            """,
+            (job_id,),
+        ).fetchall()
+        if not scenes:
+            raise StateTransitionError(
+                "At least one scene must be included in the manual final."
+            )
+        selected: list[dict[str, Any]] = []
+        unavailable: list[int] = []
+        for scene in scenes:
+            revision = connection.execute(
+                """
+                SELECT revision, video_path
+                FROM scene_revisions
+                WHERE job_id = ? AND scene_id = ? AND state = ? AND video_path IS NOT NULL
+                ORDER BY revision DESC LIMIT 1
+                """,
+                (job_id, scene["scene_id"], SceneState.SUCCEEDED),
+            ).fetchone()
+            if revision is None and (
+                SceneState(scene["state"]) == SceneState.SUCCEEDED
+                and scene["video_path"]
+            ):
+                revision = {"revision": 1, "video_path": scene["video_path"]}
+            if revision is None or not Path(revision["video_path"]).is_file():
+                unavailable.append(int(scene["scene_id"]))
+                continue
+            selected.append(
+                {
+                    "scene_id": int(scene["scene_id"]),
+                    "revision": int(revision["revision"]),
+                    "video_path": str(revision["video_path"]),
+                }
+            )
+        if unavailable:
+            rendered = ", ".join(f"{scene_id:02d}" for scene_id in unavailable)
+            raise StateTransitionError(
+                "Included scene(s) have no successful video revision: "
+                f"{rendered}. Exclude them or finish their remake first."
+            )
+        return selected
+
     def scene_records(self, job_id: str) -> tuple[SceneRecord, ...]:
         self.initialize()
         with self._connection() as connection:
             rows = connection.execute(
                 """
                 SELECT job_id, scene_id, state, frame_path, video_path, error,
-                       t2i_attempts, i2v_attempts, prompt_id
+                       t2i_attempts, i2v_attempts, prompt_id, include_in_manual_final
                 FROM scenes WHERE job_id = ? ORDER BY scene_id
                 """,
                 (job_id,),
@@ -990,6 +1275,7 @@ class PipelineStateStore:
                 t2i_attempts=int(row["t2i_attempts"]),
                 i2v_attempts=int(row["i2v_attempts"]),
                 prompt_id=row["prompt_id"],
+                include_in_manual_final=bool(row["include_in_manual_final"]),
             )
             for row in rows
         )

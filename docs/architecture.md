@@ -42,6 +42,13 @@ document—for both preview and editor state. A selected revision can therefore 
 a new remake with its exact prior prompts, seeds, LoRAs, sampler choices, sigmas, and routing values. Temporary
 browser edits are kept per source revision while the remake tray retains only the currently selected scene edit.
 
+Manual master-final requests are durable SQLite records. Clicking the project-level control snapshots the included
+scene IDs, their latest successful revision numbers, and immutable raw clip paths at request time. The controller's
+single worker runs queued manual finals only after active project rendering has ended, validates the fixed video
+profile, then uses the existing FFmpeg copy-concat into the normal final path. This is FFmpeg-only work: it does not
+call ComfyUI or alter pipeline state. Scene inclusion is a persistent scene attribute used solely by the manual
+request; automatic first-run assembly still concatenates its own successful scene records unchanged.
+
 Edits are validated by reconstructing the typed job contract, then passed as explicit workflow overrides. This
 keeps the global character LoRA, stage LoRA separation, mandatory DMD/Joy chain, Pony detailer, samplers, schedulers,
 sigmas, CFG, denoise, chunking, upscaler, seeds, prompts, and fixed production profile in one routing

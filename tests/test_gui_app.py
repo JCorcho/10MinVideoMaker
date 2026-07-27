@@ -13,7 +13,7 @@ except ImportError:  # System Python intentionally does not host the GUI.
     TestClient = None
 
 from tenminvideomaker.contracts import parse_job_payload
-from tenminvideomaker.state_store import PipelineStateStore
+from tenminvideomaker.state_store import PipelineStateStore, SceneState
 from tenminvideomaker.storage import StorageLayout
 
 from test_contracts import payload
@@ -52,6 +52,10 @@ class GuiStaticAssetTests(unittest.TestCase):
         self.assertIn("backToProjects", script)
         self.assertIn("backToScenes", script)
         self.assertIn("renderMobileScenePicker", script)
+        self.assertIn('id="render-project-final"', markup)
+        self.assertIn('id="include-in-manual-final"', markup)
+        self.assertIn("queueManualFinal", script)
+        self.assertIn("setManualFinalInclusion", script)
         self.assertIn('body[data-mobile-view="projects"] .library-panel', styles)
         self.assertIn('body[data-mobile-view="scenes"] .scenes-panel', styles)
         self.assertIn('body[data-mobile-view="detail"] .detail-panel', styles)
@@ -137,6 +141,15 @@ class GuiAppTests(unittest.TestCase):
             source["created_at"] = "2026-07-24T16:10:45Z"
             job = parse_job_payload(source)
             store.claim_job(job, review_required=True)
+            clip = storage.scene_clip_path(job.job_id, 1, 1)
+            clip.parent.mkdir(parents=True, exist_ok=True)
+            clip.write_bytes(b"mp4")
+            store.set_scene_state(
+                job.job_id,
+                1,
+                SceneState.SUCCEEDED,
+                video_path=str(clip),
+            )
 
             class FakeComfy:
                 def object_info(self, node_type):
@@ -178,6 +191,7 @@ class GuiAppTests(unittest.TestCase):
                 queue_batch=lambda batch_id, policy: store.queue_remake_batch(
                     batch_id, policy
                 ),
+                queue_manual_final=store.queue_manual_final,
             )
             app = create_gui_app(controller, storage, Path(__file__).parents[1])
             client = TestClient(app)
@@ -240,6 +254,22 @@ class GuiAppTests(unittest.TestCase):
                 revisions[2]["parameters"]["i2v"]["first_pass"]["sampler"],
                 "euler",
             )
+            excluded = client.put(
+                f"/api/jobs/{job.job_id}/scenes/1/manual-final-inclusion",
+                json={"included": False},
+            )
+            self.assertEqual(excluded.status_code, 200)
+            self.assertFalse(excluded.json()["include_in_manual_final"])
+            unavailable_final = client.post(f"/api/jobs/{job.job_id}/manual-final")
+            self.assertEqual(unavailable_final.status_code, 409)
+            included = client.put(
+                f"/api/jobs/{job.job_id}/scenes/1/manual-final-inclusion",
+                json={"included": True},
+            )
+            self.assertEqual(included.status_code, 200)
+            manual_final = client.post(f"/api/jobs/{job.job_id}/manual-final")
+            self.assertEqual(manual_final.status_code, 200)
+            self.assertEqual(manual_final.json()["state"], "queued")
 
             secured_client = TestClient(
                 create_gui_app(

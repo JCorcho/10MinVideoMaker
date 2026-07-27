@@ -43,6 +43,12 @@
       </div>
       <div id="job-meta" class="metadata"></div>
       <div id="scenes" class="scroll-list"></div>
+      <footer id="manual-final-controls" class="manual-final-controls hidden">
+        <strong>Manual project final</strong>
+        <p id="manual-final-summary" class="muted"></p>
+        <button id="render-project-final" class="primary">Render project final</button>
+        <p id="manual-final-status" class="muted"></p>
+      </footer>
     </aside>
 
     <section class="panel detail-panel">
@@ -91,6 +97,14 @@
             <label><input type="radio" name="remake-mode" value="image_and_video"> Image + video</label>
           </div>
           <span id="draft-state" class="muted"></span>
+        </div>
+
+        <div class="manual-final-scene-control">
+          <label class="switch-label">
+            <input id="include-in-manual-final" type="checkbox" checked>
+            <span>Include in manual project final</span>
+          </label>
+          <span class="muted">Uses this scene's latest successful video version when you render the project.</span>
         </div>
 
         <form id="parameter-form">

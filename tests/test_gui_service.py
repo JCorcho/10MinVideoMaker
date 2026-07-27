@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+from fractions import Fraction
 from pathlib import Path
 import tempfile
 import unittest
@@ -13,12 +14,14 @@ from tenminvideomaker.review import scene_review_document
 from tenminvideomaker.state_store import (
     PipelineState,
     PipelineStateStore,
+    ManualFinalState,
     RemakeBatchState,
     RemakeMode,
     SceneState,
 )
 from tenminvideomaker.storage import StorageLayout
 from tenminvideomaker.supervisor import PipelineSupervisor, SupervisorSettings
+from tenminvideomaker.assembly import VideoStreamInfo
 
 from test_contracts import payload
 
@@ -100,6 +103,79 @@ class RemakeStageRecordingComfy:
 
 
 class GuiServiceTests(unittest.TestCase):
+    def test_manual_final_uses_latest_selected_revision_without_generation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            storage = StorageLayout(root / "storage")
+            store = PipelineStateStore(storage.database_path)
+            job = parse_job_payload(payload())
+            store.claim_job(job)
+            original = storage.scene_clip_path(job.job_id, 1, 1)
+            remake = storage.scene_clip_path(job.job_id, 1, 2)
+            for clip in (original, remake):
+                clip.parent.mkdir(parents=True, exist_ok=True)
+                clip.write_bytes(b"mp4")
+            store.set_scene_state(
+                job.job_id,
+                1,
+                SceneState.SUCCEEDED,
+                video_path=str(original),
+            )
+            store.create_scene_revision(
+                job.job_id,
+                1,
+                remake_mode=RemakeMode.IMAGE_AND_VIDEO,
+                parameters={"version": 1},
+                state=SceneState.SUCCEEDED,
+                video_path=str(original),
+            )
+            store.create_scene_revision(
+                job.job_id,
+                1,
+                remake_mode=RemakeMode.VIDEO_ONLY,
+                parameters={"version": 2},
+                state=SceneState.SUCCEEDED,
+                video_path=str(remake),
+            )
+
+            class RecordingAssembler:
+                def __init__(self):
+                    self.clips = ()
+
+                def stitch(self, job_id, clips, _concat_directory):
+                    self.clips = tuple(Path(item) for item in clips)
+                    output = storage.final_path(job_id)
+                    output.parent.mkdir(parents=True, exist_ok=True)
+                    output.write_bytes(b"final")
+                    return output
+
+            assembler = RecordingAssembler()
+            comfy = Mock()
+            supervisor = PipelineSupervisor(
+                store=store,
+                mail_client=Mock(),
+                asset_manager=Mock(),
+                comfy=comfy,
+                assembler=assembler,
+                settings=SupervisorSettings(1, 10, 10, 2),
+                storage=storage,
+                video_probe=lambda path: VideoStreamInfo(
+                    Path(path), 768, 1344, Fraction(24, 1)
+                ),
+            )
+            controller = SupervisorController(supervisor, storage)
+            request = controller.queue_manual_final(job.job_id)
+
+            controller._run_manual_final(request)
+
+            self.assertEqual(assembler.clips, (remake,))
+            self.assertEqual(
+                store.latest_manual_final(job.job_id).state,
+                ManualFinalState.SUCCEEDED,
+            )
+            self.assertEqual(store.list_jobs()[0].final_path, str(storage.final_path(job.job_id)))
+            comfy.queue_prompt.assert_not_called()
+
     def test_interrupt_cancels_only_project_prompts_and_preserves_job_history(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

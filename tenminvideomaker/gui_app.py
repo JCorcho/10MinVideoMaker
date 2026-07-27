@@ -25,6 +25,7 @@ from .review import (
 )
 from .state_store import (
     RemakeMode,
+    ManualFinalRecord,
     SceneRecord,
     SceneRevision,
     StateTransitionError,
@@ -82,6 +83,20 @@ def _revision_document(revision: SceneRevision) -> dict[str, Any]:
         else None
     )
     return result
+
+
+def _manual_final_document(record: ManualFinalRecord | None) -> dict[str, Any] | None:
+    if record is None:
+        return None
+    return {
+        "request_id": record.request_id,
+        "job_id": record.job_id,
+        "state": record.state.value,
+        "error": record.error,
+        "output_available": bool(record.output_path),
+        "created_at": record.created_at,
+        "updated_at": record.updated_at,
+    }
 
 
 def _combo_values(document: Mapping[str, Any], node_type: str, input_name: str) -> list[str]:
@@ -243,6 +258,9 @@ def create_gui_app(
                 }
                 for record in records
             ],
+            "manual_final": _manual_final_document(
+                controller.store.latest_manual_final(job_id)
+            ),
         }
 
     @app.get("/api/jobs/{job_id}/scenes/{scene_id}")
@@ -271,6 +289,38 @@ def create_gui_app(
         except StateTransitionError as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
         return {"approved": True, "job_id": job_id}
+
+    @app.put("/api/jobs/{job_id}/scenes/{scene_id}/manual-final-inclusion")
+    async def set_manual_final_inclusion(
+        job_id: str,
+        scene_id: int,
+        request: Request,
+    ) -> dict[str, Any]:
+        body = await request.json()
+        included = body.get("included") if isinstance(body, Mapping) else None
+        if not isinstance(included, bool):
+            raise HTTPException(status_code=400, detail="included must be a boolean.")
+        try:
+            controller.store.set_scene_manual_final_inclusion(
+                job_id,
+                scene_id,
+                included=included,
+            )
+        except StateTransitionError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        return {
+            "job_id": job_id,
+            "scene_id": scene_id,
+            "include_in_manual_final": included,
+        }
+
+    @app.post("/api/jobs/{job_id}/manual-final")
+    async def queue_manual_final(job_id: str) -> dict[str, Any]:
+        try:
+            request = controller.queue_manual_final(job_id)
+        except StateTransitionError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        return _manual_final_document(request) or {}
 
     @app.get("/api/remake-batches")
     async def remake_batches() -> list[dict[str, Any]]:

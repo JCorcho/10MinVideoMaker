@@ -74,6 +74,11 @@ then the scene editor with a sticky scene switcher. The video uses native HTML5 
 Its T2I/I2V LoRA pickers query the running ComfyUI loader contracts, so each picker shows locally selectable files
 for its own model route.
 
+After reviewing remakes, use **Render project final** at the bottom of the selected project's scene column. It
+snapshots each included scene's latest successful revision and performs an explicit FFmpeg-only concat into the
+normal `{job_id}_final.mp4` on D:. Per-scene **Include in manual project final** toggles let you omit an unwanted
+clip. This is deliberately separate from—and does not alter—the automatic first-run concat.
+
 For a testing or review-only launch, run `Start 10MinVideoMaker.bat --hold-new-jobs-for-review`. In that session,
 new Gmail handoffs enter **Awaiting review** and require **Approve & Queue Job**. The normal launcher always
 auto-starts incoming jobs.

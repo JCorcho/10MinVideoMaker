@@ -8,17 +8,21 @@ from pathlib import Path
 import threading
 from typing import Any, Mapping
 
+from .assembly import AssemblyError, validate_video_profile
 from .comfy_http import ComfyHttpError, find_video_output
 from .review import ReviewValidationError, ValidatedSceneEdit, validate_scene_edit
 from .state_store import (
     PipelineState,
     PipelineStateStore,
+    ManualFinalRecord,
+    ManualFinalState,
     RemakeBatchRecord,
     RemakeBatchState,
     RemakeItemRecord,
     RemakeMode,
     SceneRevision,
     SceneState,
+    StateTransitionError,
 )
 from .storage import StorageLayout, write_json_atomic
 from .supervisor import PipelineSupervisor
@@ -112,6 +116,11 @@ class SupervisorController:
         self.store.queue_remake_batch(batch_id, collision_policy)
         self.wake()
 
+    def queue_manual_final(self, job_id: str) -> ManualFinalRecord:
+        request = self.store.queue_manual_final(job_id)
+        self.wake()
+        return request
+
     def interrupt_current_job(self) -> tuple[str, ...]:
         snapshot = self.store.snapshot()
         if snapshot.state not in ACTIVE_RENDER_STATES or not snapshot.job_id:
@@ -130,6 +139,7 @@ class SupervisorController:
 
     def status_document(self) -> dict[str, Any]:
         snapshot = self.store.snapshot()
+        manual_final = self.store.latest_manual_final_any()
         try:
             running, pending = self.supervisor.comfy.queue_counts()
             comfy_healthy = True
@@ -148,14 +158,27 @@ class SupervisorController:
             "comfyui_pending": pending,
             "active_render": snapshot.state in ACTIVE_RENDER_STATES,
             "hold_new_jobs_for_review": self.supervisor.settings.require_human_review,
+            "manual_final": (
+                {
+                    "job_id": manual_final.job_id,
+                    "state": manual_final.state.value,
+                    "error": manual_final.error,
+                    "output_available": bool(manual_final.output_path),
+                }
+                if manual_final is not None
+                else None
+            ),
         }
 
     def _worker(self) -> None:
         LOGGER.info("GUI supervisor worker started.")
         while not self._stop.is_set():
             try:
+                manual_final = self.store.next_queued_manual_final()
                 batch = self.store.next_queued_remake_batch()
-                if batch is not None and self._batch_can_run(batch):
+                if manual_final is not None and not self.active_render():
+                    self._run_manual_final(manual_final)
+                elif batch is not None and self._batch_can_run(batch):
                     self._run_remake_batch(batch)
                 else:
                     self.supervisor.tick()
@@ -182,6 +205,48 @@ class SupervisorController:
         if snapshot.state not in ACTIVE_RENDER_STATES:
             return True
         return batch.collision_policy == "interrupt_current"
+
+    def _run_manual_final(self, request: ManualFinalRecord) -> None:
+        """Concatenate an explicit snapshot without changing automated assembly behavior."""
+        self.store.set_manual_final_state(request.request_id, ManualFinalState.RUNNING)
+        try:
+            selection = self.store.manual_final_selection(request.request_id)
+            clips: list[Path] = []
+            storage_root = self.storage.root.resolve()
+            for item in selection:
+                clip = Path(item.video_path).resolve()
+                try:
+                    clip.relative_to(storage_root)
+                except ValueError as error:
+                    raise GuiServiceError(
+                        f"Manual final clip for scene {item.scene_id} is outside project storage."
+                    ) from error
+                clips.append(clip)
+            streams = [self.supervisor._video_probe(path) for path in clips]
+            validate_video_profile(streams)
+            output_path = self.supervisor.assembler.stitch(
+                request.job_id,
+                clips,
+                self.storage.temp_root / "manual-final-concat",
+            )
+            self.store.set_job_final_path(request.job_id, str(output_path))
+            self.store.set_manual_final_state(
+                request.request_id,
+                ManualFinalState.SUCCEEDED,
+                output_path=str(output_path),
+            )
+            LOGGER.info(
+                "Manual final completed | job=%s scenes=%s.",
+                request.job_id,
+                len(selection),
+            )
+        except (AssemblyError, GuiServiceError, OSError, StateTransitionError) as error:
+            self.store.set_manual_final_state(
+                request.request_id,
+                ManualFinalState.FAILED,
+                error=str(error),
+            )
+            LOGGER.error("Manual final failed | job=%s | reason=%s", request.job_id, error)
 
     def _run_remake_batch(self, batch: RemakeBatchRecord) -> None:
         self.store.set_remake_batch_state(batch.batch_id, RemakeBatchState.RUNNING)

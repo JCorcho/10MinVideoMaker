@@ -63,6 +63,23 @@ the video remains inline while you review parameters, then returns to the same s
    **Interrupt/Cancel current job and run edits immediately**. Interrupt targets only prompts owned by this
    project, preserves the interrupted job's history, and does not restart healthy ComfyUI.
 
+### Manual project final after remakes
+
+Remake batches never automatically replace a project's master final. Once you have the clip versions you want:
+
+1. Open the project and open any scene you want omitted. Clear **Include in manual project final**. The scene card
+   shows whether it is included or excluded; this setting is stored for future manual finals of that project.
+2. At the bottom of the selected project's scene column, select **Render project final**.
+
+The request snapshots all included scenes in scene order and chooses each scene's latest **successful** rendered
+revision. It validates their 768×1344/24 fps profile, concatenates them with FFmpeg, and explicitly overwrites the
+project's normal `{job_id}_final.mp4` under `D:\LTX_Supervisor_Storage\finals`. It queues behind an active project
+render or remake batch and does not create a ComfyUI prompt, load a model, or use VRAM. If any included scene has no
+successful video, the button reports it; either finish that remake or exclude the scene before trying again.
+
+This manual inclusion list is not consulted by the original automatic completion concat, so the existing unattended
+pipeline behavior remains unchanged.
+
 There is intentionally no image-only choice: a changed starting image always requires a new video. Every submitted
 edit creates a new numbered revision; prior frames, clips, parameters, and manifests remain available in history.
 

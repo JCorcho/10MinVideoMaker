@@ -7,6 +7,7 @@ const state = {
   working: null,
   drafts: new Map(),
   revisionDrafts: new Map(),
+  manualFinal: null,
   options: { samplers: [], schedulers: [], t2i_loras: [], i2v_loras: [] },
   pendingBatch: null,
   status: null,
@@ -167,6 +168,7 @@ async function selectJob(jobId) {
   state.selectedScene = null;
   state.sceneData = null;
   state.scenes = [];
+  state.manualFinal = null;
   renderJobs();
   renderMobileScenePicker();
   mobileView();
@@ -175,17 +177,36 @@ async function selectJob(jobId) {
   $("#job-title").textContent = job.display_name || summary?.display_name || job.job_id;
   $("#job-meta").textContent = `${job.character.name} · ${job.character.series} · ${job.character.base_model}`;
   state.scenes = job.scenes;
-  $("#scenes").innerHTML = state.scenes.map((scene) => `
-    <button class="list-card" data-scene="${scene.scene_id}">
-      <strong>${String(scene.scene_id).padStart(2, "0")} · ${escapeHtml(scene.title)}</strong>
-      <div class="card-row">${badge(scene.state)}<span>${scene.revision_count} version${scene.revision_count === 1 ? "" : "s"}</span></div>
-    </button>
-  `).join("");
-  $$("[data-scene]").forEach((button) => button.addEventListener("click", () => selectScene(Number(button.dataset.scene))));
+  state.manualFinal = job.manual_final;
+  renderScenes();
+  renderManualFinalControls();
   $("#approve-job").classList.toggle("hidden", state.status?.pipeline_state !== "awaiting_review" || state.status?.job_id !== jobId);
   renderMobileScenePicker();
   mobileView();
   scrollMobilePanel(".scenes-panel");
+}
+
+function renderScenes() {
+  $("#scenes").innerHTML = state.scenes.map((scene) => `
+    <button class="list-card ${scene.scene_id === state.selectedScene ? "selected" : ""}" data-scene="${scene.scene_id}">
+      <strong>${String(scene.scene_id).padStart(2, "0")} · ${escapeHtml(scene.title)}</strong>
+      <div class="card-row">${badge(scene.state)}<span>${scene.include_in_manual_final ? "included" : "excluded"} · ${scene.revision_count} version${scene.revision_count === 1 ? "" : "s"}</span></div>
+    </button>
+  `).join("");
+  $$("[data-scene]").forEach((button) => button.addEventListener("click", () => selectScene(Number(button.dataset.scene))));
+}
+
+function renderManualFinalControls() {
+  const controls = $("#manual-final-controls");
+  const included = state.scenes.filter((scene) => scene.include_in_manual_final).length;
+  controls.classList.toggle("hidden", !state.selectedJob);
+  $("#manual-final-summary").textContent = `${included}/${state.scenes.length} scene${state.scenes.length === 1 ? "" : "s"} included · latest successful version of each will be used.`;
+  const request = state.manualFinal;
+  const active = ["queued", "running"].includes(request?.state);
+  $("#render-project-final").disabled = !included || active;
+  $("#manual-final-status").textContent = request
+    ? `Last manual final: ${humanize(request.state)}${request.error ? ` · ${request.error}` : request.output_available ? " · output ready" : ""}`
+    : "Automatic first-run concat is unchanged. This runs only when you press the button.";
 }
 
 async function selectScene(sceneId) {
@@ -209,6 +230,9 @@ async function selectScene(sceneId) {
   if (draft) {
     $(`input[name="remake-mode"][value="${draft.remake_mode}"]`).checked = true;
   }
+  $("#include-in-manual-final").checked = Boolean(
+    state.sceneData.record.include_in_manual_final,
+  );
   setEditable(Boolean(draft));
   renderMobileScenePicker();
   mobileView();
@@ -221,9 +245,11 @@ function backToProjects() {
   state.sceneData = null;
   state.working = null;
   state.scenes = [];
+  state.manualFinal = null;
   $("#job-title").textContent = "Choose a project";
   $("#job-meta").textContent = "";
   $("#scenes").innerHTML = "";
+  renderManualFinalControls();
   $("#scene-detail").classList.add("hidden");
   $("#empty-state").classList.remove("hidden");
   renderJobs();
@@ -541,6 +567,39 @@ async function submitPendingBatch(policy) {
   }
 }
 
+async function setManualFinalInclusion() {
+  const included = $("#include-in-manual-final").checked;
+  try {
+    const result = await api(
+      `/api/jobs/${encodeURIComponent(state.selectedJob)}/scenes/${state.selectedScene}/manual-final-inclusion`,
+      { method: "PUT", body: JSON.stringify({ included }) },
+    );
+    state.sceneData.record.include_in_manual_final = result.include_in_manual_final;
+    const scene = state.scenes.find((item) => item.scene_id === state.selectedScene);
+    if (scene) scene.include_in_manual_final = result.include_in_manual_final;
+    renderScenes();
+    renderManualFinalControls();
+    toast(included ? "Scene included in the manual project final." : "Scene excluded from the manual project final.");
+  } catch (error) {
+    $("#include-in-manual-final").checked = !included;
+    toast(error.message, true);
+  }
+}
+
+async function queueManualFinal() {
+  if (!state.selectedJob) return;
+  try {
+    state.manualFinal = await api(
+      `/api/jobs/${encodeURIComponent(state.selectedJob)}/manual-final`,
+      { method: "POST" },
+    );
+    renderManualFinalControls();
+    toast("Manual project final queued. It waits for active project work, then concatenates the selected clips.");
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
 function updateStatus(status) {
   state.status = status;
   const element = $("#status");
@@ -550,6 +609,10 @@ function updateStatus(status) {
   element.textContent = `${humanize(status.pipeline_state)}${status.job_id ? ` · ${status.job_id}` : ""} · ${intake} · Comfy ${status.comfyui_running}/${status.comfyui_pending}`;
   element.className = `status-pill ${!status.comfyui_healthy || status.pipeline_error ? "error" : status.active_render ? "busy" : "healthy"}`;
   $("#approve-job").classList.toggle("hidden", status.pipeline_state !== "awaiting_review" || status.job_id !== state.selectedJob);
+  if (status.manual_final?.job_id === state.selectedJob) {
+    state.manualFinal = status.manual_final;
+    renderManualFinalControls();
+  }
   mobileView();
 }
 
@@ -571,6 +634,8 @@ $("#mobile-scene-select").addEventListener("change", (event) => {
   if (Number.isInteger(sceneId) && sceneId > 0) selectScene(sceneId);
 });
 $("#revision-select").addEventListener("change", selectRevisionParameters);
+$("#include-in-manual-final").addEventListener("change", setManualFinalInclusion);
+$("#render-project-final").addEventListener("click", queueManualFinal);
 $("#mark-remake").addEventListener("change", () => {
   const key = `${state.selectedJob}:${state.selectedScene}`;
   if ($("#mark-remake").checked) {
