@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
+import json
 import re
 from typing import Any, Iterable, Mapping
 from urllib.parse import urlparse
@@ -59,6 +61,22 @@ class JobPayload:
     ltxv_character_lora: LoraSpec | None
     scenes: tuple[SceneSpec, ...]
     raw: Mapping[str, Any]
+
+
+def job_content_fingerprint(payload: JobPayload) -> str:
+    """Return a stable content digest independent of handoff identity/timestamp."""
+    document = dict(payload.raw)
+    # A repeated Grok session can reuse a job ID or regenerate the handoff at a
+    # different time without changing the actual production instructions.
+    document.pop("job_id", None)
+    document.pop("created_at", None)
+    encoded = json.dumps(
+        document,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _mapping(value: Any, field: str) -> Mapping[str, Any]:

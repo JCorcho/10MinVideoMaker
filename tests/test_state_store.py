@@ -130,18 +130,58 @@ class StateStoreTests(unittest.TestCase):
         self.assertFalse(self.store.claim_message("imap:42"))
 
     def test_inbound_job_claim_is_atomic_and_message_deduplicated(self) -> None:
-        self.assertTrue(self.store.claim_inbound_job("imap:42", self.job))
-        self.assertFalse(self.store.claim_inbound_job("imap:42", self.job))
+        self.assertTrue(self.store.claim_inbound_job("imap:42", self.job).accepted)
+        self.assertFalse(self.store.claim_inbound_job("imap:42", self.job).accepted)
         self.assertEqual(self.store.snapshot().state, PipelineState.DOWNLOADING_ASSETS)
 
     def test_previously_rejected_message_can_be_upgraded_to_a_job(self) -> None:
         self.assertTrue(self.store.claim_message("imap:42"))
 
-        self.assertTrue(self.store.claim_inbound_job("imap:42", self.job))
+        self.assertTrue(self.store.claim_inbound_job("imap:42", self.job).accepted)
 
         snapshot = self.store.snapshot()
         self.assertEqual(snapshot.state, PipelineState.DOWNLOADING_ASSETS)
         self.assertEqual(snapshot.job_id, self.job.job_id)
+
+    def test_duplicate_grok_job_id_with_same_content_is_skipped(self) -> None:
+        self.store.claim_job(self.job)
+        self.store.transition(PipelineState.WAITING_FOR_GROK, job_id=self.job.job_id)
+        resent = payload()
+        resent["created_at"] = "2026-07-29T23:59:59Z"
+
+        claim = self.store.claim_inbound_job("imap:duplicate", parse_job_payload(resent))
+
+        self.assertFalse(claim.accepted)
+        self.assertTrue(claim.duplicate_content)
+        self.assertEqual(claim.source_job_id, self.job.job_id)
+
+    def test_duplicate_grok_job_id_with_new_content_receives_local_suffix(self) -> None:
+        self.store.claim_job(self.job)
+        self.store.transition(PipelineState.WAITING_FOR_GROK, job_id=self.job.job_id)
+        second = payload()
+        second["scenes"][0]["i2v"]["prompt"] = "a genuinely new shot"
+
+        claim = self.store.claim_inbound_job("imap:collision", parse_job_payload(second))
+
+        self.assertTrue(claim.accepted)
+        self.assertEqual(claim.payload.job_id, "20260724-1610-local-2")
+        self.assertEqual(claim.payload.raw["source_job_id"], "20260724-1610")
+
+    def test_local_collision_suffix_respects_job_id_limit(self) -> None:
+        data = payload()
+        data["job_id"] = "a" * 128
+        original = parse_job_payload(data)
+        self.store.claim_job(original)
+        self.store.transition(PipelineState.WAITING_FOR_GROK, job_id=original.job_id)
+        second = payload()
+        second["job_id"] = original.job_id
+        second["scenes"][0]["t2i"]["prompt"] = "new production content"
+
+        claim = self.store.claim_inbound_job("imap:long-collision", parse_job_payload(second))
+
+        self.assertTrue(claim.accepted)
+        self.assertLessEqual(len(claim.payload.job_id), 128)
+        self.assertTrue(claim.payload.job_id.endswith("-local-2"))
 
     def test_requeue_keeps_successful_scene_intact(self) -> None:
         self.store.claim_job(self.job)

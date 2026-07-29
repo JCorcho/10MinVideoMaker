@@ -475,15 +475,29 @@ class GmailPollingService:
                 if self.store.claim_message(mailbox_message.message_key):
                     self.client.mark_seen(mailbox_message.uid)
                 continue
-            if self.store.claim_inbound_job(
+            claim = self.store.claim_inbound_job(
                 mailbox_message.message_key,
                 payload,
                 review_required=review_required,
-            ):
+            )
+            # Lightweight test clients from earlier releases return a bool;
+            # the durable store returns a richer collision-aware result.
+            accepted = claim if isinstance(claim, bool) else claim.accepted
+            accepted_payload = payload if isinstance(claim, bool) else claim.payload
+            duplicate_content = False if isinstance(claim, bool) else claim.duplicate_content
+            if accepted:
                 self.client.mark_seen(mailbox_message.uid)
-                return payload
+                return accepted_payload
+            if duplicate_content:
+                self.client.mark_seen(mailbox_message.uid)
+                LOGGER.info(
+                    "Skipped parsed job %s because its content matches accepted job %s.",
+                    payload.job_id,
+                    claim.source_job_id,
+                )
+                continue
             LOGGER.info(
-                "Skipped parsed job %s because its Gmail message or job ID was already accepted.",
+                "Skipped parsed job %s because its Gmail message was already accepted or the pipeline became busy.",
                 payload.job_id,
             )
         return None

@@ -12,7 +12,7 @@ import sqlite3
 from typing import Any, Iterator, Mapping, Sequence
 from uuid import uuid4
 
-from .contracts import JobPayload
+from .contracts import JobPayload, job_content_fingerprint, parse_job_payload
 
 
 class PipelineState(StrEnum):
@@ -76,6 +76,16 @@ class PipelineSnapshot:
     job_id: str | None
     active_scene_id: int | None
     error: str | None
+
+
+@dataclass(frozen=True)
+class InboundJobClaim:
+    """Result of one atomic Gmail-message/job claim attempt."""
+
+    accepted: bool
+    payload: JobPayload | None
+    duplicate_content: bool = False
+    source_job_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -408,22 +418,44 @@ class PipelineStateStore:
         payload: JobPayload,
         *,
         review_required: bool = False,
-    ) -> bool:
-        """Atomically de-duplicate an IMAP message and accept its job exactly once."""
+    ) -> InboundJobClaim:
+        """Atomically accept a handoff, remapping only genuine reused-ID collisions."""
         self.initialize()
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             current = connection.execute("SELECT state FROM pipeline_state WHERE singleton = 1").fetchone()
             if PipelineState(current["state"]) not in {PipelineState.IDLE, PipelineState.WAITING_FOR_GROK}:
-                return False
+                return InboundJobClaim(False, None)
             message_record = connection.execute(
                 "SELECT job_id FROM mail_messages WHERE message_key = ?", (message_key,)
             ).fetchone()
-            already_accepted = connection.execute("SELECT 1 FROM jobs WHERE job_id = ?", (payload.job_id,)).fetchone()
-            if already_accepted or (
-                message_record is not None and message_record["job_id"] is not None
-            ):
-                return False
+            if message_record is not None and message_record["job_id"] is not None:
+                return InboundJobClaim(False, None)
+
+            source_job_id = payload.job_id
+            existing = connection.execute(
+                "SELECT payload_json FROM jobs WHERE job_id = ?", (source_job_id,)
+            ).fetchone()
+            if existing is not None:
+                accepted_payload = parse_job_payload(json.loads(existing["payload_json"]))
+                if job_content_fingerprint(accepted_payload) == job_content_fingerprint(payload):
+                    if message_record is None:
+                        connection.execute(
+                            "INSERT INTO mail_messages (message_key, job_id, processed_at) VALUES (?, ?, ?)",
+                            (message_key, source_job_id, _utc_now()),
+                        )
+                    else:
+                        connection.execute(
+                            "UPDATE mail_messages SET job_id = ?, processed_at = ? WHERE message_key = ?",
+                            (source_job_id, _utc_now(), message_key),
+                        )
+                    return InboundJobClaim(
+                        False,
+                        None,
+                        duplicate_content=True,
+                        source_job_id=source_job_id,
+                    )
+                payload = self._remap_colliding_job_id(connection, payload)
             if message_record is None:
                 connection.execute(
                     "INSERT INTO mail_messages (message_key, job_id, processed_at) VALUES (?, ?, ?)",
@@ -438,7 +470,24 @@ class PipelineStateStore:
                     (payload.job_id, _utc_now(), message_key),
                 )
             self._claim_job(connection, payload, review_required=review_required)
-            return True
+            return InboundJobClaim(True, payload, source_job_id=source_job_id)
+
+    @staticmethod
+    def _remap_colliding_job_id(connection: sqlite3.Connection, payload: JobPayload) -> JobPayload:
+        """Allocate a project-local suffix while preserving the original Grok ID."""
+        suffix = 2
+        while True:
+            suffix_text = f"-local-{suffix}"
+            local_job_id = f"{payload.job_id[:128 - len(suffix_text)]}{suffix_text}"
+            if connection.execute(
+                "SELECT 1 FROM jobs WHERE job_id = ?", (local_job_id,)
+            ).fetchone() is None:
+                break
+            suffix += 1
+        raw = json.loads(json.dumps(payload.raw))
+        raw["job_id"] = local_job_id
+        raw["source_job_id"] = payload.job_id
+        return parse_job_payload(raw)
 
     @staticmethod
     def _claim_job(
