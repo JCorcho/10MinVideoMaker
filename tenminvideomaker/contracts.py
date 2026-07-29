@@ -105,6 +105,12 @@ def _optional_positive_integer(
     value = mapping.get(field)
     if value is None:
         return None
+    # Grok/Drive handoffs occasionally serialize Civitai IDs as JSON strings.
+    # Accept only unambiguous ASCII digits so formatting drift cannot reject an
+    # otherwise valid job, while preserving strict handling for booleans,
+    # whitespace, signs, decimals, and arbitrary text.
+    if isinstance(value, str) and value.isascii() and value.isdigit():
+        value = int(value)
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise ContractValidationError(f"{context}.{field} must be a positive integer when provided.")
     return value

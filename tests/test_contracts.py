@@ -109,6 +109,24 @@ class ContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ContractValidationError, "does not match"):
             parse_job_payload(data)
 
+    def test_digit_only_civitai_ids_are_normalized_from_gmail_json(self) -> None:
+        data = payload()
+        data["character"]["lora"]["version_id"] = "3184055"
+        data["character"]["lora"]["model_id"] = "2847192"
+
+        job = parse_job_payload(data)
+
+        self.assertEqual(job.character.lora.version_id, 3184055)
+        self.assertEqual(job.character.lora.model_id, 2847192)
+
+    def test_noncanonical_civitai_id_strings_remain_rejected(self) -> None:
+        for invalid_id in ("", " 3184055", "+3184055", "3184055.0", "version-3184055"):
+            with self.subTest(invalid_id=invalid_id):
+                data = payload()
+                data["character"]["lora"]["version_id"] = invalid_id
+                with self.assertRaisesRegex(ContractValidationError, "positive integer"):
+                    parse_job_payload(data)
+
     def test_non_https_asset_url_is_rejected(self) -> None:
         data = payload()
         data["character"]["lora"]["download_url"] = "http://example.invalid/lora"
