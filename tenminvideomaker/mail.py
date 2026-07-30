@@ -287,15 +287,23 @@ def extract_job_payload(
             raise ContractValidationError(
                 "A Google Drive job link was found, but no Drive downloader is configured."
             ) from body_error
-        invalid_sources: list[str] = []
+        invalid_reasons: list[str] = []
         for drive_link in drive_links:
             content = drive_loader(drive_link)
             try:
                 return _parse_document(content, "Google Drive file")
-            except ContractValidationError:
-                invalid_sources.append(drive_link)
+            except ContractValidationError as parse_error:
+                # Keep the contract detail (e.g. bad version_id) instead of a
+                # generic "no JSON" message that hides why a real Drive file failed.
+                invalid_reasons.append(str(parse_error))
+        if len(invalid_reasons) == 1:
+            raise ContractValidationError(
+                f"Google Drive job file failed validation: {invalid_reasons[0]}"
+            ) from body_error
         raise ContractValidationError(
-            f"No valid job JSON was found in {len(invalid_sources)} Google Drive file(s)."
+            "No valid job JSON was found in "
+            f"{len(invalid_reasons)} Google Drive file(s): "
+            + "; ".join(invalid_reasons)
         ) from body_error
 
 
