@@ -161,6 +161,12 @@ ComfyUI to delete pending prompts and interrupt a running prompt only when its q
 original job payload remain available for diagnosis, and the singleton pipeline state is cleared to `idle` with no
 active job. This prevents the supervisor from reopening the rejected job without touching other ComfyUI clients.
 
+The GUI exposes the same abandonment path as **Cancel project** / `POST /api/pipeline/cancel-current` for held
+states (`downloading_assets`, `running_t2i`, `running_i2v`, `stitching`, `error`, and `awaiting_review`). Active
+renders cancel only project-owned ComfyUI prompts first. Status includes `can_cancel_current_project` so the button
+stays hidden when the pipeline is already `idle` or `waiting_for_grok`. After cancel, an `idle` tick polls unread
+handoffs before sending a new request email, so a job already sitting in Gmail starts without an extra Grok request.
+
 ## Production profile
 
 - Image/video size: 768×1344.

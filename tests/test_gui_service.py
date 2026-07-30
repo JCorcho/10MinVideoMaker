@@ -9,7 +9,7 @@ from unittest.mock import Mock
 
 from tenminvideomaker.assets import AssetResolution
 from tenminvideomaker.contracts import parse_job_payload
-from tenminvideomaker.gui_service import SupervisorController
+from tenminvideomaker.gui_service import GuiServiceError, SupervisorController
 from tenminvideomaker.review import scene_review_document
 from tenminvideomaker.state_store import (
     PipelineState,
@@ -203,6 +203,62 @@ class GuiServiceTests(unittest.TestCase):
             self.assertEqual(store.snapshot().state, PipelineState.IDLE)
             self.assertEqual(store.scene_records(job.job_id)[0].state, SceneState.CANCELLED)
             self.assertEqual(store.load_job(job.job_id).job_id, job.job_id)
+
+    def test_cancel_current_project_from_error_preserves_history_and_wakes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = PipelineStateStore(root / "pipeline.sqlite3")
+            job = parse_job_payload(payload())
+            store.claim_job(job)
+            store.set_scene_state(
+                job.job_id,
+                1,
+                SceneState.FAILED,
+                error="frame size mismatch",
+            )
+            store.transition(
+                PipelineState.ERROR,
+                job_id=job.job_id,
+                error="no successful scenes",
+            )
+            supervisor = Mock()
+            supervisor.store = store
+            controller = SupervisorController(
+                supervisor,
+                StorageLayout(root / "storage"),
+            )
+            controller.wake = Mock()
+
+            self.assertTrue(controller.can_cancel_current_project())
+            result = controller.cancel_current_project()
+
+            self.assertEqual(result["job_id"], job.job_id)
+            self.assertEqual(result["pipeline_state"], PipelineState.IDLE.value)
+            self.assertEqual(result["cancelled_prompts"], [])
+            supervisor.comfy.cancel_project_prompts.assert_not_called()
+            self.assertEqual(store.snapshot().state, PipelineState.IDLE)
+            self.assertIsNone(store.snapshot().job_id)
+            self.assertEqual(
+                store.scene_records(job.job_id)[0].state,
+                SceneState.CANCELLED,
+            )
+            self.assertEqual(store.load_job(job.job_id).job_id, job.job_id)
+            controller.wake.assert_called_once_with()
+            self.assertFalse(controller.can_cancel_current_project())
+
+    def test_cancel_current_project_rejects_when_pipeline_already_free(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = PipelineStateStore(root / "pipeline.sqlite3")
+            supervisor = Mock()
+            supervisor.store = store
+            controller = SupervisorController(
+                supervisor,
+                StorageLayout(root / "storage"),
+            )
+
+            with self.assertRaisesRegex(GuiServiceError, "no held project"):
+                controller.cancel_current_project()
 
     def test_remake_batch_generates_all_frames_before_any_video(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

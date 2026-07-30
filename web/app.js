@@ -11,6 +11,7 @@ const state = {
   options: { samplers: [], schedulers: [], t2i_loras: [], i2v_loras: [] },
   pendingBatch: null,
   status: null,
+  cancellingProject: false,
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -609,11 +610,42 @@ function updateStatus(status) {
   element.textContent = `${humanize(status.pipeline_state)}${status.job_id ? ` · ${status.job_id}` : ""} · ${intake} · Comfy ${status.comfyui_running}/${status.comfyui_pending}`;
   element.className = `status-pill ${!status.comfyui_healthy || status.pipeline_error ? "error" : status.active_render ? "busy" : "healthy"}`;
   $("#approve-job").classList.toggle("hidden", status.pipeline_state !== "awaiting_review" || status.job_id !== state.selectedJob);
+  const canCancel = Boolean(status.can_cancel_current_project);
+  const cancelButton = $("#cancel-current-project");
+  cancelButton.classList.toggle("hidden", !canCancel);
+  cancelButton.disabled = !canCancel || state.cancellingProject;
   if (status.manual_final?.job_id === state.selectedJob) {
     state.manualFinal = status.manual_final;
     renderManualFinalControls();
   }
   mobileView();
+}
+
+async function cancelCurrentProject() {
+  const jobId = state.status?.job_id || "the current project";
+  const confirmed = window.confirm(
+    `Cancel ${jobId} and move on?\n\n` +
+      "Unfinished scenes are marked cancelled. History and completed scenes stay saved for later remake. " +
+      "The supervisor will check email for the next job, then send a request only if none is waiting.",
+  );
+  if (!confirmed) return;
+  state.cancellingProject = true;
+  updateStatus(state.status || {});
+  try {
+    const result = await api("/api/pipeline/cancel-current", { method: "POST" });
+    toast(
+      `Cancelled ${result.job_id}. Looking for the next job` +
+        (result.cancelled_prompts?.length
+          ? ` (stopped ${result.cancelled_prompts.length} ComfyUI prompt(s)).`
+          : "."),
+    );
+    await loadJobs();
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    state.cancellingProject = false;
+    if (state.status) updateStatus(state.status);
+  }
 }
 
 function escapeHtml(value) {
@@ -665,6 +697,7 @@ $("#approve-job").addEventListener("click", async () => {
     toast(error.message, true);
   }
 });
+$("#cancel-current-project").addEventListener("click", cancelCurrentProject);
 
 async function init() {
   try {

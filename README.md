@@ -67,8 +67,11 @@ workflow, and version history. Mark any number of scenes across jobs, choose **V
 Selecting a historical result version loads that version's exact saved prompts, seeds, LoRAs, samplers, sigma
 schedules, and other workflow settings into the review form; it never substitutes the original scene parameters.
 If an automated render is active, the UI asks whether to queue edits afterward or cancel only this project's
-current prompts and run the edits immediately. Project cards use the readable
-`Character · MM/DD/YYYY` label, and the project and scene columns scroll independently.
+current prompts and run the edits immediately. **Cancel project** in the top bar abandons the held automatic
+job (active render, error pause, or awaiting-review hold), preserves history for later remake, and frees the
+pipeline: the worker checks Gmail for the next handoff first, then sends a request only if none is waiting.
+Project cards use the readable `Character · MM/DD/YYYY` label, and the project and scene columns scroll
+independently.
 On phone-width screens, it uses a deliberate drill-down flow: project list, then selected project's scene list,
 then the scene editor with a sticky scene switcher. The video uses native HTML5 controls and mobile fullscreen.
 Its T2I/I2V LoRA pickers query the running ComfyUI loader contracts, so each picker shows locally selectable files

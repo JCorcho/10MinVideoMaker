@@ -816,3 +816,66 @@
   - `node --check web/app.js`
   - `python -m compileall -q tenminvideomaker scripts tests`
   - `git diff --check`
+
+### 2026-07-26 — live skip of error-paused job 20260726-1823
+
+- Changed files: durable state only (D:\LTX_Supervisor_Storage\state\pipeline.sqlite3); no application code.
+- Cause: job 20260726-1823 paused the singleton pipeline in `error` after every scene failed
+  (`Scene frame must be 704x1248; received 768x1344`). While in `error`, the supervisor refuses new Gmail jobs.
+- Existing skip path: `PipelineStateStore.abandon_job` already preserves the job payload/history, marks unfinished
+  scenes cancelled, sets job status cancelled, and returns the pipeline to idle. Surfaces: launcher answer
+  **no** to “Resume this saved job…”, or direct store call. There was no browser GUI button for this case.
+- Live recovery: called `abandon_job('20260726-1823', reason='Skipped by operator after no successful scenes;
+  preserved for later remake.')`. All 15 scenes became cancelled; payload remains loadable for later remake;
+  pipeline is idle with no active job. The running GUI worker requests the next job on its next scheduled tick
+  without restart.
+- Note for later remake: no successful frames were cached, so only **image_and_video** remake is possible, and the
+  704x1248 vs 768x1344 frame-size rejection should be fixed first.
+
+### 2026-07-27 — GUI Cancel project advances to the next Gmail job
+
+- Changed files: `tenminvideomaker/gui_service.py`, `gui_app.py`, `supervisor.py`, `web/index.html`,
+  web/app.js, focused GUI/supervisor tests, README.md, docs/architecture.md, docs/user-guide.md,
+  and this file.
+- User surface: top-bar **Cancel project** appears while a job is held in active render, `error`, or
+  `awaiting_review`. Confirmation abandons via the existing atomic `abandon_job` path (history preserved,
+  unfinished scenes cancelled), cancels only project-owned ComfyUI prompts when rendering, and wakes the
+  worker. `POST /api/pipeline/cancel-current` and status field `can_cancel_current_project` back the control.
+- Idle routing: after cancel/abandon lands on idle, the next tick checks unread LTX_JOB_COMPLETE mail first
+  and only sends a new Grok request when no valid handoff is waiting. Normal job completion still uses
+  `_request_next_job` directly and does not pass through this idle poll-first path.
+- Verification commands:
+  - `python -m unittest discover -s tests -p "test_gui_service.py" -v`
+  - `python -m unittest discover -s tests -p "test_gui_app.py" -v`
+  - `python -m unittest discover -s tests -p "test_supervisor.py" -v`
+  - `node --check web/app.js`
+  - `python -m compileall -q tenminvideomaker scripts tests`
+  - `git diff --check`
+
+### 2026-07-29 — normalize numeric Civitai IDs in Gmail handoffs
+
+- Changed files: `tenminvideomaker/contracts.py`, `tests/test_contracts.py`, and this file.
+- Contract compatibility: Civitai `model_id` and `version_id` accept either a JSON positive integer or an
+  ASCII digit-only string from a Google Drive/Gmail handoff, then normalize it to the typed integer used by
+  asset validation. Empty, signed, whitespace-padded, decimal, nonnumeric, boolean, and nonpositive values
+  remain rejected.
+- Reproduction: submit a job whose `character.lora.version_id` is `"3184055"`; it must validate exactly as
+  numeric `3184055`, while `"3184055.0"` must still fail contract validation.
+- Verification commands:
+  - `python -m unittest discover -s tests -p "test_contracts.py" -v`
+  - `python -m compileall -q tenminvideomaker tests`
+  - `git diff --check`
+
+### 2026-07-29 — collision-safe reused Grok job IDs
+
+- Changed files: `tenminvideomaker/contracts.py`, `tenminvideomaker/state_store.py`,
+  `tenminvideomaker/mail.py`, `tests/test_state_store.py`, and this file.
+- Inbound routing: when Grok reuses an accepted `job_id`, compare a canonical SHA-256 fingerprint of the parsed
+  job document with only `job_id` and `created_at` omitted. Identical content is marked seen and skipped; distinct
+  content is accepted under a deterministic project-local ID such as `{source_job_id}-local-2`, while preserving
+  `source_job_id` in the stored raw payload for audit. The suffix remains inside the 128-character job-ID limit.
+- Verification commands:
+  - `python -m unittest discover -s tests -p "test_state_store.py" -v`
+  - `python -m unittest discover -s tests -p "test_mail.py" -v`
+  - `python -m compileall -q tenminvideomaker tests`
+  - `git diff --check`

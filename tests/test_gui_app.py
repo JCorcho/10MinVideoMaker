@@ -13,7 +13,7 @@ except ImportError:  # System Python intentionally does not host the GUI.
     TestClient = None
 
 from tenminvideomaker.contracts import parse_job_payload
-from tenminvideomaker.state_store import PipelineStateStore, SceneState
+from tenminvideomaker.state_store import PipelineState, PipelineStateStore, SceneState
 from tenminvideomaker.storage import StorageLayout
 
 from test_contracts import payload
@@ -54,8 +54,12 @@ class GuiStaticAssetTests(unittest.TestCase):
         self.assertIn("renderMobileScenePicker", script)
         self.assertIn('id="render-project-final"', markup)
         self.assertIn('id="include-in-manual-final"', markup)
+        self.assertIn('id="cancel-current-project"', markup)
         self.assertIn("queueManualFinal", script)
         self.assertIn("setManualFinalInclusion", script)
+        self.assertIn("cancelCurrentProject", script)
+        self.assertIn("/api/pipeline/cancel-current", script)
+        self.assertIn("can_cancel_current_project", script)
         self.assertIn('body[data-mobile-view="projects"] .library-panel', styles)
         self.assertIn('body[data-mobile-view="scenes"] .scenes-panel', styles)
         self.assertIn('body[data-mobile-view="detail"] .detail-panel', styles)
@@ -179,6 +183,18 @@ class GuiAppTests(unittest.TestCase):
                         }
                     }
 
+            def cancel_current_project() -> dict[str, object]:
+                cancelled = store.abandon_job(
+                    job.job_id,
+                    reason="test cancel",
+                )
+                return {
+                    "job_id": job.job_id,
+                    "cancelled_prompts": [],
+                    "pipeline_state": "idle",
+                    "cancelled_scenes": cancelled,
+                }
+
             controller = SimpleNamespace(
                 store=store,
                 supervisor=SimpleNamespace(comfy=FakeComfy()),
@@ -186,8 +202,10 @@ class GuiAppTests(unittest.TestCase):
                 status_document=lambda: {
                     "pipeline_state": "awaiting_review",
                     "job_id": job.job_id,
+                    "can_cancel_current_project": True,
                 },
                 approve_job=store.approve_job,
+                cancel_current_project=cancel_current_project,
                 queue_batch=lambda batch_id, policy: store.queue_remake_batch(
                     batch_id, policy
                 ),
@@ -203,6 +221,21 @@ class GuiAppTests(unittest.TestCase):
             jobs = client.get("/api/jobs").json()
             self.assertEqual(jobs[0]["job_id"], job.job_id)
             self.assertEqual(jobs[0]["display_name"], "Elsa · 07/24/2026")
+            status = client.get("/api/status").json()
+            self.assertTrue(status["can_cancel_current_project"])
+            cancelled = client.post("/api/pipeline/cancel-current")
+            self.assertEqual(cancelled.status_code, 200)
+            self.assertEqual(cancelled.json()["job_id"], job.job_id)
+            self.assertTrue(cancelled.json()["cancelled"])
+            self.assertEqual(store.snapshot().state, PipelineState.IDLE)
+            # Restore scene success for the remake/manual-final assertions below.
+            # The cancelled job history remains; only unfinished work was abandoned.
+            store.set_scene_state(
+                job.job_id,
+                1,
+                SceneState.SUCCEEDED,
+                video_path=str(clip),
+            )
             job_detail = client.get(f"/api/jobs/{job.job_id}").json()
             self.assertEqual(job_detail["display_name"], "Elsa · 07/24/2026")
             scene = client.get(f"/api/jobs/{job.job_id}/scenes/1").json()

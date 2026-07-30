@@ -38,6 +38,15 @@ ACTIVE_RENDER_STATES = frozenset(
         PipelineState.STITCHING,
     }
 )
+# States where the singleton pipeline is holding a project that should not
+# accept a replacement job until abandoned/cancelled or finished.
+CANCELLABLE_PROJECT_STATES = frozenset(
+    {
+        *ACTIVE_RENDER_STATES,
+        PipelineState.ERROR,
+        PipelineState.AWAITING_REVIEW,
+    }
+)
 
 
 class GuiServiceError(RuntimeError):
@@ -137,6 +146,45 @@ class SupervisorController:
         )
         return cancelled
 
+    def can_cancel_current_project(self) -> bool:
+        snapshot = self.store.snapshot()
+        return bool(
+            snapshot.job_id and snapshot.state in CANCELLABLE_PROJECT_STATES
+        )
+
+    def cancel_current_project(self) -> dict[str, Any]:
+        """Abandon the held project so the worker can accept the next Gmail job.
+
+        History, payloads, and completed scenes remain. Only this project's
+        ComfyUI prompts are cancelled when a render is active.
+        """
+        snapshot = self.store.snapshot()
+        if not snapshot.job_id or snapshot.state not in CANCELLABLE_PROJECT_STATES:
+            raise GuiServiceError(
+                "There is no held project to cancel. The pipeline is already free "
+                "to check email or wait for the next handoff."
+            )
+        job_id = snapshot.job_id
+        cancelled: tuple[str, ...] = ()
+        if snapshot.state in ACTIVE_RENDER_STATES:
+            cancelled = self.supervisor.comfy.cancel_project_prompts()
+        self.store.abandon_job(
+            job_id,
+            reason="Cancelled from the GUI so the pipeline could advance to the next job.",
+        )
+        self.wake()
+        LOGGER.warning(
+            "Cancelled project %s from the GUI; pipeline is idle for the next job "
+            "(cancelled prompts=%s).",
+            job_id,
+            len(cancelled),
+        )
+        return {
+            "job_id": job_id,
+            "cancelled_prompts": list(cancelled),
+            "pipeline_state": self.store.snapshot().state.value,
+        }
+
     def status_document(self) -> dict[str, Any]:
         snapshot = self.store.snapshot()
         manual_final = self.store.latest_manual_final_any()
@@ -157,6 +205,7 @@ class SupervisorController:
             "comfyui_running": running,
             "comfyui_pending": pending,
             "active_render": snapshot.state in ACTIVE_RENDER_STATES,
+            "can_cancel_current_project": self.can_cancel_current_project(),
             "hold_new_jobs_for_review": self.supervisor.settings.require_human_review,
             "manual_final": (
                 {

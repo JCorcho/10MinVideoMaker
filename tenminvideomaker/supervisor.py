@@ -125,7 +125,27 @@ class PipelineSupervisor:
             snapshot.active_scene_id if snapshot.active_scene_id is not None else "none",
         )
         if snapshot.state == PipelineState.IDLE:
-            self._request_next_job(previous_job_id=None, succeeded=None)
+            # After cancel/abandon, prefer an already-waiting handoff before
+            # sending another Grok request. Normal job completion uses
+            # _request_next_job directly and does not pass through idle.
+            LOGGER.info(
+                "Checking Gmail for an unread LTX_JOB_COMPLETE handoff before "
+                "requesting another job."
+            )
+            payload = GmailPollingService(self.store, self.mail_client).poll_once(
+                review_required=self.settings.require_human_review,
+            )
+            if payload:
+                LOGGER.info(
+                    "Accepted Gmail job %s with %s scene(s).",
+                    payload.job_id,
+                    len(payload.scenes),
+                )
+            else:
+                LOGGER.info(
+                    "No pending handoff was found; requesting the next Gmail job."
+                )
+                self._request_next_job(previous_job_id=None, succeeded=None)
             return
         if snapshot.state == PipelineState.WAITING_FOR_GROK:
             LOGGER.info("Checking Gmail for an unread LTX_JOB_COMPLETE handoff.")

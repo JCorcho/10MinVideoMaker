@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from .comfy_http import ComfyHttpError
-from .gui_service import SupervisorController
+from .gui_service import GuiServiceError, SupervisorController
 from .review import (
     ReviewValidationError,
     scene_review_document,
@@ -289,6 +289,17 @@ def create_gui_app(
         except StateTransitionError as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
         return {"approved": True, "job_id": job_id}
+
+    @app.post("/api/pipeline/cancel-current")
+    async def cancel_current_project() -> dict[str, Any]:
+        """Cancel the held automatic project and free the pipeline for the next job."""
+        try:
+            result = controller.cancel_current_project()
+        except GuiServiceError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except StateTransitionError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        return {"cancelled": True, **result}
 
     @app.put("/api/jobs/{job_id}/scenes/{scene_id}/manual-final-inclusion")
     async def set_manual_final_inclusion(

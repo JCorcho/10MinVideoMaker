@@ -62,6 +62,11 @@ the video remains inline while you review parameters, then returns to the same s
 7. If standard work is rendering, choose **Queue edits to run after current job finishes** or
    **Interrupt/Cancel current job and run edits immediately**. Interrupt targets only prompts owned by this
    project, preserves the interrupted job's history, and does not restart healthy ComfyUI.
+8. To stop the held automatic project without deleting it, use **Cancel project** in the top bar while a job is
+   rendering, paused in error, or awaiting review. Confirm the dialog: unfinished scenes become `cancelled`,
+   completed scenes and the payload remain, and the worker immediately becomes free to check unread
+   `LTX_JOB_COMPLETE` mail. It sends a new Grok request only when no valid handoff is waiting. This is the GUI
+   equivalent of declining a saved-job resume in the launcher.
 
 ### Manual project final after remakes
 

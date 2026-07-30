@@ -22,10 +22,17 @@ from test_contracts import payload
 class FakeMailClient:
     def __init__(self):
         self.requests = []
+        self.unread_messages = []
 
     def send_request(self, *, previous_job_id=None, succeeded=None):
         self.requests.append((previous_job_id, succeeded))
         return "message-id"
+
+    def unread_pipeline_messages(self):
+        return list(self.unread_messages)
+
+    def mark_seen(self, uid):
+        return None
 
 
 class FakeAssetManager:
@@ -476,6 +483,25 @@ class SupervisorTests(unittest.TestCase):
             supervisor.tick()
             self.assertEqual(assets.resolve_calls, calls_before_paused_tick)
             self.assertEqual(mail.requests, [])
+
+    def test_idle_tick_requests_only_when_no_pending_handoff(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            store = PipelineStateStore(root / "pipeline.sqlite3")
+            mail = FakeMailClient()
+            supervisor = PipelineSupervisor(
+                store=store,
+                mail_client=mail,
+                asset_manager=FakeAssetManager(),
+                comfy=FakeComfy(root / "unused.png"),
+                settings=SupervisorSettings(1, 10, 10, 2),
+            )
+
+            self.assertEqual(store.snapshot().state, PipelineState.IDLE)
+            supervisor.tick()
+
+            self.assertEqual(mail.requests, [(None, None)])
+            self.assertEqual(store.snapshot().state, PipelineState.WAITING_FOR_GROK)
 
     def test_assembly_profile_failure_pauses_and_preserves_completed_clip(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
