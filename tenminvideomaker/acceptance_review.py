@@ -33,6 +33,12 @@ _CASE_DETAILS: dict[str, dict[str, Any]] = {
         "title": "Single final frame",
         "summary": "Chunk 2 starts from only the final frame of the base window.",
         "boundary": {"left": [119, 120], "right": [0, 1]},
+        "assembly": {
+            "base_end_frame": 120,
+            "continuation_start_frame": 1,
+            "dropped_continuation_frames": [0, 0],
+            "summary": "Base 0–120, then continuation 1 onward.",
+        },
         "stills": (
             ("base_0119.png", "Base frame 119", "base"),
             ("base_0120.png", "Base final frame 120", "base"),
@@ -44,6 +50,12 @@ _CASE_DETAILS: dict[str, dict[str, Any]] = {
         "title": "Decoded 17-frame guide",
         "summary": "Chunk 2 receives a 17-frame decoded guide from the base window.",
         "boundary": {"left": [111, 112], "right": [16, 17]},
+        "assembly": {
+            "base_end_frame": 112,
+            "continuation_start_frame": 17,
+            "dropped_continuation_frames": [0, 16],
+            "summary": "Base 0–112, then continuation 17 onward.",
+        },
         "stills": (
             ("base_0096.png", "Base guide start 96", "base"),
             ("base_0111.png", "Base guide penultimate 111", "base"),
@@ -57,6 +69,12 @@ _CASE_DETAILS: dict[str, dict[str, Any]] = {
         "title": "Latent 25-frame overlap",
         "summary": "Chunk 2 receives the final 25-frame latent overlap from the base window.",
         "boundary": {"left": [119, 120], "right": [24, 25]},
+        "assembly": {
+            "base_end_frame": 120,
+            "continuation_start_frame": 25,
+            "dropped_continuation_frames": [0, 24],
+            "summary": "Base 0–120, then continuation 25 onward.",
+        },
         "stills": (
             ("base_0096.png", "Base overlap start 96", "base"),
             ("base_0119.png", "Base penultimate frame 119", "base"),
@@ -112,6 +130,8 @@ class AcceptanceReviewService:
                 "summary": details["summary"],
                 "boundary": details["boundary"],
                 "video_url": self._media_url(run_id, case_name),
+                "assembled_video_url": self._assembled_url(run_id, case_name),
+                "assembly": details["assembly"],
                 "stills": [
                     {
                         "name": filename,
@@ -188,6 +208,77 @@ class AcceptanceReviewService:
             temporary.replace(proxy)
         return proxy
 
+    def assembled_proxy_path(self, run_id: str, case_name: str) -> Path:
+        details = _CASE_DETAILS.get(case_name)
+        if details is None:
+            raise AcceptanceReviewError("Unknown review case.")
+        document, run_root = self._load_run(run_id)
+        base_source = self._raw_video_path(document, run_id, "common_base")
+        continuation_source = self._raw_video_path(document, run_id, case_name)
+        proxy = self._safe_path(run_root / "review" / f"assembled-{case_name}.mp4")
+        assembly = details["assembly"]
+        base_end_exclusive = int(assembly["base_end_frame"]) + 1
+        continuation_start = int(assembly["continuation_start_frame"])
+        filter_graph = (
+            f"[0:v]trim=start_frame=0:end_frame={base_end_exclusive},"
+            "setpts=PTS-STARTPTS[base];"
+            f"[1:v]trim=start_frame={continuation_start},"
+            "setpts=PTS-STARTPTS[continuation];"
+            "[base][continuation]concat=n=2:v=1:a=0[outv]"
+        )
+        with self._proxy_lock(proxy):
+            if proxy.is_file() and proxy.stat().st_size > 0:
+                return proxy
+            proxy.parent.mkdir(parents=True, exist_ok=True)
+            temporary = proxy.with_name(f"{proxy.stem}.partial{proxy.suffix}")
+            temporary.unlink(missing_ok=True)
+            command = [
+                self.ffmpeg_command,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-i",
+                str(base_source),
+                "-i",
+                str(continuation_source),
+                "-filter_complex",
+                filter_graph,
+                "-map",
+                "[outv]",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "fast",
+                "-crf",
+                "18",
+                "-pix_fmt",
+                "yuv420p",
+                "-movflags",
+                "+faststart",
+                str(temporary),
+            ]
+            completed = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if (
+                completed.returncode != 0
+                or not temporary.is_file()
+                or temporary.stat().st_size == 0
+            ):
+                temporary.unlink(missing_ok=True)
+                detail = (
+                    completed.stderr or "FFmpeg did not produce assembled review media."
+                ).strip()
+                raise AcceptanceReviewProxyError(
+                    f"FFmpeg assembled review proxy failed: {detail}"
+                )
+            temporary.replace(proxy)
+        return proxy
+
     def still_path(self, run_id: str, case_name: str, asset_name: str) -> Path:
         _, run_root = self._load_run(run_id)
         details = _CASE_DETAILS.get(case_name)
@@ -261,6 +352,10 @@ class AcceptanceReviewService:
     @staticmethod
     def _media_url(run_id: str, role: str) -> str:
         return f"/api/acceptance-runs/{run_id}/media/{role}"
+
+    @staticmethod
+    def _assembled_url(run_id: str, case_name: str) -> str:
+        return f"/api/acceptance-runs/{run_id}/assembled/{case_name}"
 
     @staticmethod
     def _still_url(run_id: str, case_name: str, asset_name: str) -> str:

@@ -138,6 +138,85 @@ class AcceptanceReviewServiceTests(unittest.TestCase):
         self.assertIn("aac", command)
         self.assertNotIn("watermark", " ".join(command).casefold())
 
+    def test_review_document_describes_production_faithful_assembly(self) -> None:
+        document = self.service.review_document(RUN_ID)
+
+        self.assertEqual(
+            document["cases"]["single_frame"]["assembly"],
+            {
+                "base_end_frame": 120,
+                "continuation_start_frame": 1,
+                "dropped_continuation_frames": [0, 0],
+                "summary": "Base 0–120, then continuation 1 onward.",
+            },
+        )
+        self.assertEqual(
+            document["cases"]["single_frame"]["assembled_video_url"],
+            f"/api/acceptance-runs/{RUN_ID}/assembled/single_frame",
+        )
+        self.assertEqual(
+            document["cases"]["decoded_17_frame"]["assembly"],
+            {
+                "base_end_frame": 112,
+                "continuation_start_frame": 17,
+                "dropped_continuation_frames": [0, 16],
+                "summary": "Base 0–112, then continuation 17 onward.",
+            },
+        )
+        self.assertEqual(
+            document["cases"]["latent_overlap"]["assembly"],
+            {
+                "base_end_frame": 120,
+                "continuation_start_frame": 25,
+                "dropped_continuation_frames": [0, 24],
+                "summary": "Base 0–120, then continuation 25 onward.",
+            },
+        )
+
+    def test_assembled_proxy_trims_overlap_and_concats_atomically(self) -> None:
+        def fake_run(command, **_kwargs):
+            destination = Path(command[-1])
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(b"assembled-review-proxy")
+            return subprocess.CompletedProcess(command, 0)
+
+        with patch(
+            "tenminvideomaker.acceptance_review.subprocess.run",
+            side_effect=fake_run,
+        ) as run:
+            first = self.service.assembled_proxy_path(RUN_ID, "single_frame")
+            second = self.service.assembled_proxy_path(RUN_ID, "single_frame")
+
+        command = run.call_args.args[0]
+        filter_graph = command[command.index("-filter_complex") + 1]
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(first, second)
+        self.assertEqual(first.name, "assembled-single_frame.mp4")
+        self.assertIn("trim=start_frame=0:end_frame=121", filter_graph)
+        self.assertIn("trim=start_frame=1", filter_graph)
+        self.assertIn("concat=n=2:v=1:a=0", filter_graph)
+        self.assertEqual(command[command.index("-map") + 1], "[outv]")
+        self.assertNotIn("-c:a", command)
+        self.assertNotIn("watermark", " ".join(command).casefold())
+
+    def test_assembled_proxy_rejects_unknown_case(self) -> None:
+        with self.assertRaisesRegex(AcceptanceReviewError, "Unknown review case"):
+            self.service.assembled_proxy_path(RUN_ID, "unknown")
+
+    def test_assembled_proxy_failure_never_publishes_partial_media(self) -> None:
+        with patch(
+            "tenminvideomaker.acceptance_review.subprocess.run",
+            return_value=subprocess.CompletedProcess(["ffmpeg"], 1, stderr="failed"),
+        ):
+            with self.assertRaisesRegex(AcceptanceReviewProxyError, "FFmpeg"):
+                self.service.assembled_proxy_path(RUN_ID, "decoded_17_frame")
+
+        review_root = self.run_root / "review"
+        self.assertFalse((review_root / "assembled-decoded_17_frame.mp4").exists())
+        self.assertFalse(
+            (review_root / "assembled-decoded_17_frame.partial.mp4").exists()
+        )
+
     def test_review_rejects_traversal_outside_storage_and_missing_artifacts(self) -> None:
         with self.assertRaisesRegex(AcceptanceReviewError, "run ID"):
             self.service.review_document("../../jobs/other")
