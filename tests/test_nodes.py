@@ -41,6 +41,7 @@ class NodeSurfaceTests(unittest.TestCase):
                 "10MinVideoMaker_LoadChunkLatent",
                 "10MinVideoMaker_IsolateConditioning",
                 "10MinVideoMaker_IsolateModel",
+                "10MinVideoMaker_FreshCheckpoint",
                 "10MinVideoMaker_StitchClips",
             },
         )
@@ -99,6 +100,28 @@ class NodeSurfaceTests(unittest.TestCase):
         self.assertNotEqual(
             node_type.IS_CHANGED(source, "test scope"),
             node_type.IS_CHANGED(source, "test scope"),
+        )
+
+    def test_fresh_checkpoint_constructs_a_new_core_loader_per_execution(self) -> None:
+        calls: list[str] = []
+
+        class FakeCheckpointLoader:
+            def load_checkpoint(self, ckpt_name):
+                calls.append(ckpt_name)
+                return ("model", "clip", "vae")
+
+        node_type = NODE_CLASS_MAPPINGS["10MinVideoMaker_FreshCheckpoint"]
+        with patch.dict(
+            sys.modules,
+            {"nodes": SimpleNamespace(CheckpointLoaderSimple=FakeCheckpointLoader)},
+        ):
+            result = node_type().execute("ltx.safetensors", "phase nonce")
+
+        self.assertEqual(result, ("model", "clip", "vae"))
+        self.assertEqual(calls, ["ltx.safetensors"])
+        self.assertNotEqual(
+            node_type.IS_CHANGED("ltx.safetensors", "phase nonce"),
+            node_type.IS_CHANGED("ltx.safetensors", "phase nonce"),
         )
 
     def test_chunk_latent_nodes_round_trip_by_coordinates_and_hash(self) -> None:

@@ -57,6 +57,11 @@ Later first-pass `LTXVExtendSampler` windows receive the planned transition coun
 This keeps their internal overlap-plus-new latent on LTX's `8n+1` temporal grid: 96 new transitions use
 `num_new_frames=97`.
 
+Each continuation stage uses `10MinVideoMaker_FreshCheckpoint`, an always-reexecuted project node which constructs a
+fresh LTX checkpoint wrapper before dynamic LoRAs and chunk feed-forward. This defeats ComfyUI's static loader cache
+after mutable LTX work while ComfyUI may retain model weights in runtime memory. Prompt ownership, cancellation, and
+restart recovery remain on the exact base project client ID.
+
 Continuation remains a beta/manual opt-in. `TENMIN_LTX_CONTINUATION_MODE=explicit` is the default: only a scene
 longer than 121 generation frames whose `i2v.continuation.enabled` value is true uses the route. `disabled` forces
 the legacy single-generation route. `auto` fails closed at supervisor construction unless

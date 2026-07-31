@@ -572,6 +572,46 @@ class TenMinIsolateModelNode(_AlwaysRun):
         return (isolated,)
 
 
+class TenMinFreshCheckpointNode(_AlwaysRun):
+    """Construct a fresh checkpoint wrapper for one mutable LTX continuation phase."""
+
+    CATEGORY = "10MinVideoMaker/Continuation"
+    DESCRIPTION = (
+        "Forces a fresh CheckpointLoaderSimple result so mutable LTX continuation "
+        "state cannot survive ComfyUI's static loader cache."
+    )
+    FUNCTION = "execute"
+    RETURN_TYPES = ("MODEL", "CLIP", "VAE")
+    RETURN_NAMES = ("model", "clip", "vae")
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        import folder_paths
+
+        return {
+            "required": {
+                "ckpt_name": (folder_paths.get_filename_list("checkpoints"),),
+                "scope": ("STRING", {"default": "continuation"}),
+            }
+        }
+
+    def execute(self, ckpt_name: str, scope: str):
+        if not scope.strip():
+            raise RuntimeError("scope must not be blank.")
+        # Call ComfyUI's public legacy loader surface rather than reimplementing
+        # checkpoint parsing. `_AlwaysRun` gives each continuation phase a fresh
+        # ModelPatcher/CLIP/VAE wrapper while ComfyUI may still retain weights.
+        import nodes as comfy_nodes
+
+        loader = getattr(comfy_nodes, "CheckpointLoaderSimple", None)
+        if loader is None:
+            raise RuntimeError("ComfyUI CheckpointLoaderSimple is unavailable.")
+        result = loader().load_checkpoint(ckpt_name)
+        if not isinstance(result, tuple) or len(result) != 3:
+            raise RuntimeError("ComfyUI CheckpointLoaderSimple returned an invalid result.")
+        return result
+
+
 class TenMinStitchClipsNode(_AlwaysRun):
     CATEGORY = "10MinVideoMaker/Assembly"
     DESCRIPTION = (
@@ -620,6 +660,7 @@ NODE_CLASS_MAPPINGS = {
     "10MinVideoMaker_LoadChunkLatent": TenMinLoadChunkLatentNode,
     "10MinVideoMaker_IsolateConditioning": TenMinIsolateConditioningNode,
     "10MinVideoMaker_IsolateModel": TenMinIsolateModelNode,
+    "10MinVideoMaker_FreshCheckpoint": TenMinFreshCheckpointNode,
     "10MinVideoMaker_StitchClips": TenMinStitchClipsNode,
 }
 
@@ -635,5 +676,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "10MinVideoMaker_LoadChunkLatent": "10Min Video Maker: Load Chunk Latent",
     "10MinVideoMaker_IsolateConditioning": "10Min Video Maker: Isolate Conditioning",
     "10MinVideoMaker_IsolateModel": "10Min Video Maker: Isolate Model",
+    "10MinVideoMaker_FreshCheckpoint": "10Min Video Maker: Fresh Continuation Checkpoint",
     "10MinVideoMaker_StitchClips": "10Min Video Maker: Stitch Clips",
 }

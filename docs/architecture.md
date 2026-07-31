@@ -89,6 +89,13 @@ after `LTXVChunkFeedForward`, with an always-reexecuted `10MinVideoMaker_Isolate
 the diffusion-model weights; it prevents mutable model options from surviving in ComfyUI's cached LoRA/chunk-feed
 output and reaching a later `LTXVExtendSampler` call.
 
+ComfyUI can reuse static `CheckpointLoaderSimple` outputs across separate graphs and client IDs. The generation and
+decode graphs therefore use the always-reexecuted project node `10MinVideoMaker_FreshCheckpoint`: it delegates to
+ComfyUI's public checkpoint loader for a fresh MODEL/CLIP/VAE wrapper before dynamic LoRAs and chunk feed-forward.
+Its scoped input and `IS_CHANGED=NaN` prevent loader-result reuse while allowing ComfyUI to retain model weights in
+runtime memory. The original base project client ID still owns every prompt, so resume and cancellation remain exact
+and never affect another ComfyUI client.
+
 The full-resolution second pass uses the existing tiled x2 spatial upscaler and second LCM schedule. The initial
 121-frame window selects 16 temporal latent tokens. A later 121-frame visible window selects 17 tokens: a nonzero
 LTX temporal token cannot safely become the special first token after slicing, so the extra token acts as an

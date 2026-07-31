@@ -132,6 +132,10 @@ The console and GUI may report progress such as **Chunk 3 of 8**, followed by th
 full-resolution refinement, validation, or assembly. Chunks run sequentially inside the existing LTX phase; the
 supervisor does not release and reload the LTX model between them.
 
+For LTX reliability, each internal chunk phase receives a fresh LTX checkpoint wrapper before its LoRAs and sampler
+run. This needs no new GUI control, keeps normal model residency available, and preserves the same resume and
+**Cancel project** behavior after a restart.
+
 Continuation is a beta/manual opt-in during its initial rollout. The optional launcher setting
 **LTX temporal continuation**
 maps to `TENMIN_LTX_CONTINUATION_MODE`:

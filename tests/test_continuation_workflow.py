@@ -11,7 +11,7 @@ from tenminvideomaker.continuation_workflow import (
     build_continuation_stage2_workflow,
 )
 from tenminvideomaker.contracts import parse_job_payload
-from tenminvideomaker.workflow_builder import validate_api_graph
+from tenminvideomaker.workflow_builder import LTX_CHECKPOINT, validate_api_graph
 
 from test_contracts import payload
 
@@ -160,6 +160,42 @@ class ContinuationWorkflowTests(unittest.TestCase):
         self.assertTrue(
             all("stage1" in node["inputs"]["scope"] for node in isolates)
         )
+
+    def test_continuation_generation_uses_a_forced_fresh_checkpoint_loader(self):
+        stage1 = build_continuation_stage1_workflow(
+            self.job,
+            self.scene,
+            self.frame,
+            self.plan,
+            self.plan.chunks[1],
+            revision=1,
+            attempt_number=1,
+            previous_attempt_number=1,
+        )
+        stage2 = build_continuation_stage2_workflow(
+            self.job,
+            self.scene,
+            self.frame,
+            self.plan,
+            self.plan.chunks[0],
+            revision=1,
+            attempt_number=1,
+        ).workflow
+        decode = build_continuation_decode_workflow(
+            self.job,
+            self.scene,
+            self.plan,
+            self.plan.chunks[1],
+            revision=1,
+            attempt_number=1,
+        )
+
+        for workflow in (stage1.api, stage2.api, decode.api):
+            fresh = nodes_of_type(workflow, "10MinVideoMaker_FreshCheckpoint")
+            self.assertEqual(len(fresh), 1)
+            self.assertEqual(fresh[0]["inputs"]["ckpt_name"], LTX_CHECKPOINT)
+            self.assertTrue(fresh[0]["inputs"]["scope"])
+            self.assertFalse(nodes_of_type(workflow, "CheckpointLoaderSimple"))
 
     def test_continuation_graph_ids_are_scoped_per_stage_and_chunk(self):
         initial = build_continuation_stage1_workflow(

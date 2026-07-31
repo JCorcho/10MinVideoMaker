@@ -1,7 +1,7 @@
 # 10MinVideoMaker follow-up work
 
 - [ ] Complete the bounded continuation acceptance matrix on the target 16 GB GPU: `common_base`,
-  `single_frame`, `decoded_25_frame`, and `latent_overlap`. Capture positive peak VRAM, runtime, and the exact
+  `single_frame`, `decoded_17_frame`, and `latent_overlap`. Capture positive peak VRAM, runtime, and the exact
   external checkpoint/text-encoder/upscaler/DMD/JoyAI hashes and provenance. Human-review flow discontinuity,
   anatomy, and second-pass seams. Do not claim production quality or enable `auto` until all six decisions pass.
 - [ ] After acceptance, create `<TENMIN_STORAGE_ROOT>\state\continuation-validation-v1.json` (default

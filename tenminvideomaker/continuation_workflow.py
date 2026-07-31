@@ -147,9 +147,10 @@ def _model_stack(
     cache_scope: str,
 ) -> tuple[str, str, str | None, list[Any]]:
     checkpoint = graph.add(
-        "CheckpointLoaderSimple",
-        "LTX 2.3 checkpoint",
+        "10MinVideoMaker_FreshCheckpoint",
+        "Fresh LTX 2.3 continuation checkpoint",
         ckpt_name=LTX_CHECKPOINT,
+        scope=f"{cache_scope}:checkpoint",
     )
     text_encoder = graph.add(
         "LTXAVTextEncoderLoader",
@@ -894,9 +895,13 @@ def build_continuation_decode_workflow(
         phase="decode",
     )
     checkpoint = graph.add(
-        "CheckpointLoaderSimple",
-        "LTX 2.3 checkpoint for checkpoint-only decode",
+        "10MinVideoMaker_FreshCheckpoint",
+        "Fresh LTX 2.3 checkpoint for checkpoint-only decode",
         ckpt_name=LTX_CHECKPOINT,
+        scope=(
+            f"decode:{job.job_id}:{scene.scene_id}:{revision}:"
+            f"{attempt_number}:{chunk.index}:checkpoint"
+        ),
     )
     audio_vae = graph.add(
         "LTXVAudioVAELoader",

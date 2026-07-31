@@ -171,6 +171,7 @@ class GuiAppTests(unittest.TestCase):
                         "conditioning": ["CONDITIONING"],
                         "model": ["MODEL"],
                         "scope": ["STRING"],
+                        "ckpt_name": [["10Eros_v1.4_fp8mixed_learned.safetensors"]],
                     }
                 }
             }
@@ -187,6 +188,7 @@ class GuiAppTests(unittest.TestCase):
                 "10MinVideoMaker_LoadChunkLatent",
                 "10MinVideoMaker_IsolateConditioning",
                 "10MinVideoMaker_IsolateModel",
+                "10MinVideoMaker_FreshCheckpoint",
             ],
         )
         current.queue_counts.assert_not_called()
@@ -242,6 +244,11 @@ class GuiAppTests(unittest.TestCase):
             elif node_type == "10MinVideoMaker_IsolateModel":
                 required = {
                     "model": ["MODEL"],
+                    "scope": ["STRING"],
+                }
+            elif node_type == "10MinVideoMaker_FreshCheckpoint":
+                required = {
+                    "ckpt_name": [["10Eros_v1.4_fp8mixed_learned.safetensors"]],
                     "scope": ["STRING"],
                 }
             else:

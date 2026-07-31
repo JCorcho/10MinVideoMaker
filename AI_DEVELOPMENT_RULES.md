@@ -74,10 +74,12 @@
   may reuse a valid completed stage-two checkpoint plus raw window; otherwise restart at the earliest invalid
   dependency.
 - Persist each continuation stage prompt ID and workflow hash immediately after `/prompt` returns and before
-  blocking. Restart recovery must reclaim successful history or wait for the exact queued project prompt; an absent
-  prompt may requeue only the same immutable workflow. If durable prompt ownership cannot be committed, cancel only
-  that project prompt. Persist Discord delivery ownership similarly, but fail closed on ambiguous queue/history and
-  never automatically resend an uncertain side effect.
+  blocking. Every continuation generation/decode graph must use the always-reexecuted
+  `10MinVideoMaker_FreshCheckpoint` before dynamic LoRAs: ComfyUI can reuse static checkpoint-loader outputs across
+  graph/client boundaries despite unique node IDs and fresh wrapper/conditioning objects. Restart recovery must
+  reclaim successful history or wait for the exact queued base-project prompt; an absent prompt may requeue only the
+  same immutable workflow. Do not call `/free` between continuation stages. Persist Discord delivery ownership
+  similarly, but fail closed on ambiguous queue/history and never automatically resend an uncertain side effect.
 - Continuation scene assembly must validate every raw window at 768×1344 and exact 24/1 CFR with its planned frame
   count, audio, lossless FFV1 codec, and yuv444p pixel format. Store each raw attempt as unwatermarked
   `window.mkv`; never H.264-encode individual windows. Remove later windows' eight-frame prerolls, apply
@@ -1208,4 +1210,44 @@
   - `python -m unittest discover -s tests -p "test_continuation_workflow.py" -v`
   - `python -m compileall -q tenminvideomaker tests`
   - `python scripts\validate_continuation_workflows.py`
+  - `git diff --check`
+
+### 2026-07-31 — forced-fresh LTX continuation checkpoint
+
+- Changed files: `tenminvideomaker/nodes.py`,
+  `tenminvideomaker/continuation_workflow.py`,
+  `tenminvideomaker/continuation_renderer.py`, `scripts/run_gui.py`, focused
+  node/workflow/GUI tests, `README.md`, `docs/architecture.md`,
+  `docs/user-guide.md`, `TODO.md`, and this file.
+- Evidence: a fresh-client probe initially completed an unchanged failed
+  later-stage graph, but a complete four-case matrix still failed later with
+  `5040` versus `4788`; fresh client IDs are not a reliable execution-cache
+  boundary. Histories showed `CheckpointLoaderSimple` plus the mandatory LoRA
+  chain cached across different client IDs. `10MinVideoMaker_FreshCheckpoint`
+  then replaced `CheckpointLoaderSimple` in every continuation stage/decode
+  graph. Completed matrix
+  `continuation-acceptance-20260731-065935` recorded all eight stage prompts as
+  successful. Its fresh-checkpoint node was never `execution_cached`; only
+  non-mutable encoder/prompt/selector inputs reused cache. Follow-up base-client
+  later-window probe `a4165c9e-f40b-4683-8370-af4b92bf6d10` also completed in
+  36.8 seconds with zero cached nodes, confirming the production ownership path
+  rather than acceptance-only client scoping.
+- Decision: the project node always delegates to ComfyUI's public
+  `CheckpointLoaderSimple` surface with a phase scope and `IS_CHANGED=NaN`.
+  This constructs fresh MODEL/CLIP/VAE wrappers before dynamic LoRAs and chunk
+  feed-forward, without calling `/free` between chunks. Do not rely on unique
+  graph IDs or ComfyUI client IDs to invalidate mutable LTX loader state.
+- Reproduction: with an empty queue, run the four-case matrix against a cached
+  project frame. Each graph must expose exactly one
+  `10MinVideoMaker_FreshCheckpoint`; its history must not list that node under
+  `execution_cached`. Verify all output streams are 768×1344, 24/1, FFV1, and
+  yuv444p mechanically. Human visual review remains mandatory.
+- Verification commands:
+  - `python -m unittest discover -s tests -p "test_nodes.py" -v`
+  - `python -m unittest discover -s tests -p "test_continuation_workflow.py" -v`
+  - `python -m unittest discover -s tests -p "test_gui_app.py" -v`
+  - `python -m unittest discover -s tests`
+  - `python -m compileall -q tenminvideomaker scripts tests`
+  - `python scripts\validate_continuation_workflows.py`
+  - `python scripts\run_continuation_acceptance.py --source-job-id 20260730-0217 --source-scene-id 1 --dry-run`
   - `git diff --check`
