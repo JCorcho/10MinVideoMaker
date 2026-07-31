@@ -88,6 +88,25 @@ class ChunkArtifactTests(unittest.TestCase):
             {"downscale_ratio_spacial": 0.5},
         )
 
+    def test_video_checkpoint_round_trips_spatially_broadcast_noise_mask(self) -> None:
+        """LTX I2V emits one spatial noise value per temporal token."""
+        original = self.latent()
+        original["noise_mask"] = torch.full(
+            (1, 1, 3, 1, 1),
+            0.25,
+            dtype=torch.float16,
+        )
+
+        save_latent_checkpoint(
+            self.layout,
+            original,
+            **self.coordinates,
+        )
+        loaded, _ = load_latent_checkpoint(self.layout, **self.coordinates)
+
+        self.assertEqual(tuple(loaded["noise_mask"].shape), (1, 1, 3, 1, 1))
+        self.assertTrue(torch.equal(loaded["noise_mask"], original["noise_mask"]))
+
     def test_same_size_checkpoint_tamper_is_rejected_by_hash(self) -> None:
         save_latent_checkpoint(
             self.layout,

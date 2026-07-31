@@ -1057,3 +1057,29 @@
   - `python scripts\validate_continuation_workflows.py`
   - `python scripts\run_continuation_acceptance.py --source-job-id <saved-id> --source-scene-id <scene-id> --dry-run`
   - `git diff --check`
+
+### 2026-07-31 — LTX broadcast noise-mask checkpoint repair
+
+- Changed files: `tenminvideomaker/chunk_artifacts.py`,
+  `tests/test_chunk_artifacts.py`, and this file.
+- Root cause: the first live acceptance prompt
+  `4858eb2f-e3a5-4d0b-b5f3-3f6c5a80cda5` reached
+  `10MinVideoMaker_SaveChunkLatent` with an LTX I2V video latent containing
+  `noise_mask` shaped `[1, 1, 16, 1, 1]`. The checkpoint guard incorrectly
+  required full latent spatial dimensions, although the one-by-one spatial axes
+  are valid PyTorch broadcast axes and must remain compact when persisted.
+- Decision: video checkpoint masks still require matching batch, a valid
+  one-or-channel axis, and exact temporal-token count. Each spatial axis may be
+  either `1` or the matching video-latent dimension. The node preserves the
+  original mask shape; it must never expand a compact mask before serializing.
+  Audio validation remains exact-shape-only.
+- Reproduction: with an empty queue, run the continuation acceptance runner
+  against a cached source scene. Before this repair, its common base stage-one
+  checkpoint failed with `LATENT noise_mask shape does not match video samples.`
+  The focused regression uses the same `[1, 1, frames, 1, 1]` shape and
+  verifies save/load round-trip integrity.
+- Verification commands:
+  - `python -m unittest discover -s tests -p "test_chunk_artifacts.py" -v`
+  - `python -m compileall -q tenminvideomaker tests`
+  - `python scripts\validate_continuation_workflows.py`
+  - `git diff --check`

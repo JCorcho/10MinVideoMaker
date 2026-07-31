@@ -94,7 +94,9 @@ def _validate_latent(
             if noise_mask.ndim != 5 or (
                 noise_mask.shape[0] != batch
                 or noise_mask.shape[1] not in {1, channels}
-                or tuple(noise_mask.shape[2:]) != (frames, height, width)
+                or noise_mask.shape[2] != frames
+                or noise_mask.shape[3] not in {1, height}
+                or noise_mask.shape[4] not in {1, width}
             ):
                 raise ChunkArtifactError(
                     "LATENT noise_mask shape does not match video samples."
