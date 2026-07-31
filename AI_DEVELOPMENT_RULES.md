@@ -15,6 +15,28 @@
 - Nodes must share routing and validation logic across every user surface. Do not create divergent editor and Wizard/modal implementations.
 - Before coding any node or workflow, obtain the live input/output contract from the local ComfyUI API. Do not infer third-party node inputs or output slots.
 - Production video geometry is fixed at 768×1344 and 24 fps. LTX I2V clips use the `8n + 1` frame rule, a maximum duration of 32 seconds, LCM for both sampler passes, the verified first-pass and upscale sigma schedules, and the LTX spatial upscaler.
+- Long-scene continuation uses feature flag `ltx_chunked_continuation_v1` and resolved strategy
+  `ltx23_latent_overlap_v1`. Its initial model window is at most 121 frames/120 transitions. Each full
+  extension uses the official `LTXVExtendSampler`, regenerates a fixed 24-frame overlap, and adds at most 96 new
+  transitions. The exact presentation timeline is `round(seconds × 24)` frames; generation rounds transitions up
+  to a multiple of eight, forms an `8n + 1` master, and trims only after delayed-commit assembly.
+- Continuation second-pass slicing must preserve LTX's special temporal-zero semantics. Later visible windows select
+  one extra latent token, producing an eight-frame causal preroll, then use core `LTXVAddGuide` to lock the prior
+  accepted raw window's 25 provisional final-resolution visible frames at frame index eight with strength 1.0.
+  Frame eight follows the sacrificial preroll and aligns the guide with the first visible frame assembly retains.
+  Assembly removes the eight preroll frames. Do not replace this route with literal-last-frame continuation, an
+  image-model regeneration, or reinterpret a nonzero latent token as latent zero.
+- Continuation rollout modes are `disabled`, `explicit`, and `auto`; `explicit` remains the default until bounded
+  GPU/visual validation passes. This is a beta/manual opt-in and carries no production-quality claim. A scene at or
+  below 121 generation frames always uses the legacy route. Explicit mode requires
+  `i2v.continuation.enabled=true`; auto mode permits an explicit false opt-out but must fail closed before startup
+  without `<TENMIN_STORAGE_ROOT>\state\continuation-validation-v1.json` (default
+  `D:\LTX_Supervisor_Storage\state\continuation-validation-v1.json`). That approval must match a hash covering the
+  current continuation generation, routing, and recovery implementation plus hashes covering every node contract
+  used by the representative live continuation graphs; record valid hashes, sources, and licenses for every
+  required external asset; complete the four bounded comparison generations with positive latent-overlap peak
+  VRAM; and accept all six no-OOM/guider/flow/anatomy/seam/runtime decisions. Never invalidate or convert a
+  completed legacy revision merely because the feature is enabled.
 - T2I retains the matching reference workflow sampler: Anima uses one 30-step `er_sde`/`beta57` pass and no
   detailer; Pony uses 30-step `res_3m_ode` then 30-step `res_5s_ode`, followed by the reference
   `bbox/face_yolov8m.pt` detector and `FaceDetailer` settings.
@@ -31,11 +53,37 @@
 - Scene edits must use the same typed contract and workflow builders as automatic jobs. Store each edit as a new
   immutable revision. Video-only revisions require an existing frame; image-only remake must not exist in the API,
   state enum, or UI. Preserve unsigned 64-bit seeds as strings across the browser boundary.
+- Continuation remakes remain scene-level. Video-only reuses the selected cached frame but creates a new chunk chain
+  from chunk zero; image-and-video creates a new frame and a new chain from chunk zero. Do not expose arbitrary
+  per-chunk remake selection until the user-facing dependency and downstream-invalidation design is implemented.
 - Render scheduling is model-residency aware on the 16 GB GPU. For each automatic job, complete every required T2I
   frame before one intentional model release, then complete every required LTX I2V clip before releasing LTX.
   Remake batches must preflight selected revisions, group image+video remakes by Anima/Pony family, render all of
   those frames, then run every eligible video (including video-only remakes) as one LTX phase. Never call
   ComfyUI's free-memory endpoint between scenes in the same phase.
+- A continuation chunk attempt owns one bounded low-resolution handoff and one bounded full-resolution
+  refinement. Persist only plain LTX video latents in safetensors with `[1, 128, frames, height, width]`
+  floating-point samples and the explicitly supported auxiliary keys. Flush and atomically rename the tensor,
+  record identity/size/descriptors/SHA-256 in its JSON manifest, write attempt `COMPLETE.json` last, then select the
+  attempt in SQLite. Retain only the bounded tail required by the planned window; never retain an accumulating
+  full-scene latent. Every load must pass the plan's exact `expected_temporal_tokens` so identity, hash, descriptor,
+  shape, and token-count validation all precede reuse. File existence alone is never proof of success.
+- Continuation plans and attempt inputs are immutable. Store unsigned-64-bit seeds as text, bind each successor to
+  the selected predecessor's artifact hash, and invalidate the changed chunk plus all descendants when upstream
+  lineage or artifact verification changes. Recovery may resume stage two from a valid stage-one checkpoint and
+  may reuse a valid completed stage-two checkpoint plus raw window; otherwise restart at the earliest invalid
+  dependency.
+- Persist each continuation stage prompt ID and workflow hash immediately after `/prompt` returns and before
+  blocking. Restart recovery must reclaim successful history or wait for the exact queued project prompt; an absent
+  prompt may requeue only the same immutable workflow. If durable prompt ownership cannot be committed, cancel only
+  that project prompt. Persist Discord delivery ownership similarly, but fail closed on ambiguous queue/history and
+  never automatically resend an uncertain side effect.
+- Continuation scene assembly must validate every raw window at 768×1344 and exact 24/1 CFR with its planned frame
+  count, audio, lossless FFV1 codec, and yuv444p pixel format. Store each raw attempt as unwatermarked
+  `window.mkv`; never H.264-encode individual windows. Remove later windows' eight-frame prerolls, apply
+  one-overlap delayed commits, use 100 ms non-overlapping audio edge fades, and perform the route's one H.264
+  High/yuv420p CRF-19 scene encode with closed GOP 48 and stereo 48 kHz AAC. Validate before atomically replacing
+  the clean revision-facing `video.mp4`, then write `assembly\COMPLETE.json`.
 - Collision choices are `after_current` and `interrupt_current`. Interrupt may cancel only prompts carrying this
   project's ComfyUI client ID, then atomically preserve/abandon the active job before a remake batch runs. Never
   clear the global ComfyUI queue or restart a healthy server for this action.
@@ -62,7 +110,10 @@
   `/view` and writes the project clip into the matching versioned directory below
   `D:\LTX_Supervisor_Storage\jobs`; do not scan or move shared output folders.
 - Controlled restart must verify the port-8188 owner is the expected Easy Install embedded Python executable before
-  stopping it. Never weaken that path check.
+  stopping it. Never weaken that path check. GUI startup must verify Save Scene Frame revision support, both chunk
+  latent nodes' exact `stage1_handoff`/`stage2_video`/`stage2_audio` artifact options, and Load Chunk Latent's
+  `expected_temporal_tokens`. A stale-node restart is permitted only with an empty ComfyUI queue, and startup must
+  verify the contracts again afterward.
 - Standalone automation must resolve LoRAs through the loopback-only project route registered in the live ComfyUI
   process. This makes `folder_paths.get_folder_paths("loras")` and `get_filename_list("loras")` authoritative; do
   not reconstruct model paths in the supervisor process.
@@ -90,6 +141,9 @@
   Both senders must disable local output, prompt/workflow metadata, CDN logging, and GitHub updates. Never commit the
   real webhook; runtime graphs load it from DPAPI, versioned templates use a placeholder, and approved shared GUI
   copies may receive the configured secret during export.
+- Continuation worker graphs must contain no watermark or Discord sender. Raw FFV1/yuv444p `window.mkv` artifacts, assembled
+  revision `video.mp4`, and project finals remain unwatermarked. Only after raw scene assembly succeeds may a
+  separate delivery graph reload that scene, watermark it, and send it with `save_output=false`.
 - Manual project finals are explicit, durable FFmpeg-only requests. Snapshot each included scene's latest successful
   revision at click time and concatenate that immutable selection only after active project work has ended. The
   per-scene inclusion flag is manual-final-only: automatic first-run assembly must retain its own all-successful
@@ -100,6 +154,9 @@
 - Use `apply_patch` for source and documentation edits.
 - Add focused regression tests for every routing fix or bug fix.
 - Prefer no-render validation before image, video, or audio generation. Do not generate media, download models, or install dependencies without explicit task authorization.
+- `python scripts\validate_continuation_workflows.py` is the continuation graph gate: it builds representative
+  initial/later/final stage-one and stage-two graphs plus delivery, checks only live `/object_info`, and must never
+  queue a prompt. Passing it does not establish seam quality, anatomy quality, runtime, or peak VRAM.
 - After each logical change, run applicable syntax checks and tests, then `git diff --check`.
 - Preserve user-owned changes. Commit each completed logical change with a concise message. Verify the repository root before every Git operation.
 
@@ -879,3 +936,91 @@
   - `python -m unittest discover -s tests -p "test_mail.py" -v`
   - `python -m compileall -q tenminvideomaker tests`
   - `git diff --check`
+
+### 2026-07-30 — implemented beta bounded LTX 2.3 continuation
+
+- Changed files:
+  - Configuration/docs/example: `.env.example`, `README.md`, `AI_DEVELOPMENT_RULES.md`, `TODO.md`,
+    `docs/architecture.md`, `docs/research/ltx23_chunked_continuation_plan.md`, `docs/user-guide.md`,
+    `examples/example_job.json`.
+  - Entrypoints: `scripts/run_gui.py`, `scripts/run_supervisor.py`, `scripts/setup_and_start.py`,
+    `scripts/validate_continuation_workflows.py`.
+  - Runtime: `tenminvideomaker/chunk_artifacts.py`, `tenminvideomaker/chunk_assembly.py`,
+    `tenminvideomaker/comfy_http.py`, `tenminvideomaker/configuration.py`,
+    `tenminvideomaker/continuation.py`, `tenminvideomaker/continuation_renderer.py`,
+    `tenminvideomaker/continuation_validation.py`, `tenminvideomaker/continuation_workflow.py`,
+    `tenminvideomaker/contracts.py`, `tenminvideomaker/gui_app.py`, `tenminvideomaker/gui_service.py`,
+    `tenminvideomaker/nodes.py`, `tenminvideomaker/review.py`, `tenminvideomaker/state_store.py`,
+    `tenminvideomaker/storage.py`, `tenminvideomaker/supervisor.py`, and
+    `tenminvideomaker/workflow_builder.py`.
+  - GUI: `web/app.js`, `web/index.html`, `web/styles.css`.
+  - Tests: `tests/test_chunk_artifacts.py`, `tests/test_chunk_assembly.py`, `tests/test_comfy_http.py`,
+    `tests/test_continuation.py`, `tests/test_continuation_renderer.py`,
+    `tests/test_continuation_validation.py`, `tests/test_continuation_workflow.py`,
+    `tests/test_contracts.py`, `tests/test_gui_app.py`, `tests/test_gui_service.py`,
+    `tests/test_nodes.py`, `tests/test_review.py`, `tests/test_run_supervisor.py`,
+    `tests/test_setup_and_start.py`, `tests/test_state_store.py`, `tests/test_storage.py`, `tests/test_supervisor.py`,
+    `tests/test_validate_continuation_workflows.py`, and `tests/test_workflow_builder.py`.
+- Contract/planning: the safe schema-version-2 example demonstrates optional `i2v.continuation`,
+  `i2v.continuity`, and ordered `i2v.segments`. The planner resolves a 30-second scene to transition
+  contributions `120,96,96,96,96,96,96,24`, a 721-frame generation master, and an exact 720-frame presentation
+  timeline. The 121-frame nominal window, 24-frame overlap, and delayed-commit ownership remain fixed.
+- Routing: later first passes extend bounded latent tails. Every latent reload validates the exact expected temporal
+  tokens. Later second passes keep the eight-frame causal preroll and use core `LTXVAddGuide` with the prior raw
+  window's 25 provisional visible frames at frame eight, after the sacrificial causal-token preroll. Raw workers
+  write clean lossless FFV1/yuv444p
+  `window.mkv`; assembly trims/joins windows and performs one H.264 scene encode. No worker, raw window, assembled
+  scene, or project final contains a watermark; only the separate Discord graph creates a transient watermarked
+  send with local output disabled.
+- Recovery/activation: automatic and remake prompt ownership distinguishes `t2i`, `i2v_legacy`,
+  `i2v_continuation`, and delivery where applicable. A persisted continuation plan/started legacy attempt locks the
+  selected I2V route across restart and configuration changes. Restart recovery reclaims queue/history without
+  feeding one graph's prompt into another. An explicit saved-job retry preserves only a genuinely RUNNING owned
+  prompt, grants exhausted T2I/legacy I2V a fresh bounded retry epoch, and grants failed continuation chunks their
+  separate invalidated-attempt epoch. A missing cached-frame file resets both T2I and downstream I2V budgets.
+  Stage two atomically checkpoints both video and audio latents; when they verify but `window.mkv` is missing,
+  recovery uses a decode/mux-only graph instead of repeating diffusion. Generic intermediate `i2v` ownership
+  migrates by exact chunk-attempt prompt ID, never by plan existence alone.
+  Explicit I2V rerun invalidates accepted continuation chunks from zero plus revision assembly ownership; it must
+  not silently reuse the prior chain. GUI remake recovery binds a post-I2V/pre-delivery checkpoint to the exact
+  job/scene/revision, route, parameter hash, frame hash, raw-video hash/path, and probed production profile; only
+  that checkpoint may skip a repeated diffusion run. GUI startup checks Save Scene Frame plus both chunk-latent
+  contracts and performs the path-verified restart only with an empty queue.
+- Rollout: `explicit` remains the beta/manual-opt-in default. `auto` fails closed without
+  `<TENMIN_STORAGE_ROOT>\state\continuation-validation-v1.json` (default
+  `D:\LTX_Supervisor_Storage\state\continuation-validation-v1.json`) bound to the current generation/routing/recovery
+  implementation and every representative live-graph node contract, containing required external-asset hash
+  provenance, four completed bounded generations, peak VRAM, and all accepted decisions.
+  The broad rollout implementation identity covers continuation generation, routing, state/recovery, remakes, and
+  entrypoints. Accepted chunk cache identity separately hashes only generation-affecting project code plus
+  normalized structural node contracts; dynamic model/LoRA combo membership and GUI/setup changes cannot discard a
+  valid chunk. Exact graph hashes remain part of every attempt. The live rollout identity covers every node class
+  in the representative initial/later/final, checkpoint-only decode, and delivery graphs.
+  `validate_against_object_info` must check literal scalar types, finite floats, and numeric min/max bounds as well
+  as required inputs, combo values, routes, output slots, and routed types.
+- Reproduction:
+  1. Parse `examples\example_job.json`; build a 30-second `SceneFramePlan` and verify the eight contributions and
+     exact 721/720 generation/presentation counts above.
+  2. Build initial, later, and final stage-one/stage-two graphs; verify later stage two loads 25 prior frames into
+     `LTXVAddGuide`, both latent loads carry the planned token count, and the raw combine selects
+     `video/ffv1-mkv` with `yuv444p`.
+  3. With ComfyUI healthy, run `python scripts\validate_continuation_workflows.py`; it must inspect live
+     `/object_info` and must not queue a prompt. A stale live node contract must trigger the GUI's empty-queue-only
+     restart guard or fail startup without touching active work.
+  4. Start in `auto` without the D-drive approval file and verify supervisor construction fails closed. Do not
+     manufacture approval until the bounded GPU matrix and human comparison are complete.
+- Verification commands:
+  - `python -c "import json; from pathlib import Path; from tenminvideomaker.contracts import parse_job_payload; parse_job_payload(json.loads(Path(r'examples/example_job.json').read_text(encoding='utf-8')))"`
+  - `python -m unittest discover -s tests -p "test_continuation*.py" -v`
+  - `python -m unittest discover -s tests -p "test_chunk*.py" -v`
+  - `python -m unittest discover -s tests -p "test_run_supervisor.py" -v`
+  - `python -m unittest discover -s tests -p "test_validate_continuation_workflows.py" -v`
+  - `python -m unittest discover -s tests -p "test_gui_app.py" -v`
+  - `python -m unittest discover -s tests -p "test_supervisor.py" -v`
+  - `python -m unittest discover -s tests -p "test_workflow_builder.py" -v`
+  - `python -m compileall -q tenminvideomaker scripts tests`
+  - `python scripts\validate_continuation_workflows.py`
+  - `git diff --check`
+- Acceptance boundary: the unit/no-render checks do not validate image quality. No bounded GPU generation matrix,
+  visual seam comparison, anatomy comparison, peak-VRAM acceptance, or runtime acceptance has been completed.
+  Therefore continuation has no production-quality claim and `auto` must remain locked.

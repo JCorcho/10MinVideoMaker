@@ -20,6 +20,35 @@ from test_contracts import payload
 
 
 class GuiStaticAssetTests(unittest.TestCase):
+    def test_chunk_lineage_is_collapsible_human_readable_and_mobile_ready(self) -> None:
+        web_root = Path(__file__).parents[1] / "web"
+        styles = (web_root / "styles.css").read_text(encoding="utf-8")
+        script = (web_root / "app.js").read_text(encoding="utf-8")
+        markup = (web_root / "index.html").read_text(encoding="utf-8")
+
+        self.assertIn('id="chunk-lineage"', markup)
+        self.assertIn("function renderChunkLineage(progress)", script)
+        self.assertIn("progress?.chunks", script)
+        self.assertIn("chunk-lineage-card", script)
+        self.assertIn("chunk-attempt-card", script)
+        for label in (
+            "Resolved prompt",
+            "Resolved negative",
+            "Accepted attempt",
+            "Workflow hashes",
+            "Artifact hashes",
+            "Model files",
+            "Node contracts",
+        ):
+            self.assertIn(label, script)
+        self.assertNotIn("JSON.stringify(progress.chunks", script)
+        self.assertIn(".chunk-lineage-grid", styles)
+        self.assertRegex(
+            styles,
+            r"(?s)@media \(max-width: 760px\).*?"
+            r"\.chunk-lineage-grid\s*\{[^}]*grid-template-columns:\s*1fr;",
+        )
+
     def test_project_and_scene_lists_have_independent_scroll_containers(self) -> None:
         web_root = Path(__file__).parents[1] / "web"
         styles = (web_root / "styles.css").read_text(encoding="utf-8")
@@ -52,6 +81,29 @@ class GuiStaticAssetTests(unittest.TestCase):
         self.assertIn("backToProjects", script)
         self.assertIn("backToScenes", script)
         self.assertIn("renderMobileScenePicker", script)
+        self.assertIn("ltx23_latent_overlap_v1", script)
+        self.assertIn("Force chunked continuation", script)
+        self.assertIn("Ordered scene beats", script)
+        self.assertIn('key === "seed_override"', script)
+        self.assertIn("segment[key] = input.value.trim()", script)
+        self.assertIn("normalizeSceneParameters", script)
+        self.assertIn("document.i2v.segments = []", script)
+        self.assertIn(
+            "delete continuation.requested_duration_seconds",
+            script,
+        )
+        self.assertIn("refreshChunkProgress", script)
+        self.assertIn("exact final timeline frames", script)
+        self.assertIn("LTX generation-master frames", script)
+        self.assertIn("resolvedContinuationRoute", script)
+        self.assertIn("Beat coverage", script)
+        self.assertIn("data-segment-timing-mode", script)
+        self.assertIn("LTX character LoRA (video)", script)
+        self.assertIn('id="temporal-continuation-wrap"', markup)
+        self.assertIn('id="continuation-status"', markup)
+        self.assertIn('id="ltx-character-lora"', markup)
+        self.assertIn(".continuation-segment-card", styles)
+        self.assertIn("--mobile-scene-switcher-height", styles)
         self.assertIn('id="render-project-final"', markup)
         self.assertIn('id="include-in-manual-final"', markup)
         self.assertIn('id="cancel-current-project"', markup)
@@ -98,40 +150,129 @@ class GuiAppTests(unittest.TestCase):
 
         self.assertIs(ensure_comfyui, shared_guard)
 
-    def test_launcher_restarts_only_for_stale_contract_and_empty_queue(self) -> None:
+    def test_launcher_accepts_all_current_continuation_node_contracts(self) -> None:
+        from scripts.run_gui import _ensure_current_node_contract
+
+        current = Mock()
+        current.object_info.side_effect = lambda node_type: {
+            node_type: {
+                "input": {
+                    "required": {
+                        "revision": ["INT"],
+                        "artifact_kind": [
+                            [
+                                "stage1_handoff",
+                                "stage2_video",
+                                "stage2_audio",
+                            ],
+                            {"default": "stage1_handoff"},
+                        ],
+                        "expected_temporal_tokens": ["INT"],
+                    }
+                }
+            }
+        }
+
+        with patch("scripts.run_gui.restart_comfyui") as restart:
+            _ensure_current_node_contract(current)
+
+        self.assertEqual(
+            [call.args[0] for call in current.object_info.call_args_list],
+            [
+                "10MinVideoMaker_SaveSceneFrame",
+                "10MinVideoMaker_SaveChunkLatent",
+                "10MinVideoMaker_LoadChunkLatent",
+            ],
+        )
+        current.queue_counts.assert_not_called()
+        restart.assert_not_called()
+
+    def test_launcher_does_not_restart_stale_contract_while_queue_is_busy(self) -> None:
         from scripts.run_gui import _ensure_current_node_contract
         from tenminvideomaker.ownership import OwnershipError
 
         stale = Mock()
-        stale.object_info.return_value = {
-            "10MinVideoMaker_SaveSceneFrame": {
-                "input": {"required": {"job_id": ["STRING"]}}
+        stale.object_info.side_effect = lambda node_type: {
+            node_type: {
+                "input": {
+                    "required": {
+                        "revision": ["INT"],
+                        "artifact_kind": [["stage1_handoff"]],
+                    }
+                }
             }
         }
         stale.queue_counts.return_value = (1, 0)
+
         with self.assertRaisesRegex(OwnershipError, "queue is busy"):
             _ensure_current_node_contract(stale)
 
+    def test_launcher_restarts_stale_contract_once_when_queue_is_empty(self) -> None:
+        from scripts.run_gui import _ensure_current_node_contract
+
+        stale = Mock()
         stale.queue_counts.return_value = (0, 0)
-        stale.object_info.side_effect = [
-            {
-                "10MinVideoMaker_SaveSceneFrame": {
-                    "input": {"required": {"job_id": ["STRING"]}}
+        current_after_restart = False
+
+        def object_info(node_type):
+            if node_type == "10MinVideoMaker_SaveSceneFrame":
+                required = {"revision": ["INT"]}
+            elif node_type == "10MinVideoMaker_SaveChunkLatent":
+                required = {
+                    "artifact_kind": (
+                        [["stage1_handoff"]] if not current_after_restart else [
+                            [
+                                "stage1_handoff",
+                                "stage2_video",
+                                "stage2_audio",
+                            ]
+                        ]
+                    )
                 }
-            },
-            {
-                "10MinVideoMaker_SaveSceneFrame": {
-                    "input": {
-                        "required": {
-                            "job_id": ["STRING"],
-                            "revision": ["INT"],
-                        }
-                    }
+            else:
+                required = {
+                    "artifact_kind": [
+                        [
+                            "stage1_handoff",
+                            "stage2_video",
+                            "stage2_audio",
+                        ]
+                    ],
+                    "expected_temporal_tokens": ["INT"],
                 }
-            },
-        ]
-        with patch("scripts.run_gui.restart_comfyui", return_value=True) as restart:
+            return {node_type: {"input": {"required": required}}}
+
+        stale.object_info.side_effect = object_info
+
+        def restart_comfyui():
+            nonlocal current_after_restart
+            current_after_restart = True
+            return True
+
+        with patch(
+            "scripts.run_gui.restart_comfyui",
+            side_effect=restart_comfyui,
+        ) as restart:
             _ensure_current_node_contract(stale)
+
+        restart.assert_called_once_with()
+
+    def test_launcher_rejects_contract_that_remains_stale_after_restart(self) -> None:
+        from scripts.run_gui import _ensure_current_node_contract
+        from tenminvideomaker.ownership import OwnershipError
+
+        stale = Mock()
+        stale.object_info.side_effect = lambda node_type: {
+            node_type: {"input": {"required": {"revision": ["INT"]}}}
+        }
+        stale.queue_counts.return_value = (0, 0)
+
+        with (
+            patch("scripts.run_gui.restart_comfyui", return_value=True) as restart,
+            self.assertRaisesRegex(OwnershipError, "current continuation artifact"),
+        ):
+            _ensure_current_node_contract(stale)
+
         restart.assert_called_once_with()
 
     def test_library_scene_editor_and_remake_draft_are_structured(self) -> None:
@@ -143,6 +284,11 @@ class GuiAppTests(unittest.TestCase):
             store = PipelineStateStore(storage.database_path)
             source = payload()
             source["created_at"] = "2026-07-24T16:10:45Z"
+            source["ltxv_character_lora"] = {
+                "name": "Elsa LTX",
+                "download_url": "https://civitai.com/api/download/models/7654321",
+                "weight": 0.55,
+            }
             job = parse_job_payload(source)
             store.claim_job(job, review_required=True)
             clip = storage.scene_clip_path(job.job_id, 1, 1)
@@ -203,9 +349,13 @@ class GuiAppTests(unittest.TestCase):
                     "pipeline_state": "awaiting_review",
                     "job_id": job.job_id,
                     "can_cancel_current_project": True,
+                    "continuation_mode": "explicit",
                 },
                 approve_job=store.approve_job,
                 cancel_current_project=cancel_current_project,
+                chunk_progress_document=lambda _job, _scene, revision: {
+                    "revision": revision
+                },
                 queue_batch=lambda batch_id, policy: store.queue_remake_batch(
                     batch_id, policy
                 ),
@@ -223,23 +373,14 @@ class GuiAppTests(unittest.TestCase):
             self.assertEqual(jobs[0]["display_name"], "Elsa · 07/24/2026")
             status = client.get("/api/status").json()
             self.assertTrue(status["can_cancel_current_project"])
-            cancelled = client.post("/api/pipeline/cancel-current")
-            self.assertEqual(cancelled.status_code, 200)
-            self.assertEqual(cancelled.json()["job_id"], job.job_id)
-            self.assertTrue(cancelled.json()["cancelled"])
-            self.assertEqual(store.snapshot().state, PipelineState.IDLE)
-            # Restore scene success for the remake/manual-final assertions below.
-            # The cancelled job history remains; only unfinished work was abandoned.
-            store.set_scene_state(
-                job.job_id,
-                1,
-                SceneState.SUCCEEDED,
-                video_path=str(clip),
-            )
             job_detail = client.get(f"/api/jobs/{job.job_id}").json()
             self.assertEqual(job_detail["display_name"], "Elsa · 07/24/2026")
             scene = client.get(f"/api/jobs/{job.job_id}/scenes/1").json()
             self.assertIn("first_pass", scene["parameters"]["i2v"])
+            self.assertEqual(
+                scene["parameters"]["character"]["ltx_character_lora"]["name"],
+                "Elsa LTX",
+            )
             self.assertNotIn("payload_json", scene)
             original_prompt = scene["parameters"]["t2i"]["prompt"]
             remake_parameters = {
@@ -253,6 +394,13 @@ class GuiAppTests(unittest.TestCase):
                     "first_pass": {
                         **scene["parameters"]["i2v"]["first_pass"],
                         "sampler": "euler",
+                    },
+                },
+                "character": {
+                    **scene["parameters"]["character"],
+                    "ltx_character_lora": {
+                        **scene["parameters"]["character"]["ltx_character_lora"],
+                        "weight": 0.65,
                     },
                 },
             }
@@ -287,6 +435,15 @@ class GuiAppTests(unittest.TestCase):
                 revisions[2]["parameters"]["i2v"]["first_pass"]["sampler"],
                 "euler",
             )
+            self.assertEqual(
+                revisions[2]["parameters"]["character"]["ltx_character_lora"]["weight"],
+                0.65,
+            )
+            latest_job_detail = client.get(f"/api/jobs/{job.job_id}").json()
+            self.assertEqual(
+                latest_job_detail["scenes"][0]["chunk_progress"]["revision"],
+                2,
+            )
             excluded = client.put(
                 f"/api/jobs/{job.job_id}/scenes/1/manual-final-inclusion",
                 json={"included": False},
@@ -303,6 +460,12 @@ class GuiAppTests(unittest.TestCase):
             manual_final = client.post(f"/api/jobs/{job.job_id}/manual-final")
             self.assertEqual(manual_final.status_code, 200)
             self.assertEqual(manual_final.json()["state"], "queued")
+
+            cancelled = client.post("/api/pipeline/cancel-current")
+            self.assertEqual(cancelled.status_code, 200)
+            self.assertEqual(cancelled.json()["job_id"], job.job_id)
+            self.assertTrue(cancelled.json()["cancelled"])
+            self.assertEqual(store.snapshot().state, PipelineState.IDLE)
 
             secured_client = TestClient(
                 create_gui_app(

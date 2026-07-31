@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -900,11 +901,24 @@ def validate_api_graph(workflow: Mapping[str, Mapping[str, Any]]) -> tuple[str, 
     return tuple(errors)
 
 
+def _literal_matches_scalar_type(value: Any, expected_type: str) -> bool | None:
+    """Return scalar validity, or None when the type is routed/custom."""
+    if expected_type == "INT":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if expected_type == "FLOAT":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if expected_type == "BOOLEAN":
+        return isinstance(value, bool)
+    if expected_type == "STRING":
+        return isinstance(value, str)
+    return None
+
+
 def validate_against_object_info(
     workflow: Mapping[str, Mapping[str, Any]],
     object_info: Mapping[str, Mapping[str, Any]],
 ) -> tuple[str, ...]:
-    """Validate class names, required inputs, output slots, and routed types."""
+    """Validate classes, inputs, combo literals, output slots, and routed types."""
     errors = list(validate_api_graph(workflow))
     for node_id, node in workflow.items():
         class_type = node.get("class_type")
@@ -913,21 +927,114 @@ def validate_against_object_info(
             errors.append(f"node {node_id} uses unavailable class {class_type}")
             continue
         input_schema = info.get("input", {})
-        required = input_schema.get("required", {})
+        required = dict(input_schema.get("required", {}))
         optional = input_schema.get("optional", {})
         inputs = node.get("inputs", {})
+        format_spec = required.get("format")
+        selected_format = inputs.get("format")
+        if (
+            isinstance(format_spec, (list, tuple))
+            and len(format_spec) > 1
+            and isinstance(format_spec[1], Mapping)
+            and isinstance(selected_format, str)
+        ):
+            formats = format_spec[1].get("formats", {})
+            dynamic_fields = (
+                formats.get(selected_format, [])
+                if isinstance(formats, Mapping)
+                else []
+            )
+            for field in dynamic_fields:
+                if (
+                    isinstance(field, (list, tuple))
+                    and len(field) >= 2
+                    and isinstance(field[0], str)
+                ):
+                    required[field[0]] = [
+                        field[1],
+                        field[2] if len(field) > 2 else {},
+                    ]
         for name in required:
             if name not in inputs:
                 errors.append(f"node {node_id} ({class_type}) is missing required input {name}")
 
         for input_name, value in inputs.items():
-            if not (
+            expected_spec = required.get(input_name) or optional.get(input_name)
+            if expected_spec is None and class_type == "LTXVImgToVideoInplaceKJ":
+                if input_name.endswith(".image_1"):
+                    expected_spec = ["IMAGE"]
+                elif input_name.endswith(".strength_1"):
+                    expected_spec = ["FLOAT"]
+                elif input_name.endswith(".index_1"):
+                    expected_spec = ["INT"]
+            if expected_spec is None:
+                errors.append(
+                    f"node {node_id} ({class_type}) has unknown input {input_name}"
+                )
+                continue
+
+            is_route = (
                 isinstance(value, list)
                 and len(value) == 2
                 and isinstance(value[0], str)
                 and isinstance(value[1], int)
                 and value[0] in workflow
-            ):
+            )
+            expected_type = expected_spec[0]
+            if not is_route:
+                combo_options = None
+                if isinstance(expected_type, (list, tuple)):
+                    combo_options = expected_type
+                elif (
+                    expected_type == "COMBO"
+                    and len(expected_spec) > 1
+                    and isinstance(expected_spec[1], Mapping)
+                    and isinstance(expected_spec[1].get("options"), (list, tuple))
+                ):
+                    combo_options = expected_spec[1]["options"]
+                if combo_options is not None and value not in combo_options:
+                    errors.append(
+                        f"node {node_id}.{input_name} has invalid combo value "
+                        f"{value!r}"
+                    )
+                if isinstance(expected_type, str):
+                    scalar_valid = _literal_matches_scalar_type(
+                        value,
+                        expected_type,
+                    )
+                    if scalar_valid is False:
+                        errors.append(
+                            f"node {node_id}.{input_name} expects a literal "
+                            f"{expected_type}, got {type(value).__name__}"
+                        )
+                    elif (
+                        scalar_valid is True
+                        and expected_type in {"INT", "FLOAT"}
+                        and len(expected_spec) > 1
+                        and isinstance(expected_spec[1], Mapping)
+                    ):
+                        if (
+                            expected_type == "FLOAT"
+                            and isinstance(value, float)
+                            and not math.isfinite(value)
+                        ):
+                            errors.append(
+                                f"node {node_id}.{input_name} expects a finite "
+                                f"FLOAT, got {value!r}"
+                            )
+                            continue
+                        minimum = expected_spec[1].get("min")
+                        maximum = expected_spec[1].get("max")
+                        if isinstance(minimum, (int, float)) and value < minimum:
+                            errors.append(
+                                f"node {node_id}.{input_name} value {value!r} "
+                                f"is below minimum {minimum!r}"
+                            )
+                        if isinstance(maximum, (int, float)) and value > maximum:
+                            errors.append(
+                                f"node {node_id}.{input_name} value {value!r} "
+                                f"is above maximum {maximum!r}"
+                            )
                 continue
             source = workflow[value[0]]
             source_info = object_info.get(source.get("class_type"), {})
@@ -938,17 +1045,6 @@ def validate_against_object_info(
                     f"from node {value[0]}"
                 )
                 continue
-            expected_spec = required.get(input_name) or optional.get(input_name)
-            if expected_spec is None and class_type == "LTXVImgToVideoInplaceKJ":
-                if input_name.endswith(".image_1"):
-                    expected_spec = ["IMAGE"]
-                elif input_name.endswith(".strength_1"):
-                    expected_spec = ["FLOAT"]
-                elif input_name.endswith(".index_1"):
-                    expected_spec = ["INT"]
-            if expected_spec is None:
-                continue
-            expected_type = expected_spec[0]
             actual_type = outputs[value[1]]
             if isinstance(expected_type, str) and expected_type != actual_type:
                 errors.append(

@@ -1,5 +1,6 @@
 {
   "job_id": "example-20260724-1610",
+  "schema_version": "2",
   "created_at": "2026-07-24T16:10:45Z",
   "subreddits": [
     "r/ExampleAI"
@@ -40,7 +41,48 @@
         "prompt": "A close portrait holds steady as the subject turns toward camera; a slow push-in reveals a gentle smile while fabric and hair move naturally in the ambient air.",
         "negative": "still image, bad quality, subtitles, text, watermark, logo, static, blur",
         "seed": 2472348977,
-        "loras": []
+        "loras": [],
+        "continuation": {
+          "enabled": true,
+          "strategy": "ltx23_latent_overlap_v1",
+          "fps": 24,
+          "base_window_transition_frames": 120,
+          "overlap_transition_frames": 24,
+          "seed_policy": "derived_v1"
+        },
+        "continuity": {
+          "identity_anchors": [
+            "The same clearly adult example character remains visually consistent."
+          ],
+          "wardrobe_anchors": [
+            "The same wardrobe remains unchanged."
+          ],
+          "environment_anchors": [
+            "Lighting and room layout remain stable."
+          ],
+          "camera_axis": "Preserve the action axis.",
+          "screen_direction": "Motion continues toward screen right."
+        },
+        "segments": [
+          {
+            "index": 0,
+            "requested_duration_seconds": 4.0,
+            "positive_prompt": "The adult subject begins the ordered turn while the camera starts its slow push-in.",
+            "negative_prompt_additions": [
+              "motion restart"
+            ],
+            "variation_index": 0
+          },
+          {
+            "index": 1,
+            "requested_duration_seconds": 4.0,
+            "positive_prompt": "The same motion continues without stopping as the adult subject completes the turn and smiles.",
+            "negative_prompt_additions": [
+              "pose reset"
+            ],
+            "variation_index": 0
+          }
+        ]
       },
       "t2i": {
         "prompt": "masterpiece, best quality, highres, realistic portrait, example character, soft directional light, detailed skin, looking at viewer",

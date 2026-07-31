@@ -10,6 +10,13 @@ from typing import Any
 from .assembly import AssemblyError, FfmpegAssembler, probe_video, validate_video_profile
 from .artifacts import ArtifactError, save_scene_frame
 from .assets import LocalLoraRequirement, LoraAssetManager
+from .chunk_artifacts import (
+    ChunkArtifactError,
+    LATENT_CHECKPOINT_SCHEMA_VERSION,
+    load_latent_checkpoint,
+    save_latent_checkpoint,
+    sha256_file,
+)
 from .configuration import load_project_environment
 from .constants import (
     I2V_DYNAMIC_BASE_MODEL,
@@ -28,10 +35,15 @@ from .contracts import (
 )
 from .mail import GmailClient, GmailPollingService, GmailSettings, MailConfigurationError, MailTransportError
 from .state_store import PipelineState, PipelineStateStore
-from .storage import StorageLayout
+from .storage import StorageError, StorageLayout
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 STORAGE = StorageLayout.configured()
+CHUNK_ARTIFACT_KINDS = [
+    "stage1_handoff",
+    "stage2_video",
+    "stage2_audio",
+]
 
 
 def _store() -> PipelineStateStore:
@@ -48,6 +60,76 @@ def _job_from_json(job_json: str) -> JobPayload:
     except json.JSONDecodeError as error:
         raise ContractValidationError("job_json must contain valid JSON.") from error
     return parse_job_payload(raw)
+
+
+def _chunk_checkpoint_fingerprint(
+    job_id: str,
+    scene_id: int,
+    revision: int,
+    chunk_index: int,
+    attempt_number: int,
+    artifact_kind: str,
+    expected_temporal_tokens: int,
+) -> str | float:
+    """Return a verified content hash, or NaN so an invalid checkpoint is never cached."""
+    try:
+        checkpoint = STORAGE.chunk_checkpoint_path(
+            job_id,
+            scene_id,
+            revision,
+            chunk_index,
+            attempt_number,
+            artifact_kind,
+        )
+        manifest_path = STORAGE.chunk_checkpoint_manifest_path(
+            job_id,
+            scene_id,
+            revision,
+            chunk_index,
+            attempt_number,
+            artifact_kind,
+        )
+        if not checkpoint.is_file() or not manifest_path.is_file():
+            return float("nan")
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if not isinstance(manifest, dict):
+            return float("nan")
+        expected_identity = {
+            "schema_version": LATENT_CHECKPOINT_SCHEMA_VERSION,
+            "artifact_kind": artifact_kind,
+            "job_id": job_id,
+            "scene_id": scene_id,
+            "revision": revision,
+            "chunk_index": chunk_index,
+            "attempt_number": attempt_number,
+            "checkpoint_path": str(checkpoint),
+        }
+        if any(manifest.get(field) != value for field, value in expected_identity.items()):
+            return float("nan")
+        declared_hash = manifest.get("sha256")
+        if (
+            not isinstance(declared_hash, str)
+            or len(declared_hash) != 64
+            or any(character not in "0123456789abcdef" for character in declared_hash)
+            or manifest.get("byte_size") != checkpoint.stat().st_size
+            or sha256_file(checkpoint) != declared_hash
+        ):
+            return float("nan")
+        tensor_manifest = manifest.get("tensors", {})
+        sample_shape = (
+            tensor_manifest.get("samples", {}).get("shape")
+            if isinstance(tensor_manifest, dict)
+            else None
+        )
+        if artifact_kind != "stage2_audio" and (
+            not isinstance(sample_shape, list)
+            or len(sample_shape) < 3
+            or sample_shape[2] != expected_temporal_tokens
+        ):
+            return float("nan")
+        return f"{declared_hash}:{expected_temporal_tokens}"
+    except (OSError, json.JSONDecodeError, StorageError):
+        return float("nan")
 
 
 class _AlwaysRun:
@@ -186,7 +268,7 @@ class TenMinResolveLorasNode(_AlwaysRun):
 
         manager = LoraAssetManager(
             folder_paths.get_folder_paths("loras"),
-            RUNTIME_ROOT / "asset_manifest.json",
+            STORAGE.asset_manifest_path,
             visible_lora_names=folder_paths.get_filename_list("loras"),
             civitai_token=load_project_environment(PROJECT_ROOT).get(
                 "TENMIN_CIVITAI_TOKEN",
@@ -276,6 +358,145 @@ class TenMinSaveSceneFrameNode(_AlwaysRun):
         return (str(path),)
 
 
+class TenMinSaveChunkLatentNode(_AlwaysRun):
+    CATEGORY = "10MinVideoMaker/Artifacts"
+    DESCRIPTION = (
+        "Atomically checkpoints one plain LTX video or audio latent under the "
+        "project-owned D-drive revision/chunk coordinates."
+    )
+    FUNCTION = "execute"
+    RETURN_TYPES = ("LATENT", "STRING", "STRING")
+    RETURN_NAMES = ("latent", "checkpoint_path", "checkpoint_sha256")
+    OUTPUT_NODE = True
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "latent": ("LATENT",),
+                "job_id": ("STRING", {"default": ""}),
+                "scene_id": ("INT", {"default": 1, "min": 1}),
+                "revision": ("INT", {"default": 1, "min": 1}),
+                "chunk_index": ("INT", {"default": 0, "min": 0}),
+                "attempt_number": ("INT", {"default": 1, "min": 1}),
+                "artifact_kind": (
+                    CHUNK_ARTIFACT_KINDS,
+                    {"default": "stage1_handoff"},
+                ),
+            }
+        }
+
+    def execute(
+        self,
+        latent,
+        job_id: str,
+        scene_id: int,
+        revision: int,
+        chunk_index: int,
+        attempt_number: int,
+        artifact_kind: str = "stage1_handoff",
+    ):
+        try:
+            checkpoint, manifest = save_latent_checkpoint(
+                STORAGE,
+                latent,
+                job_id=job_id,
+                scene_id=scene_id,
+                revision=revision,
+                chunk_index=chunk_index,
+                attempt_number=attempt_number,
+                artifact_kind=artifact_kind,
+            )
+        except (ChunkArtifactError, StorageError) as error:
+            raise RuntimeError(str(error)) from error
+        return (latent, str(checkpoint), str(manifest["sha256"]))
+
+
+class TenMinLoadChunkLatentNode:
+    CATEGORY = "10MinVideoMaker/Artifacts"
+    DESCRIPTION = (
+        "Loads a finalized, SHA-256-verified LTX video or audio latent using "
+        "project-owned revision/chunk coordinates."
+    )
+    FUNCTION = "execute"
+    RETURN_TYPES = ("LATENT", "STRING", "STRING")
+    RETURN_NAMES = ("latent", "checkpoint_path", "checkpoint_sha256")
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "job_id": ("STRING", {"default": ""}),
+                "scene_id": ("INT", {"default": 1, "min": 1}),
+                "revision": ("INT", {"default": 1, "min": 1}),
+                "chunk_index": ("INT", {"default": 0, "min": 0}),
+                "attempt_number": ("INT", {"default": 1, "min": 1}),
+                "artifact_kind": (
+                    CHUNK_ARTIFACT_KINDS,
+                    {"default": "stage1_handoff"},
+                ),
+                "expected_temporal_tokens": (
+                    "INT",
+                    {"default": 16, "min": 1},
+                ),
+            }
+        }
+
+    @classmethod
+    def IS_CHANGED(
+        cls,
+        job_id: str,
+        scene_id: int,
+        revision: int,
+        chunk_index: int,
+        attempt_number: int,
+        artifact_kind: str = "stage1_handoff",
+        expected_temporal_tokens: int = 16,
+    ):
+        return _chunk_checkpoint_fingerprint(
+            job_id,
+            scene_id,
+            revision,
+            chunk_index,
+            attempt_number,
+            artifact_kind,
+            expected_temporal_tokens,
+        )
+
+    def execute(
+        self,
+        job_id: str,
+        scene_id: int,
+        revision: int,
+        chunk_index: int,
+        attempt_number: int,
+        artifact_kind: str = "stage1_handoff",
+        expected_temporal_tokens: int = 16,
+    ):
+        try:
+            latent, manifest = load_latent_checkpoint(
+                STORAGE,
+                job_id=job_id,
+                scene_id=scene_id,
+                revision=revision,
+                chunk_index=chunk_index,
+                attempt_number=attempt_number,
+                artifact_kind=artifact_kind,
+                expected_temporal_tokens=expected_temporal_tokens,
+            )
+            checkpoint = STORAGE.chunk_checkpoint_path(
+                job_id,
+                scene_id,
+                revision,
+                chunk_index,
+                attempt_number,
+                artifact_kind,
+            )
+        except (ChunkArtifactError, StorageError) as error:
+            raise RuntimeError(str(error)) from error
+        return (latent, str(checkpoint), str(manifest["sha256"]))
+
+
 class TenMinStitchClipsNode(_AlwaysRun):
     CATEGORY = "10MinVideoMaker/Assembly"
     DESCRIPTION = (
@@ -320,6 +541,8 @@ NODE_CLASS_MAPPINGS = {
     "10MinVideoMaker_ResolveLoras": TenMinResolveLorasNode,
     "10MinVideoMaker_ReleaseMemory": TenMinReleaseMemoryNode,
     "10MinVideoMaker_SaveSceneFrame": TenMinSaveSceneFrameNode,
+    "10MinVideoMaker_SaveChunkLatent": TenMinSaveChunkLatentNode,
+    "10MinVideoMaker_LoadChunkLatent": TenMinLoadChunkLatentNode,
     "10MinVideoMaker_StitchClips": TenMinStitchClipsNode,
 }
 
@@ -331,5 +554,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "10MinVideoMaker_ResolveLoras": "10Min Video Maker: Resolve LoRAs",
     "10MinVideoMaker_ReleaseMemory": "10Min Video Maker: Release Memory",
     "10MinVideoMaker_SaveSceneFrame": "10Min Video Maker: Save Scene Frame",
+    "10MinVideoMaker_SaveChunkLatent": "10Min Video Maker: Save Chunk Latent",
+    "10MinVideoMaker_LoadChunkLatent": "10Min Video Maker: Load Chunk Latent",
     "10MinVideoMaker_StitchClips": "10Min Video Maker: Stitch Clips",
 }

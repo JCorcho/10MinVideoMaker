@@ -5,16 +5,27 @@ from fractions import Fraction
 import os
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from tenminvideomaker.assembly import VideoStreamInfo
 from tenminvideomaker.assets import AssetResolution
 from tenminvideomaker.comfy_http import ComfyHttpError
 from tenminvideomaker.constants import PRODUCTION_HEIGHT, PRODUCTION_WIDTH
+from tenminvideomaker.continuation_renderer import (
+    ContinuationDeliveryError,
+    ContinuationRenderError,
+)
 from tenminvideomaker.contracts import parse_job_payload
+from tenminvideomaker.delivery import DiscordDeliverySettings
 from tenminvideomaker.state_store import PipelineState, PipelineStateStore, SceneState
-from tenminvideomaker.supervisor import PipelineSupervisor, SupervisorSettings
+from tenminvideomaker.storage import StorageLayout
+from tenminvideomaker.supervisor import (
+    FatalPipelineError,
+    PipelineSupervisor,
+    SupervisorSettings,
+)
 
 from test_contracts import payload
 
@@ -145,6 +156,46 @@ class RetryOnceComfy(FakeComfy):
         return super().wait_for_prompt("prompt-2", timeout_seconds=timeout_seconds)
 
 
+class ReclaimingComfy(FakeComfy):
+    def __init__(self, frame_path: Path, *, stage: str):
+        super().__init__(frame_path)
+        self.stage = stage
+        self.persisted_prompt_id = "persisted-prompt"
+        self.queue_calls = 0
+        self.waited_prompt_ids: list[str] = []
+
+    def queue_prompt(self, workflow):
+        self.queue_calls += 1
+        return super().queue_prompt(workflow)
+
+    def completed_prompt(self, prompt_id):
+        return None
+
+    def prompt_is_queued(self, prompt_id):
+        return prompt_id == self.persisted_prompt_id
+
+    def wait_for_prompt(self, prompt_id, *, timeout_seconds):
+        del timeout_seconds
+        self.waited_prompt_ids.append(prompt_id)
+        if self.stage == "t2i":
+            self.frame_path.parent.mkdir(parents=True, exist_ok=True)
+            self.frame_path.write_bytes(b"png")
+            return {"outputs": {}}
+        return {
+            "outputs": {
+                "36": {
+                    "gifs": [
+                        {
+                            "filename": "scene.mp4",
+                            "subfolder": "10MinVideoMaker/test",
+                            "type": "temp",
+                        }
+                    ]
+                }
+            }
+        }
+
+
 class StageRecordingComfy(FakeComfy):
     def __init__(self, frame_paths: list[Path]):
         super().__init__(frame_paths[0])
@@ -188,6 +239,691 @@ class StageRecordingComfy(FakeComfy):
 
 
 class SupervisorTests(unittest.TestCase):
+    def test_fatal_restart_resumes_only_active_automatic_job(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            job = parse_job_payload(payload())
+            store = PipelineStateStore(root / "pipeline.sqlite3")
+            store.claim_job(job)
+            supervisor = PipelineSupervisor(
+                store=store,
+                mail_client=FakeMailClient(),
+                asset_manager=FakeAssetManager(),
+                comfy=FakeComfy(root / "unused.png"),
+                settings=SupervisorSettings(1, 10, 10, 2),
+                restart_comfy=lambda: True,
+            )
+
+            with patch.object(
+                store,
+                "requeue_unfinished_scenes",
+                wraps=store.requeue_unfinished_scenes,
+            ) as requeue:
+                supervisor.handle_fatal(FatalPipelineError("server stopped"))
+
+            self.assertEqual(store.snapshot().state, PipelineState.DOWNLOADING_ASSETS)
+            requeue.assert_called_once_with(job.job_id)
+
+    def test_fatal_restart_restores_waiting_state_without_requeueing_old_job(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            job = parse_job_payload(payload())
+            store = PipelineStateStore(root / "pipeline.sqlite3")
+            store.claim_job(job)
+            store.transition(PipelineState.WAITING_FOR_GROK, job_id=job.job_id)
+            supervisor = PipelineSupervisor(
+                store=store,
+                mail_client=FakeMailClient(),
+                asset_manager=FakeAssetManager(),
+                comfy=FakeComfy(root / "unused.png"),
+                settings=SupervisorSettings(1, 10, 10, 2),
+                restart_comfy=lambda: True,
+            )
+
+            with patch.object(
+                store,
+                "requeue_unfinished_scenes",
+                wraps=store.requeue_unfinished_scenes,
+            ) as requeue:
+                supervisor.handle_fatal(FatalPipelineError("server stopped"))
+
+            snapshot = store.snapshot()
+            self.assertEqual(snapshot.state, PipelineState.WAITING_FOR_GROK)
+            self.assertEqual(snapshot.job_id, job.job_id)
+            requeue.assert_not_called()
+
+    def test_fatal_restart_restores_idle_state_without_claiming_work(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            store = PipelineStateStore(root / "pipeline.sqlite3")
+            supervisor = PipelineSupervisor(
+                store=store,
+                mail_client=FakeMailClient(),
+                asset_manager=FakeAssetManager(),
+                comfy=FakeComfy(root / "unused.png"),
+                settings=SupervisorSettings(1, 10, 10, 2),
+                restart_comfy=lambda: True,
+            )
+
+            supervisor.handle_fatal(FatalPipelineError("server stopped"))
+
+            snapshot = store.snapshot()
+            self.assertEqual(snapshot.state, PipelineState.IDLE)
+            self.assertIsNone(snapshot.job_id)
+
+    def test_automatic_t2i_reclaims_persisted_prompt_without_duplicate_queue(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            job = parse_job_payload(payload())
+            scene = job.scenes[0]
+            storage = StorageLayout(root / "storage")
+            storage.ensure()
+            store = PipelineStateStore(storage.database_path)
+            store.claim_job(job)
+            store.ensure_original_scene_revision(
+                job.job_id,
+                scene.scene_id,
+                parameters={"job_id": job.job_id, "scene_id": scene.scene_id},
+            )
+            frame = storage.scene_frame_path(job.job_id, scene.scene_id, 1)
+            comfy = ReclaimingComfy(frame, stage="t2i")
+            supervisor = PipelineSupervisor(
+                store=store,
+                mail_client=FakeMailClient(),
+                asset_manager=FakeAssetManager(),
+                comfy=comfy,
+                settings=SupervisorSettings(1, 10, 10, 2),
+                storage=storage,
+                frame_path_factory=lambda job_id, scene_id: storage.scene_frame_path(
+                    job_id,
+                    scene_id,
+                    1,
+                ),
+                clip_path_factory=lambda job_id, scene_id: storage.scene_clip_path(
+                    job_id,
+                    scene_id,
+                    1,
+                ),
+            )
+            resolved = supervisor._resolve_assets(job).resolved_filenames
+            store.begin_scene_stage(
+                job.job_id,
+                scene.scene_id,
+                PipelineState.RUNNING_T2I,
+            )
+            store.set_scene_prompt_id(
+                job.job_id,
+                scene.scene_id,
+                comfy.persisted_prompt_id,
+                stage="t2i",
+            )
+
+            supervisor._process_t2i_stage(job, scene, resolved)
+
+            record = store.scene_records(job.job_id)[0]
+            self.assertEqual(record.t2i_attempts, 1)
+            self.assertEqual(record.state, SceneState.PENDING)
+            self.assertTrue(frame.is_file())
+            self.assertEqual(comfy.queue_calls, 0)
+            self.assertEqual(
+                comfy.waited_prompt_ids,
+                [comfy.persisted_prompt_id],
+            )
+
+    def test_legacy_i2v_reclaims_persisted_prompt_without_duplicate_queue(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            job = parse_job_payload(payload())
+            scene = job.scenes[0]
+            storage = StorageLayout(root / "storage")
+            storage.ensure()
+            store = PipelineStateStore(storage.database_path)
+            store.claim_job(job)
+            store.ensure_original_scene_revision(
+                job.job_id,
+                scene.scene_id,
+                parameters={"job_id": job.job_id, "scene_id": scene.scene_id},
+            )
+            frame = storage.scene_frame_path(job.job_id, scene.scene_id, 1)
+            frame.parent.mkdir(parents=True, exist_ok=True)
+            frame.write_bytes(b"png")
+            store.set_scene_state(
+                job.job_id,
+                scene.scene_id,
+                SceneState.PENDING,
+                frame_path=str(frame),
+            )
+            comfy = ReclaimingComfy(frame, stage="i2v")
+            supervisor = PipelineSupervisor(
+                store=store,
+                mail_client=FakeMailClient(),
+                asset_manager=FakeAssetManager(),
+                comfy=comfy,
+                settings=SupervisorSettings(1, 10, 10, 2),
+                storage=storage,
+                frame_path_factory=lambda job_id, scene_id: storage.scene_frame_path(
+                    job_id,
+                    scene_id,
+                    1,
+                ),
+                clip_path_factory=lambda job_id, scene_id: storage.scene_clip_path(
+                    job_id,
+                    scene_id,
+                    1,
+                ),
+            )
+            resolved = supervisor._resolve_assets(job).resolved_filenames
+            store.begin_scene_stage(
+                job.job_id,
+                scene.scene_id,
+                PipelineState.RUNNING_I2V,
+            )
+            store.set_scene_prompt_id(
+                job.job_id,
+                scene.scene_id,
+                comfy.persisted_prompt_id,
+                stage="i2v_legacy",
+            )
+
+            supervisor._process_i2v_stage(job, scene, resolved)
+
+            record = store.scene_records(job.job_id)[0]
+            self.assertEqual(record.i2v_attempts, 1)
+            self.assertEqual(record.state, SceneState.SUCCEEDED)
+            self.assertTrue(
+                storage.scene_clip_path(job.job_id, scene.scene_id, 1).is_file()
+            )
+            self.assertEqual(comfy.queue_calls, 0)
+            self.assertEqual(
+                comfy.waited_prompt_ids,
+                [comfy.persisted_prompt_id],
+            )
+
+    def test_continuation_terminal_error_is_not_retried_by_outer_scene_loop(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            document = payload()
+            document["scenes"][0]["estimated_sec"] = 10
+            document["scenes"][0]["i2v"]["loras"] = []
+            document["scenes"][0]["i2v"]["continuation"] = {"enabled": True}
+            job = parse_job_payload(document)
+            scene = job.scenes[0]
+            storage = StorageLayout(root / "storage")
+            storage.ensure()
+            store = PipelineStateStore(storage.database_path)
+            store.claim_job(job)
+            store.ensure_original_scene_revision(
+                job.job_id,
+                scene.scene_id,
+                parameters={"job_id": job.job_id, "scene_id": scene.scene_id},
+            )
+            frame = storage.scene_frame_path(job.job_id, scene.scene_id, 1)
+            frame.parent.mkdir(parents=True, exist_ok=True)
+            frame.write_bytes(b"frame")
+            store.set_scene_state(
+                job.job_id,
+                scene.scene_id,
+                SceneState.PENDING,
+                frame_path=str(frame),
+            )
+            supervisor = PipelineSupervisor(
+                store=store,
+                mail_client=FakeMailClient(),
+                asset_manager=FakeAssetManager(),
+                comfy=FakeComfy(frame),
+                settings=SupervisorSettings(
+                    poll_interval_seconds=1,
+                    t2i_timeout_seconds=10,
+                    i2v_timeout_seconds=10,
+                    max_stage_attempts=2,
+                    continuation_mode="explicit",
+                ),
+                storage=storage,
+            )
+            continuation = Mock()
+            continuation.render_scene.side_effect = [
+                ContinuationRenderError("chunk retry budget exhausted"),
+                AssertionError("outer scene loop retried continuation"),
+            ]
+            supervisor.continuation_renderer = continuation
+
+            supervisor._process_scene_stage_with_retries(
+                job,
+                scene,
+                PipelineState.RUNNING_I2V,
+                {},
+            )
+
+            record = store.scene_records(job.job_id)[0]
+            self.assertEqual(record.state, SceneState.FAILED)
+            self.assertEqual(record.i2v_attempts, 1)
+            self.assertIn("retry budget exhausted", record.error)
+            self.assertEqual(continuation.render_scene.call_count, 1)
+
+    def test_continuation_route_uses_effective_requested_duration(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            document = payload()
+            document["scenes"][0]["estimated_sec"] = 5
+            document["scenes"][0]["i2v"]["loras"] = []
+            document["scenes"][0]["i2v"]["continuation"] = {
+                "enabled": True,
+                "requested_duration_seconds": 10,
+            }
+            job = parse_job_payload(document)
+            scene = job.scenes[0]
+            storage = StorageLayout(root / "storage")
+            storage.ensure()
+            store = PipelineStateStore(storage.database_path)
+            frame = storage.scene_frame_path(job.job_id, scene.scene_id, 1)
+            frame.parent.mkdir(parents=True, exist_ok=True)
+            frame.write_bytes(b"png")
+            comfy = StageRecordingComfy([frame])
+            supervisor = PipelineSupervisor(
+                store=store,
+                mail_client=FakeMailClient(),
+                asset_manager=FakeAssetManager(),
+                comfy=comfy,
+                settings=SupervisorSettings(
+                    continuation_mode="explicit",
+                    i2v_timeout_seconds=10,
+                ),
+                storage=storage,
+                frame_path_factory=lambda job_id, scene_id: storage.scene_frame_path(
+                    job_id,
+                    scene_id,
+                    1,
+                ),
+                clip_path_factory=lambda job_id, scene_id: storage.scene_clip_path(
+                    job_id,
+                    scene_id,
+                    1,
+                ),
+            )
+            continuation = Mock()
+            destination = storage.scene_clip_path(job.job_id, scene.scene_id, 1)
+            continuation.render_scene.return_value = SimpleNamespace(
+                scene_path=destination
+            )
+            supervisor.continuation_renderer = continuation
+
+            self.assertEqual(
+                supervisor.render_i2v_scene(
+                    job=job,
+                    scene=scene,
+                    frame_path=frame,
+                    destination=destination,
+                    resolved_lora_filenames={},
+                ),
+                destination,
+            )
+            continuation.render_scene.assert_called_once()
+            self.assertEqual(comfy.workflows, [])
+
+            shorter_override = copy.deepcopy(document)
+            shorter_override["scenes"][0]["estimated_sec"] = 10
+            shorter_override["scenes"][0]["i2v"]["continuation"][
+                "requested_duration_seconds"
+            ] = 5
+            legacy_job = parse_job_payload(shorter_override)
+            legacy_scene = legacy_job.scenes[0]
+            legacy_destination = storage.scene_clip_path(
+                legacy_job.job_id,
+                legacy_scene.scene_id,
+                2,
+            )
+            supervisor.render_i2v_scene(
+                job=legacy_job,
+                scene=legacy_scene,
+                frame_path=frame,
+                destination=legacy_destination,
+                resolved_lora_filenames={},
+                revision=2,
+                deliver_to_discord=False,
+            )
+
+            continuation.render_scene.assert_called_once()
+            self.assertEqual(comfy.stages, ["i2v"])
+            self.assertTrue(legacy_destination.is_file())
+
+    def test_existing_continuation_destination_is_revalidated_by_renderer(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            document = payload()
+            document["scenes"][0]["estimated_sec"] = 10
+            document["scenes"][0]["i2v"]["loras"] = []
+            document["scenes"][0]["i2v"]["continuation"] = {"enabled": True}
+            job = parse_job_payload(document)
+            scene = job.scenes[0]
+            storage = StorageLayout(root / "storage")
+            storage.ensure()
+            store = PipelineStateStore(storage.database_path)
+            store.claim_job(job)
+            store.ensure_original_scene_revision(
+                job.job_id,
+                scene.scene_id,
+                parameters={},
+            )
+            frame = storage.scene_frame_path(job.job_id, scene.scene_id, 1)
+            frame.parent.mkdir(parents=True, exist_ok=True)
+            frame.write_bytes(b"png")
+            store.set_scene_state(
+                job.job_id,
+                scene.scene_id,
+                SceneState.PENDING,
+                frame_path=str(frame),
+            )
+            destination = storage.scene_clip_path(job.job_id, scene.scene_id, 1)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(b"unverified-assembly")
+            supervisor = PipelineSupervisor(
+                store=store,
+                mail_client=FakeMailClient(),
+                asset_manager=FakeAssetManager(),
+                comfy=FakeComfy(frame),
+                settings=SupervisorSettings(
+                    continuation_mode="explicit",
+                    i2v_timeout_seconds=10,
+                ),
+                storage=storage,
+                frame_path_factory=lambda job_id, scene_id: storage.scene_frame_path(
+                    job_id,
+                    scene_id,
+                    1,
+                ),
+                clip_path_factory=lambda job_id, scene_id: storage.scene_clip_path(
+                    job_id,
+                    scene_id,
+                    1,
+                ),
+            )
+            continuation = Mock()
+            continuation.render_scene.return_value = SimpleNamespace(
+                scene_path=destination
+            )
+            supervisor.continuation_renderer = continuation
+
+            supervisor._process_i2v_stage(job, scene, {})
+
+            continuation.render_scene.assert_called_once()
+            record = store.scene_records(job.job_id)[0]
+            self.assertEqual(record.state, SceneState.SUCCEEDED)
+            self.assertEqual(record.i2v_attempts, 1)
+
+    def test_interrupted_continuation_resumes_without_spending_scene_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            document = payload()
+            document["scenes"][0]["estimated_sec"] = 10
+            document["scenes"][0]["i2v"]["loras"] = []
+            document["scenes"][0]["i2v"]["continuation"] = {"enabled": True}
+            job = parse_job_payload(document)
+            scene = job.scenes[0]
+            storage = StorageLayout(root / "storage")
+            storage.ensure()
+            store = PipelineStateStore(storage.database_path)
+            store.claim_job(job)
+            store.ensure_original_scene_revision(
+                job.job_id,
+                scene.scene_id,
+                parameters={"job_id": job.job_id, "scene_id": scene.scene_id},
+            )
+            frame = storage.scene_frame_path(job.job_id, scene.scene_id, 1)
+            frame.parent.mkdir(parents=True, exist_ok=True)
+            frame.write_bytes(b"frame")
+            destination = storage.scene_clip_path(job.job_id, scene.scene_id, 1)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(b"raw-scene")
+            supervisor = PipelineSupervisor(
+                store=store,
+                mail_client=FakeMailClient(),
+                asset_manager=FakeAssetManager(),
+                comfy=FakeComfy(frame),
+                settings=SupervisorSettings(
+                    continuation_mode="explicit",
+                    i2v_timeout_seconds=10,
+                ),
+                storage=storage,
+                frame_path_factory=lambda job_id, scene_id: storage.scene_frame_path(
+                    job_id,
+                    scene_id,
+                    1,
+                ),
+                clip_path_factory=lambda job_id, scene_id: storage.scene_clip_path(
+                    job_id,
+                    scene_id,
+                    1,
+                ),
+            )
+            continuation = Mock()
+            continuation.render_scene.side_effect = [
+                RuntimeError("simulated supervisor restart"),
+                SimpleNamespace(scene_path=destination),
+            ]
+            supervisor.continuation_renderer = continuation
+
+            with self.assertRaisesRegex(RuntimeError, "supervisor restart"):
+                supervisor._process_i2v_stage(job, scene, {})
+            self.assertEqual(
+                store.scene_records(job.job_id)[0].i2v_attempts,
+                1,
+            )
+            supervisor._process_i2v_stage(job, scene, {})
+
+            record = store.scene_records(job.job_id)[0]
+            self.assertEqual(record.state, SceneState.SUCCEEDED)
+            self.assertEqual(record.i2v_attempts, 1)
+            self.assertEqual(continuation.render_scene.call_count, 2)
+
+    def test_interrupted_i2v_route_does_not_change_with_launch_setting(self) -> None:
+        cases = (
+            ("i2v_legacy", "explicit", False),
+            ("i2v_continuation", "disabled", True),
+        )
+        for prompt_stage, continuation_mode, expected in cases:
+            with self.subTest(
+                prompt_stage=prompt_stage,
+                continuation_mode=continuation_mode,
+            ), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                document = payload()
+                document["scenes"][0]["estimated_sec"] = 10
+                document["scenes"][0]["i2v"]["loras"] = []
+                document["scenes"][0]["i2v"]["continuation"] = {"enabled": True}
+                job = parse_job_payload(document)
+                scene = job.scenes[0]
+                storage = StorageLayout(root / "storage")
+                storage.ensure()
+                store = PipelineStateStore(storage.database_path)
+                store.claim_job(job)
+                store.begin_scene_stage(
+                    job.job_id,
+                    scene.scene_id,
+                    PipelineState.RUNNING_I2V,
+                    prompt_stage=prompt_stage,
+                )
+                supervisor = PipelineSupervisor(
+                    store=store,
+                    mail_client=FakeMailClient(),
+                    asset_manager=FakeAssetManager(),
+                    comfy=FakeComfy(root / "frame.png"),
+                    settings=SupervisorSettings(
+                        poll_interval_seconds=1,
+                        t2i_timeout_seconds=10,
+                        i2v_timeout_seconds=10,
+                        max_stage_attempts=2,
+                        continuation_mode=continuation_mode,
+                    ),
+                    storage=storage,
+                )
+
+                self.assertEqual(
+                    supervisor._automatic_uses_continuation(
+                        job.job_id,
+                        scene,
+                    ),
+                    expected,
+                )
+
+    def test_explicit_legacy_route_outranks_a_stale_continuation_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            document = payload()
+            document["scenes"][0]["estimated_sec"] = 10
+            document["scenes"][0]["i2v"]["continuation"] = {"enabled": True}
+            job = parse_job_payload(document)
+            scene = job.scenes[0]
+            storage = StorageLayout(root / "storage")
+            storage.ensure()
+            store = PipelineStateStore(storage.database_path)
+            store.claim_job(job)
+            store.ensure_continuation_plan(
+                job.job_id,
+                scene.scene_id,
+                1,
+                "stale-plan",
+                {"strategy": "ltx23_latent_overlap_v1"},
+            )
+            store.begin_scene_stage(
+                job.job_id,
+                scene.scene_id,
+                PipelineState.RUNNING_I2V,
+                prompt_stage="i2v_legacy",
+            )
+            supervisor = PipelineSupervisor(
+                store=store,
+                mail_client=FakeMailClient(),
+                asset_manager=FakeAssetManager(),
+                comfy=FakeComfy(root / "frame.png"),
+                settings=SupervisorSettings(
+                    continuation_mode="explicit",
+                    i2v_timeout_seconds=10,
+                ),
+                storage=storage,
+            )
+
+            self.assertFalse(
+                supervisor._automatic_uses_continuation(job.job_id, scene)
+            )
+
+    def test_t2i_recovery_does_not_erase_prior_legacy_route(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            document = payload()
+            document["scenes"][0]["estimated_sec"] = 10
+            document["scenes"][0]["i2v"]["continuation"] = {"enabled": True}
+            job = parse_job_payload(document)
+            scene = job.scenes[0]
+            storage = StorageLayout(root / "storage")
+            storage.ensure()
+            store = PipelineStateStore(storage.database_path)
+            store.claim_job(job)
+            store.begin_scene_stage(
+                job.job_id,
+                scene.scene_id,
+                PipelineState.RUNNING_I2V,
+                prompt_stage="i2v_legacy",
+            )
+            store.begin_scene_stage(
+                job.job_id,
+                scene.scene_id,
+                PipelineState.RUNNING_T2I,
+            )
+            supervisor = PipelineSupervisor(
+                store=store,
+                mail_client=FakeMailClient(),
+                asset_manager=FakeAssetManager(),
+                comfy=FakeComfy(root / "frame.png"),
+                settings=SupervisorSettings(
+                    continuation_mode="explicit",
+                    i2v_timeout_seconds=10,
+                ),
+                storage=storage,
+            )
+
+            self.assertFalse(
+                supervisor._automatic_uses_continuation(job.job_id, scene)
+            )
+
+    def test_shared_i2v_route_uses_continuation_only_for_eligible_long_scene(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            document = payload()
+            document["scenes"][0]["estimated_sec"] = 10
+            document["scenes"][0]["i2v"]["loras"] = []
+            document["scenes"][0]["i2v"]["continuation"] = {"enabled": True}
+            job = parse_job_payload(document)
+            scene = job.scenes[0]
+            storage = StorageLayout(root / "storage")
+            storage.ensure()
+            store = PipelineStateStore(storage.database_path)
+            store.claim_job(job)
+            frame = storage.scene_frame_path(job.job_id, scene.scene_id, 1)
+            frame.parent.mkdir(parents=True, exist_ok=True)
+            frame.write_bytes(b"png")
+            comfy = StageRecordingComfy([frame])
+            supervisor = PipelineSupervisor(
+                store=store,
+                mail_client=FakeMailClient(),
+                asset_manager=FakeAssetManager(),
+                comfy=comfy,
+                settings=SupervisorSettings(
+                    poll_interval_seconds=1,
+                    t2i_timeout_seconds=10,
+                    i2v_timeout_seconds=10,
+                    max_stage_attempts=2,
+                    continuation_mode="explicit",
+                ),
+                storage=storage,
+            )
+            continuation = Mock()
+            destination = storage.scene_clip_path(job.job_id, scene.scene_id, 1)
+            continuation.render_scene.return_value = SimpleNamespace(
+                scene_path=destination
+            )
+            supervisor.continuation_renderer = continuation
+
+            result = supervisor.render_i2v_scene(
+                job=job,
+                scene=scene,
+                frame_path=frame,
+                destination=destination,
+                resolved_lora_filenames={},
+            )
+
+            self.assertEqual(result, destination)
+            continuation.render_scene.assert_called_once()
+            self.assertEqual(comfy.workflows, [])
+
+            short_document = copy.deepcopy(document)
+            short_document["scenes"][0]["estimated_sec"] = 5
+            short_job = parse_job_payload(short_document)
+            short_scene = short_job.scenes[0]
+            short_destination = storage.scene_clip_path(
+                short_job.job_id,
+                short_scene.scene_id,
+                2,
+            )
+            supervisor.render_i2v_scene(
+                job=short_job,
+                scene=short_scene,
+                frame_path=frame,
+                destination=short_destination,
+                resolved_lora_filenames={},
+                revision=2,
+                deliver_to_discord=False,
+            )
+            self.assertEqual(comfy.stages, ["i2v"])
+            self.assertTrue(short_destination.is_file())
+
     def test_status_heartbeat_logs_redacted_pipeline_and_queue_counts(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
@@ -221,11 +957,13 @@ class SupervisorTests(unittest.TestCase):
                 "TENMIN_I2V_TIMEOUT_SECONDS": "21600",
                 "TENMIN_MAX_STAGE_ATTEMPTS": "2",
                 "TENMIN_STATUS_INTERVAL_SECONDS": "9",
+                "TENMIN_LTX_CONTINUATION_MODE": "auto",
             },
             clear=True,
         ):
             settings = SupervisorSettings.from_environment()
             self.assertEqual(settings.status_interval_seconds, 9)
+            self.assertEqual(settings.continuation_mode, "auto")
             self.assertFalse(settings.require_human_review)
         with patch.dict(
             os.environ,
@@ -235,6 +973,8 @@ class SupervisorTests(unittest.TestCase):
             self.assertTrue(SupervisorSettings.from_environment().require_human_review)
         with self.assertRaisesRegex(ValueError, "status_interval_seconds"):
             SupervisorSettings(status_interval_seconds=0)
+        with self.assertRaisesRegex(ValueError, "continuation_mode"):
+            SupervisorSettings(continuation_mode="unknown")
 
     def test_process_job_runs_t2i_then_i2v_stitches_and_requests_next(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -339,10 +1079,100 @@ class SupervisorTests(unittest.TestCase):
             supervisor.process_job(job)
 
             self.assertEqual(comfy.stages, ["t2i", "t2i", "i2v", "i2v"])
-            self.assertEqual(comfy.free_calls, 3)
+            self.assertEqual(comfy.free_calls, 4)
             self.assertEqual(
                 [record.state for record in store.scene_records(job.job_id)],
                 [SceneState.SUCCEEDED, SceneState.SUCCEEDED],
+            )
+
+    def test_discord_video_delivery_runs_after_generation_as_a_separate_batch(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            job = parse_job_payload(payload())
+            storage = StorageLayout(root / "storage")
+            storage.ensure()
+            store = PipelineStateStore(storage.database_path)
+            store.claim_job(job)
+            clip = storage.scene_clip_path(job.job_id, 1, 1)
+            clip.parent.mkdir(parents=True, exist_ok=True)
+            clip.write_bytes(b"raw-mp4")
+            store.set_scene_state(
+                job.job_id,
+                1,
+                SceneState.SUCCEEDED,
+                video_path=str(clip),
+            )
+            comfy = FakeComfy(root / "unused.png")
+            supervisor = PipelineSupervisor(
+                store=store,
+                mail_client=FakeMailClient(),
+                asset_manager=FakeAssetManager(),
+                comfy=comfy,
+                settings=SupervisorSettings(1, 10, 10, 2),
+                storage=storage,
+                delivery=DiscordDeliverySettings(
+                    "https://discord.com/api/webhooks/123456789/test-token"
+                ),
+            )
+            renderer = Mock()
+            supervisor.continuation_renderer = renderer
+
+            self.assertTrue(
+                supervisor._deliver_i2v_batch(job, {1: job.scenes[0]})
+            )
+
+            renderer.deliver_existing_scene.assert_called_once_with(
+                job,
+                job.scenes[0],
+                str(clip),
+                revision=1,
+                overrides=None,
+                prompt_id_callback=unittest.mock.ANY,
+            )
+            self.assertEqual(comfy.free_calls, 1)
+
+    def test_discord_failure_is_bounded_and_does_not_block_raw_final(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            job = parse_job_payload(payload())
+            storage = StorageLayout(root / "storage")
+            storage.ensure()
+            store = PipelineStateStore(storage.database_path)
+            store.claim_job(job)
+            clip = storage.scene_clip_path(job.job_id, 1, 1)
+            clip.parent.mkdir(parents=True, exist_ok=True)
+            clip.write_bytes(b"raw-unwatermarked-mp4")
+            store.set_scene_state(
+                job.job_id,
+                1,
+                SceneState.SUCCEEDED,
+                video_path=str(clip),
+            )
+            supervisor = PipelineSupervisor(
+                store=store,
+                mail_client=FakeMailClient(),
+                asset_manager=FakeAssetManager(),
+                comfy=FakeComfy(root / "unused.png"),
+                settings=SupervisorSettings(1, 10, 10, 2),
+                storage=storage,
+                delivery=DiscordDeliverySettings(
+                    "https://discord.com/api/webhooks/123456789/test-token"
+                ),
+            )
+            renderer = Mock()
+            renderer.deliver_existing_scene.side_effect = ContinuationDeliveryError(
+                "Discord unavailable"
+            )
+            supervisor.continuation_renderer = renderer
+
+            self.assertTrue(
+                supervisor._deliver_i2v_batch(job, {1: job.scenes[0]})
+            )
+            self.assertEqual(renderer.deliver_existing_scene.call_count, 2)
+            self.assertEqual(clip.read_bytes(), b"raw-unwatermarked-mp4")
+            self.assertEqual(
+                store.scene_records(job.job_id)[0].state,
+                SceneState.SUCCEEDED,
             )
 
     def test_transient_comfy_failure_retries_only_the_unfinished_stage(self) -> None:
@@ -483,6 +1313,49 @@ class SupervisorTests(unittest.TestCase):
             supervisor.tick()
             self.assertEqual(assets.resolve_calls, calls_before_paused_tick)
             self.assertEqual(mail.requests, [])
+
+    def test_malformed_continuation_fails_before_assets_or_comfy_queue(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            document = payload()
+            document["scenes"][0]["i2v"]["continuation"] = {"enabled": True}
+            document["scenes"][0]["i2v"]["segments"] = [
+                {
+                    "index": 0,
+                    "requested_duration_seconds": 5.0,
+                    "positive_prompt": "A short beat that does not cover the scene.",
+                }
+            ]
+            job = parse_job_payload(document)
+            store = PipelineStateStore(root / "pipeline.sqlite3")
+            store.claim_job(job)
+            assets = Mock(wraps=FakeAssetManager())
+            comfy = FakeComfy(root / "unused.png")
+            supervisor = PipelineSupervisor(
+                store=store,
+                mail_client=FakeMailClient(),
+                asset_manager=assets,
+                comfy=comfy,
+                settings=SupervisorSettings(
+                    1,
+                    10,
+                    10,
+                    2,
+                    continuation_mode="explicit",
+                ),
+            )
+
+            supervisor.process_job(job)
+
+            snapshot = store.snapshot()
+            self.assertEqual(snapshot.state, PipelineState.ERROR)
+            self.assertIn("Continuation preflight failed for all", snapshot.error)
+            record = store.scene_records(job.job_id)[0]
+            self.assertEqual(record.state, SceneState.FAILED)
+            self.assertIn("complete scene timeline", record.error)
+            assets.resolve_or_download.assert_not_called()
+            assets.require_local.assert_not_called()
+            self.assertEqual(comfy.workflows, [])
 
     def test_idle_tick_requests_only_when_no_pending_handoff(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

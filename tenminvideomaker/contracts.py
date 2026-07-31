@@ -10,6 +10,7 @@ from typing import Any, Iterable, Mapping
 from urllib.parse import urlparse
 
 from .constants import MAX_SCENE_SECONDS, frame_count_for_seconds
+from .continuation import CONTINUATION_STRATEGY, SEED_POLICY
 
 _JOB_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _MAX_SEED = 0xFFFFFFFFFFFFFFFF
@@ -34,6 +35,9 @@ class StageSpec:
     negative: str
     seed: int
     loras: tuple[LoraSpec, ...]
+    continuation: Mapping[str, Any] | None = None
+    continuity: Mapping[str, Any] | None = None
+    segments: tuple[Mapping[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -57,6 +61,7 @@ class SceneSpec:
 @dataclass(frozen=True)
 class JobPayload:
     job_id: str
+    schema_version: str
     character: CharacterSpec
     ltxv_character_lora: LoraSpec | None
     scenes: tuple[SceneSpec, ...]
@@ -163,14 +168,183 @@ def _lora(value: Any, context: str, *, weight_field: str = "weight") -> LoraSpec
     )
 
 
-def _stage(value: Any, context: str) -> StageSpec:
+def _optional_schema_version(value: Any) -> str:
+    if value is None:
+        return "1"
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
+        raise ContractValidationError("payload.schema_version must be a string or integer.")
+    normalized = str(value).strip()
+    if not normalized or len(normalized) > 64:
+        raise ContractValidationError(
+            "payload.schema_version must contain 1 to 64 characters."
+        )
+    return normalized
+
+
+def _continuation_fields(
+    data: Mapping[str, Any],
+    context: str,
+) -> tuple[
+    Mapping[str, Any] | None,
+    Mapping[str, Any] | None,
+    tuple[Mapping[str, Any], ...],
+]:
+    continuation_value = data.get("continuation")
+    continuity_value = data.get("continuity")
+    segments_value = data.get("segments")
+    if continuation_value is None and continuity_value is None and segments_value is None:
+        return (None, None, ())
+
+    continuation = (
+        None
+        if continuation_value is None
+        else dict(_mapping(continuation_value, f"{context}.continuation"))
+    )
+    continuity = (
+        None
+        if continuity_value is None
+        else dict(_mapping(continuity_value, f"{context}.continuity"))
+    )
+    if continuation is not None:
+        enabled = continuation.get("enabled", True)
+        if not isinstance(enabled, bool):
+            raise ContractValidationError(
+                f"{context}.continuation.enabled must be a boolean."
+            )
+        fps = continuation.get("fps", 24)
+        if isinstance(fps, bool) or not isinstance(fps, int) or fps != 24:
+            raise ContractValidationError(
+                f"{context}.continuation.fps must be the production value 24."
+            )
+        for field, expected in (
+            ("base_window_transition_frames", 120),
+            ("overlap_transition_frames", 24),
+        ):
+            value = continuation.get(field, expected)
+            if isinstance(value, bool) or not isinstance(value, int) or value != expected:
+                raise ContractValidationError(
+                    f"{context}.continuation.{field} must be {expected}."
+                )
+        strategy = continuation.get("strategy", CONTINUATION_STRATEGY)
+        if strategy != CONTINUATION_STRATEGY:
+            raise ContractValidationError(
+                f"{context}.continuation.strategy must be "
+                f"{CONTINUATION_STRATEGY}."
+            )
+        seed_policy = continuation.get("seed_policy", SEED_POLICY)
+        if seed_policy != SEED_POLICY:
+            raise ContractValidationError(
+                f"{context}.continuation.seed_policy must be {SEED_POLICY}."
+            )
+        requested_duration = continuation.get("requested_duration_seconds")
+        if requested_duration is not None:
+            parsed_duration = _number(
+                requested_duration,
+                f"{context}.continuation.requested_duration_seconds",
+            )
+            if not 0 < parsed_duration <= MAX_SCENE_SECONDS:
+                raise ContractValidationError(
+                    f"{context}.continuation.requested_duration_seconds must be "
+                    f"greater than 0 and no more than {MAX_SCENE_SECONDS:g}."
+                )
+
+    if segments_value is None:
+        return (continuation, continuity, ())
+    raw_segments = _list(segments_value, f"{context}.segments")
+    segments: list[Mapping[str, Any]] = []
+    seen_indices: set[int] = set()
+    for position, raw_segment in enumerate(raw_segments):
+        segment_context = f"{context}.segments[{position}]"
+        segment = dict(_mapping(raw_segment, segment_context))
+        index = segment.get("index", position)
+        if (
+            isinstance(index, bool)
+            or not isinstance(index, int)
+            or index < 0
+            or index in seen_indices
+        ):
+            raise ContractValidationError(
+                f"{segment_context}.index must be a unique non-negative integer."
+            )
+        seen_indices.add(index)
+        _string(
+            _required(segment, "positive_prompt", segment_context),
+            f"{segment_context}.positive_prompt",
+        )
+        if "ltx_loras" in segment:
+            raise ContractValidationError(
+                f"{segment_context}.ltx_loras is not supported yet; use scene-level "
+                "i2v.loras so compatibility can be verified before routing."
+            )
+        duration = segment.get("requested_duration_seconds")
+        transitions = segment.get("new_transition_frames")
+        if (duration is None) == (transitions is None):
+            raise ContractValidationError(
+                f"{segment_context} requires exactly one of "
+                "requested_duration_seconds or new_transition_frames."
+            )
+        if duration is not None and _number(
+            duration,
+            f"{segment_context}.requested_duration_seconds",
+        ) <= 0:
+            raise ContractValidationError(
+                f"{segment_context}.requested_duration_seconds must be greater than zero."
+            )
+        if transitions is not None and (
+            isinstance(transitions, bool)
+            or not isinstance(transitions, int)
+            or transitions < 0
+            or transitions % 8
+        ):
+            raise ContractValidationError(
+                f"{segment_context}.new_transition_frames must be a non-negative "
+                "multiple of 8."
+            )
+        additions = segment.get("negative_prompt_additions", [])
+        if not isinstance(additions, list) or not all(
+            isinstance(item, str) and item.strip() for item in additions
+        ):
+            raise ContractValidationError(
+                f"{segment_context}.negative_prompt_additions must be an array "
+                "of non-empty strings."
+            )
+        seed_override = segment.get("seed_override")
+        if seed_override is not None:
+            _seed(seed_override, f"{segment_context}.seed_override")
+        variation_index = segment.get("variation_index", 0)
+        if (
+            isinstance(variation_index, bool)
+            or not isinstance(variation_index, int)
+            or variation_index < 0
+        ):
+            raise ContractValidationError(
+                f"{segment_context}.variation_index must be a non-negative integer."
+            )
+        segments.append(segment)
+    return (continuation, continuity, tuple(segments))
+
+
+def _stage(
+    value: Any,
+    context: str,
+    *,
+    allow_continuation: bool = False,
+) -> StageSpec:
     data = _mapping(value, context)
     loras = tuple(_lora(item, f"{context}.loras[{index}]") for index, item in enumerate(_list(_required(data, "loras", context), f"{context}.loras")))
+    continuation, continuity, segments = (
+        _continuation_fields(data, context)
+        if allow_continuation
+        else (None, None, ())
+    )
     return StageSpec(
         prompt=_string(_required(data, "prompt", context), f"{context}.prompt"),
         negative=_string(_required(data, "negative", context), f"{context}.negative"),
         seed=_seed(_required(data, "seed", context), f"{context}.seed"),
         loras=loras,
+        continuation=continuation,
+        continuity=continuity,
+        segments=segments,
     )
 
 
@@ -189,7 +363,11 @@ def _scene(value: Any, index: int) -> SceneSpec:
         estimated_sec=estimated_sec,
         frame_count=frame_count_for_seconds(estimated_sec),
         t2i=_stage(_required(data, "t2i", context), f"{context}.t2i"),
-        i2v=_stage(_required(data, "i2v", context), f"{context}.i2v"),
+        i2v=_stage(
+            _required(data, "i2v", context),
+            f"{context}.i2v",
+            allow_continuation=True,
+        ),
     )
 
 
@@ -223,6 +401,7 @@ def parse_job_payload(value: Any) -> JobPayload:
 
     return JobPayload(
         job_id=job_id,
+        schema_version=_optional_schema_version(data.get("schema_version")),
         character=character,
         ltxv_character_lora=ltxv_character_lora,
         scenes=scenes,

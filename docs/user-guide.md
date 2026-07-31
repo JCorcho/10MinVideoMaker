@@ -8,8 +8,10 @@ recover unfinished scenes. Its browser GUI adds a historical job library, human-
 versioned previews, and multi-scene remake batches. Incoming jobs auto-start by default; manual approval is an
 optional test/review launch mode.
 
-Persistent data is rooted at `D:\LTX_Supervisor_Storage`. Nothing new is written to the C: drive except the
-version-controlled custom-node source already in this repository.
+Project-owned persistent runtime data is rooted at `D:\LTX_Supervisor_Storage`; a custom
+`TENMIN_STORAGE_ROOT` must still be on D:. ComfyUI may create transient workflow output in its configured temporary
+directory while a render is executing, but the supervisor copies validated durable artifacts into the D-drive
+project root and never treats that temporary output as persistent project storage.
 
 ## Human-review GUI
 
@@ -96,6 +98,90 @@ frames. For a remake batch, all **Image + Video** frame remakes happen first (An
 needed), followed by every batch item's I2V render, including **Video Only** remakes. This is deliberate for the
 16 GB GPU: it avoids repeatedly unloading and reloading the multi-gigabyte models.
 
+### Chunked LTX continuation
+
+Long scenes may use `ltx23_latent_overlap_v1` instead of one oversized LTX invocation. The initial
+window contains at most 121 frames. Every full continuation regenerates a 24-frame overlap and adds 96 new
+transitions. Later full-resolution passes use core `LTXVAddGuide` with the prior window's 25-frame visible overlap
+at frame eight, immediately after the sacrificial causal-token preroll. This bounds the active model window and
+checkpoint tail; it does not yet prove acceptable seams,
+anatomy, runtime, or peak VRAM on this machine.
+
+The displayed generation-window count is not the number of five-second pieces in the final video. A 30-second scene
+uses eight model windows because each later full window spends 24 frames reworking the seam. Those windows produce a
+valid 721-frame LTX generation master, then assembly trims the ordinary scene `video.mp4` to exactly 720 frames at
+24 fps. The common cases are:
+
+| Requested duration | Generation windows | Exact output frames |
+| --- | ---: | ---: |
+| 5 seconds | 1 | 120 |
+| 10 seconds | 3 | 240 |
+| 20 seconds | 5 | 480 |
+| 30 seconds | 8 | 720 |
+| 32 seconds | 8 | 768 |
+
+The five-second row is the continuation planner's boundary reference. Normal rollout keeps a 121-frame-or-shorter
+scene on the legacy single-window route, so it does not rewrite an already valid short-scene duration policy.
+
+The console and GUI may report progress such as **Chunk 3 of 8**, followed by the safe phase: first pass,
+full-resolution refinement, validation, or assembly. Chunks run sequentially inside the existing LTX phase; the
+supervisor does not release and reload the LTX model between them.
+
+Continuation is a beta/manual opt-in during its initial rollout. The optional launcher setting
+**LTX temporal continuation**
+maps to `TENMIN_LTX_CONTINUATION_MODE`:
+
+- `explicit` (current default): only a long scene with `i2v.continuation.enabled=true` uses continuation.
+- `disabled`: all scenes use the legacy single-generation route.
+- `auto`: requests continuation for every new scene over 121 generation frames unless its payload explicitly
+  disables it, but startup fails closed unless the D-drive approval described below matches the current runtime.
+
+Scenes at or below 121 frames use the legacy route in every mode. Existing successful legacy revisions remain valid
+and are not silently converted.
+
+`auto` requires `<TENMIN_STORAGE_ROOT>\state\continuation-validation-v1.json` (default
+`D:\LTX_Supervisor_Storage\state\continuation-validation-v1.json`). The file must be approved by a named reviewer,
+match a hash covering the current continuation generation/routing/recovery implementation plus hashes covering
+every node contract used by the representative live continuation graphs, record the approved hashes, sources, and
+licenses for the checkpoint/text encoder/spatial upscaler/DMD/JoyAI assets, and contain completed results for
+`common_base`, `single_frame`, `decoded_25_frame`, and `latent_overlap`. It must include positive latent-overlap
+peak VRAM and accept all no-OOM, LCM-guider, flow discontinuity, anatomy, second-pass seam, and runtime decisions.
+Missing or stale evidence prevents the supervisor from starting in `auto`.
+
+Those four GPU generations and human visual decisions have **not** been run yet. Unit tests and live no-render
+schema validation are not substitutes. Keep `explicit` selected and opt in only scenes you are prepared to inspect;
+there is currently no production-quality or 16 GB VRAM acceptance claim.
+
+Both remake choices remain scene-level:
+
+- **Video Only** reuses the selected revision's cached T2I image and creates a new revision whose continuation chain
+  starts at chunk zero.
+- **Image + Video** creates a new starting image, then creates a new continuation chain from chunk zero.
+
+There is intentionally no “remake only this chunk” control. A later chunk depends on the exact accepted latent and
+artifact hash of its predecessor, so changing an earlier attempt invalidates every descendant. Older attempts remain
+in history for audit but are not mixed into a new dependency chain.
+
+Each accepted chunk has hash-verified first-pass video plus second-pass video/audio latent checkpoints, its raw
+unwatermarked lossless FFV1/yuv444p `window.mkv`, and a `COMPLETE.json` written last. Video checkpoint loads verify
+the exact planned temporal-token count; audio and video loads both verify identity, hash, descriptors, dtype, and
+bounded shape. On restart, a valid first-pass checkpoint resumes at refinement without rerunning the first pass.
+If both completed second-pass latent checkpoints exist but the raw window does not, a decode/mux-only graph rebuilds
+the window without diffusion. A valid raw window is reused directly. Missing, corrupt, wrong-profile,
+wrong-token-count, or lineage-mismatched artifacts cause recovery to restart from the earliest invalid chunk.
+Assembly trims the lossless windows and performs one H.264 scene encode; a verified assembled scene and its assembly
+manifest are reused without another encode.
+
+Each stage prompt ID and workflow hash are stored before waiting. After supervisor or controlled ComfyUI restart,
+the worker reclaims completed history or waits for the same still-queued project prompt instead of duplicating GPU
+work. If the prompt is absent from both places, only the same immutable attempt is requeued. Discord delivery also
+stores prompt ownership before waiting; uncertain delivery history blocks automatic resend so a Patreon post is not
+silently duplicated.
+
+Raw chunk windows and the revision-facing `video.mp4` remain unwatermarked for remakes, project concat, and external
+upscaling. After assembly, a separate graph reloads that raw scene, applies `wm.png`, and sends only the watermarked
+copy to Discord with local output disabled.
+
 ## Workflow templates
 
 The repository and the approved ComfyUI workflow folder contain three independently rebuilt GUI workflows:
@@ -122,6 +208,9 @@ Do not queue the example workflows for a real render without replacing the examp
 - Pony post-process: `bbox/face_yolov8m.pt` bbox detection followed by the reference `FaceDetailer` settings
   (20 detailer steps, CFG 5, `dpmpp_2m_sde`, `karras`, denoise 0.38). Anima does not use this detailer.
 - LTX I2V: LCM on both passes, verified distinct sigma lists, x2 tiled spatial upscaler, DMD 1.0, JoyAI 0.5.
+- LTX continuation: nominal 121-frame windows, fixed 24-frame overlap, up to 96 new transitions per extension,
+  eight-frame causal refinement preroll, and a core `LTXVAddGuide` using the prior window's 25-frame
+  final-resolution visible overlap at visible frame eight.
 
 ### LoRA stage boundary
 
@@ -305,6 +394,8 @@ Optional environment variables:
 - `TENMIN_T2I_TIMEOUT_SECONDS` (default `3600`)
 - `TENMIN_I2V_TIMEOUT_SECONDS` (default `21600`)
 - `TENMIN_MAX_STAGE_ATTEMPTS` (default `2`)
+- `TENMIN_LTX_CONTINUATION_MODE` (`explicit` by default; `disabled`, `explicit`, or `auto` as described in
+  **Chunked LTX continuation**)
 - `TENMIN_FFMPEG` and `TENMIN_FFPROBE` (default to commands on `PATH`)
 - `TENMIN_LOG_LEVEL` (default `INFO`)
 - `TENMIN_STORAGE_ROOT` (default and required drive:
@@ -352,14 +443,33 @@ can download LoRAs and begin generation. Use the no-render checks below instead.
 
 - Completed scenes are never regenerated.
 - A transient failed stage retries up to `TENMIN_MAX_STAGE_ATTEMPTS`.
+- A continuation revision validates its immutable plan, selected attempt lineage, latent manifests and hashes,
+  expected temporal-token counts, lossless FFV1/yuv444p raw-window profile, and exact frame counts before reuse.
+- A valid stage-one continuation checkpoint resumes at stage two. Valid stage-two video/audio checkpoints rebuild
+  a missing `window.mkv` through decode/mux only; a valid window is reused. Corrupt or mismatched artifacts
+  invalidate that chunk and its descendants, then recovery starts at the earliest invalid dependency.
+- `COMPLETE.json` is written last for both chunk attempts and scene assembly; an MP4 by itself is never treated as
+  proof of success.
+- Persisted prompt ownership distinguishes T2I, legacy I2V, continuation I2V, and Discord delivery. Queue/history
+  reclaim never feeds one route's prompt into another. Once an I2V route starts, its durable route remains selected
+  across restart even if the launcher setting changes. A lost continuation prompt requeues only the same immutable
+  workflow; a changed workflow hash invalidates the attempt. Ambiguous Discord delivery never automatically resends.
+- A remake that finished raw I2V but stopped before Discord delivery resumes from a generation manifest bound to
+  the exact revision, route, parameters, cached-frame hash, raw-video hash/path, and probed 768x1344/24 fps profile.
+  If any check differs, the video is regenerated; a valid checkpoint resumes delivery without a second I2V run.
 - A timed-out project prompt is removed from the pending queue or interrupted if it is the current running prompt.
 - A scene-specific LoRA failure marks only that scene failed; other scenes continue and can be stitched.
 - If an I2V routing defect invalidates completed clips, the project can requeue I2V for the whole saved job while
-  retaining each deterministic cached T2I frame; invalid clips must be quarantined before resuming.
+  retaining each deterministic cached T2I frame. This invalidates the accepted continuation chain from chunk zero
+  and its assembly ownership before rerendering; it cannot silently reuse the prior chunks.
 - If asset preparation fails for every scene, the supervisor pauses in `error`, prints each cause in the console,
   preserves the job, and does not request a replacement email.
 - Relaunching offers to resume or abandon any active saved job, including one stopped during asset resolution,
-  T2I, I2V, or stitching. Successful scenes and attempt counters remain intact. Answering **no** first cancels only
+  T2I, I2V, or stitching. Successful scenes remain intact. A genuinely RUNNING owned prompt keeps its attempt;
+  explicitly retrying an exhausted failed T2I/legacy I2V stage starts a fresh bounded retry epoch. A cached-frame
+  database path is trusted only while that file still exists; if it is missing, both T2I and downstream I2V retry
+  budgets reset so the frame can be rebuilt. Answering **no**
+  first cancels only
   queued/running prompts owned by the `10MinVideoMaker-supervisor` ComfyUI client, then marks unfinished scenes
   `cancelled`; the payload and diagnostic history remain in SQLite, and the pipeline returns to `idle`.
 - A clip geometry or FFmpeg assembly failure pauses in `error`, preserves every completed clip, and prints the exact
@@ -375,10 +485,17 @@ From the repository root:
 python -m unittest discover -s tests -v
 python -m compileall -q tenminvideomaker scripts __init__.py
 python scripts\setup_and_start.py --help
+python scripts\validate_continuation_workflows.py
 python scripts\export_workflows.py --install-approved-shared-copies
 python scripts\run_supervisor.py --help
 git diff --check
 ```
 
-The export command is no-render validation. It queries the running ComfyUI `/object_info` contracts but does not load
-models, download assets, or generate media.
+The continuation validator builds representative initial/later/final two-pass graphs, checkpoint-only decode, and
+delivery, then reads only the running ComfyUI `/object_info` contracts. It never queues a prompt. The export command
+is also no-render validation; it does not load models, download assets, or generate media.
+
+At GUI startup, the node guard checks Save Scene Frame revision support, both Save/Load Chunk Latent artifact-kind
+options, and Load Chunk Latent's expected-token input. If any are stale, it may run the path-verified ComfyUI
+restart only while the queue is empty, then verifies all contracts again. It refuses startup rather than interrupting
+active or pending work.

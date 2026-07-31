@@ -46,6 +46,7 @@ CONFIG_KEYS = frozenset(
         "TENMIN_LOG_LEVEL",
         "TENMIN_REQUIRE_HUMAN_REVIEW",
         "TENMIN_GUI_LAN_ENABLED",
+        "TENMIN_LTX_CONTINUATION_MODE",
     }
 )
 

@@ -72,12 +72,15 @@
           <div>
             <p class="eyebrow" id="scene-kicker">Scene</p>
             <h2 id="scene-heading"></h2>
+            <p id="continuation-status" class="continuation-status hidden"></p>
           </div>
           <div class="revision-picker">
             <label for="revision-select">Result version</label>
             <select id="revision-select"></select>
           </div>
         </div>
+
+        <section id="chunk-lineage" class="chunk-lineage hidden" aria-label="Continuation chunk lineage"></section>
 
         <div class="media-grid">
           <figure class="media-card">
@@ -128,6 +131,7 @@
               <label>Base model<input data-path="character.base_model" type="text"></label>
             </div>
             <div id="character-lora"></div>
+            <div id="ltx-character-lora"></div>
           </section>
 
           <section class="form-section">
@@ -154,6 +158,10 @@
             <details>
               <summary>VRAM chunking and spatial upscaler</summary>
               <div id="i2v-advanced" class="field-grid three"></div>
+            </details>
+            <details id="temporal-continuation-wrap">
+              <summary>Temporal continuation and scene beats</summary>
+              <div id="temporal-continuation"></div>
             </details>
           </section>
 

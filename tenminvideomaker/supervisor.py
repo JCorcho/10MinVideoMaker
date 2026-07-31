@@ -14,8 +14,19 @@ from typing import Any, Callable, Mapping
 from .artifacts import scene_clip_path, scene_frame_path
 from .assembly import AssemblyError, FfmpegAssembler, probe_video, validate_video_profile
 from .assets import AssetResolution, LocalLoraRequirement
+from .chunk_assembly import SceneChunkAssembler
 from .comfy_http import ComfyHttpClient, ComfyHttpError, find_video_output
 from .constants import I2V_DYNAMIC_BASE_MODEL, MANDATORY_I2V_LORAS
+from .continuation import (
+    ContinuationPlanError,
+    continuation_is_enabled,
+    timeline_frame_count,
+)
+from .continuation_renderer import (
+    ContinuationDeliveryError,
+    ContinuationRenderError,
+    ContinuationRenderer,
+)
 from .contracts import (
     JobPayload,
     LoraSpec,
@@ -26,7 +37,7 @@ from .contracts import (
 )
 from .delivery import DiscordDeliverySettings
 from .mail import GmailClient, GmailPollingService
-from .review import scene_review_document
+from .review import SceneWorkflowOverrides, scene_review_document
 from .state_store import JobState, PipelineState, PipelineStateStore, SceneState
 from .workflow_builder import build_i2v_api_workflow, build_t2i_api_workflow
 from .storage import StorageLayout, write_json_atomic
@@ -52,6 +63,7 @@ class SupervisorSettings:
     max_stage_attempts: int = 2
     status_interval_seconds: float = 15.0
     require_human_review: bool = False
+    continuation_mode: str = "explicit"
 
     @classmethod
     def from_environment(cls) -> "SupervisorSettings":
@@ -68,6 +80,10 @@ class SupervisorSettings:
                 "false",
             ).strip().casefold()
             in {"1", "true", "yes", "on"},
+            continuation_mode=os.environ.get(
+                "TENMIN_LTX_CONTINUATION_MODE",
+                "explicit",
+            ).strip().casefold(),
         )
 
     def __post_init__(self) -> None:
@@ -79,6 +95,10 @@ class SupervisorSettings:
             raise ValueError("max_stage_attempts must be at least 1.")
         if self.status_interval_seconds <= 0:
             raise ValueError("status_interval_seconds must be positive.")
+        if self.continuation_mode not in {"disabled", "explicit", "auto"}:
+            raise ValueError(
+                "continuation_mode must be disabled, explicit, or auto."
+            )
 
 
 class PipelineSupervisor:
@@ -100,6 +120,7 @@ class PipelineSupervisor:
         video_probe: Callable[[str | Path], object] = probe_video,
         delivery: DiscordDeliverySettings | None = None,
         storage: StorageLayout | None = None,
+        chunk_assembler: SceneChunkAssembler | None = None,
     ):
         self.store = store
         self.mail_client = mail_client
@@ -114,6 +135,22 @@ class PipelineSupervisor:
         self._video_probe = video_probe
         self.delivery = delivery
         self.storage = storage
+        self.chunk_assembler = chunk_assembler or SceneChunkAssembler()
+        self.continuation_renderer = (
+            ContinuationRenderer(
+                store=self.store,
+                storage=self.storage,
+                comfy=self.comfy,
+                assembler=self.chunk_assembler,
+                timeout_seconds=self.settings.i2v_timeout_seconds,
+                max_attempts=self.settings.max_stage_attempts,
+                webhook_url=(
+                    self.delivery.webhook_url if self.delivery is not None else None
+                ),
+            )
+            if self.storage is not None
+            else None
+        )
 
     def tick(self) -> None:
         """Advance the durable pipeline until it reaches a polling wait state."""
@@ -198,7 +235,7 @@ class PipelineSupervisor:
                     try:
                         self.tick()
                     except FatalPipelineError as error:
-                        self._handle_fatal(error)
+                        self.handle_fatal(error)
                     except Exception:
                         LOGGER.exception(
                             "Supervisor tick failed; durable state was preserved."
@@ -246,6 +283,7 @@ class PipelineSupervisor:
         existing_records = {
             record.scene_id: record for record in self.store.scene_records(job.job_id)
         }
+        scene_by_id = {scene.scene_id: scene for scene in job.scenes}
         for scene in job.scenes:
             record = existing_records[scene.scene_id]
             document = scene_review_document(job, scene)
@@ -274,9 +312,47 @@ class PipelineSupervisor:
                         "status": record.state.value,
                     },
                 )
+
+        eligible_scene_ids = {scene.scene_id for scene in job.scenes}
+        for scene in job.scenes:
+            try:
+                if self._automatic_uses_continuation(job.job_id, scene):
+                    ContinuationRenderer.build_plan(job, scene, 1, None)
+            except (ContinuationPlanError, ContinuationRenderError, ValueError) as error:
+                message = f"Continuation preflight failed: {error}"
+                eligible_scene_ids.discard(scene.scene_id)
+                self.store.set_scene_state(
+                    job.job_id,
+                    scene.scene_id,
+                    SceneState.FAILED,
+                    error=message,
+                )
+                self._update_original_revision(
+                    job,
+                    scene,
+                    state=SceneState.FAILED,
+                    error=message,
+                )
+                LOGGER.error(
+                    "Job %s scene %s rejected before assets or rendering: %s",
+                    job.job_id,
+                    scene.scene_id,
+                    message,
+                )
+
+        if not eligible_scene_ids:
+            error = (
+                f"Continuation preflight failed for all {len(job.scenes)} scene(s); "
+                "fix the saved scene timing/continuation data and retry the job."
+            )
+            self.store.transition(PipelineState.ERROR, job_id=job.job_id, error=error)
+            self.store.set_job_status(job.job_id, JobState.FAILED)
+            LOGGER.error("%s Job %s remains saved.", error, job.job_id)
+            return
+
         LOGGER.info("Resolving assets for job %s.", job.job_id)
         self.store.transition(PipelineState.DOWNLOADING_ASSETS, job_id=job.job_id)
-        preparation = self._resolve_assets(job)
+        preparation = self._resolve_assets(job, scene_ids=eligible_scene_ids)
         if self.store.snapshot().job_id != job.job_id:
             LOGGER.info(
                 "Job %s asset resolution finished after a controlled cancellation; "
@@ -284,7 +360,6 @@ class PipelineSupervisor:
                 job.job_id,
             )
             return
-        scene_by_id = {scene.scene_id: scene for scene in job.scenes}
         for scene_id, errors in preparation.failures.items():
             self.store.set_scene_state(
                 job.job_id,
@@ -305,9 +380,10 @@ class PipelineSupervisor:
                 "; ".join(errors),
             )
 
-        if len(preparation.failures) == len(job.scenes):
+        if len(preparation.failures) == len(eligible_scene_ids):
             error = (
-                f"Asset preparation failed for all {len(job.scenes)} scene(s); "
+                f"Asset preparation failed for all {len(eligible_scene_ids)} "
+                "eligible scene(s); "
                 "correct the asset/authentication problem and retry the saved job."
             )
             self.store.transition(PipelineState.ERROR, job_id=job.job_id, error=error)
@@ -337,6 +413,14 @@ class PipelineSupervisor:
         finally:
             # Do not unload LTX between clips. Release it only after this job's
             # complete video stage has finished.
+            self._release_memory()
+
+        try:
+            if not self._deliver_i2v_batch(job, scene_by_id):
+                return
+        finally:
+            # Delivery reloads raw scenes without the LTX model resident. Clear
+            # each decoded/watermarked frame batch before final concatenation.
             self._release_memory()
 
         records = self.store.scene_records(job.job_id)
@@ -458,6 +542,50 @@ class PipelineSupervisor:
                 return False
         return True
 
+    def _deliver_i2v_batch(
+        self,
+        job: JobPayload,
+        scene_by_id: Mapping[int, SceneSpec],
+    ) -> bool:
+        """Deliver watermarked copies only after the shared LTX phase is unloaded."""
+        if self.delivery is None or self.continuation_renderer is None:
+            return True
+        LOGGER.info(
+            "Job %s: LTX generation is complete; sending Discord-only "
+            "watermarked scene copies.",
+            job.job_id,
+        )
+        for record in self.store.scene_records(job.job_id):
+            if (
+                record.state != SceneState.SUCCEEDED
+                or not record.video_path
+                or not Path(record.video_path).is_file()
+            ):
+                continue
+            scene = scene_by_id[record.scene_id]
+            self.deliver_scene_video(
+                job=job,
+                scene=scene,
+                scene_path=record.video_path,
+                revision=1,
+                prompt_id_callback=lambda prompt_id, scene_id=record.scene_id: (
+                    self.store.set_scene_prompt_id(
+                        job.job_id,
+                        scene_id,
+                        prompt_id,
+                        stage="delivery",
+                    )
+                ),
+            )
+            self._release_memory()
+            if self.store.snapshot().job_id != job.job_id:
+                LOGGER.info(
+                    "Job %s left the active pipeline during delivery.",
+                    job.job_id,
+                )
+                return False
+        return True
+
     def _process_scene_stage_with_retries(
         self,
         job: JobPayload,
@@ -491,6 +619,35 @@ class PipelineSupervisor:
                         job.job_id,
                         scene.scene_id,
                         stage,
+                    )
+                    return
+                self.store.clear_scene_prompt_id(
+                    job.job_id,
+                    scene.scene_id,
+                )
+                if (
+                    pipeline_state == PipelineState.RUNNING_I2V
+                    and self._automatic_uses_continuation(job.job_id, scene)
+                ):
+                    # Chunk attempts already own their bounded retry policy.
+                    # Retrying here would resume the same scene attempt forever.
+                    self.store.set_scene_state(
+                        job.job_id,
+                        scene.scene_id,
+                        SceneState.FAILED,
+                        error=str(error),
+                    )
+                    self._update_original_revision(
+                        job,
+                        scene,
+                        state=SceneState.FAILED,
+                        error=str(error),
+                    )
+                    LOGGER.error(
+                        "Scene %s continuation stopped after its bounded chunk "
+                        "retry policy: %s",
+                        scene.scene_id,
+                        error,
                     )
                     return
                 attempts = (
@@ -552,6 +709,64 @@ class PipelineSupervisor:
                 )
                 return
 
+    def run_or_reclaim_prompt(
+        self,
+        workflow: Mapping[str, Any],
+        *,
+        timeout_seconds: float,
+        existing_prompt_id: str | None = None,
+        prompt_id_callback: Callable[[str], None] | None = None,
+        active_check: Callable[[], bool] | None = None,
+    ) -> Mapping[str, Any]:
+        """Reclaim one persisted prompt or queue it with cancellation-safe ownership."""
+        prompt_id = existing_prompt_id
+        completed_prompt = getattr(self.comfy, "completed_prompt", None)
+        prompt_is_queued = getattr(self.comfy, "prompt_is_queued", None)
+        if prompt_id and callable(completed_prompt) and callable(prompt_is_queued):
+            completed = completed_prompt(prompt_id)
+            if completed is not None:
+                LOGGER.info("Reclaimed completed ComfyUI prompt %s.", prompt_id)
+                return completed
+            if prompt_is_queued(prompt_id):
+                LOGGER.info("Waiting for persisted ComfyUI prompt %s.", prompt_id)
+                return self.comfy.wait_for_prompt(
+                    prompt_id,
+                    timeout_seconds=timeout_seconds,
+                )
+            LOGGER.warning(
+                "Persisted ComfyUI prompt %s is absent from queue/history; "
+                "requeueing the same deterministic workflow.",
+                prompt_id,
+            )
+            prompt_id = None
+
+        if prompt_id is None:
+            prompt_id = self.comfy.queue_prompt(workflow)
+            try:
+                if prompt_id_callback is not None:
+                    prompt_id_callback(prompt_id)
+                if active_check is not None and not active_check():
+                    raise ComfyHttpError(
+                        "Prompt ownership was cancelled while ComfyUI accepted the prompt."
+                    )
+            except Exception:
+                cancel = getattr(self.comfy, "cancel_owned_prompt", None)
+                if callable(cancel):
+                    try:
+                        cancel(prompt_id)
+                    except ComfyHttpError:
+                        LOGGER.warning(
+                            "Could not cancel prompt %s after ownership persistence "
+                            "failed.",
+                            prompt_id,
+                            exc_info=True,
+                        )
+                raise
+        return self.comfy.wait_for_prompt(
+            prompt_id,
+            timeout_seconds=timeout_seconds,
+        )
+
     def _process_t2i_stage(
         self,
         job: JobPayload,
@@ -594,17 +809,27 @@ class PipelineSupervisor:
                 scene.scene_id,
             )
         else:
-            if record.t2i_attempts >= self.settings.max_stage_attempts:
+            resume_prompt = bool(
+                record.prompt_id
+                and record.prompt_stage == "t2i"
+                and record.t2i_attempts > 0
+            )
+            if (
+                not resume_prompt
+                and record.t2i_attempts >= self.settings.max_stage_attempts
+            ):
                 raise ComfyHttpError("T2I attempt limit reached.")
             attempt = self.store.begin_scene_stage(
                 job.job_id,
                 scene.scene_id,
                 PipelineState.RUNNING_T2I,
+                resume=resume_prompt,
             )
             LOGGER.info(
-                "Job %s scene %s: building and queueing T2I attempt %s.",
+                "Job %s scene %s: %s T2I attempt %s.",
                 job.job_id,
                 scene.scene_id,
+                "reclaiming" if resume_prompt else "building and queueing",
                 attempt,
             )
             build = build_t2i_api_workflow(
@@ -613,11 +838,24 @@ class PipelineSupervisor:
                 resolved_lora_filenames,
                 delivery=self.delivery,
             )
-            prompt_id = self.comfy.queue_prompt(build.api)
-            self.store.set_scene_prompt_id(job.job_id, scene.scene_id, prompt_id)
-            self.comfy.wait_for_prompt(
-                prompt_id,
+            self.run_or_reclaim_prompt(
+                build.api,
                 timeout_seconds=self.settings.t2i_timeout_seconds,
+                existing_prompt_id=record.prompt_id if resume_prompt else None,
+                prompt_id_callback=lambda prompt_id: self.store.set_scene_prompt_id(
+                    job.job_id,
+                    scene.scene_id,
+                    prompt_id,
+                    stage="t2i",
+                ),
+                active_check=lambda: (
+                    self.store.snapshot().job_id == job.job_id
+                    and self.store.continuation_work_is_active(
+                        job.job_id,
+                        scene.scene_id,
+                        1,
+                    )
+                ),
             )
             if not frame_path.is_file():
                 raise ComfyHttpError(
@@ -641,6 +879,184 @@ class PipelineSupervisor:
                 scene.scene_id,
             )
 
+    def render_i2v_scene(
+        self,
+        *,
+        job: JobPayload,
+        scene: SceneSpec,
+        frame_path: str | Path,
+        destination: str | Path,
+        resolved_lora_filenames: Mapping[str, str],
+        revision: int = 1,
+        overrides: SceneWorkflowOverrides | None = None,
+        prompt_id_callback: Callable[[str], None] | None = None,
+        existing_prompt_id: str | None = None,
+        deliver_to_discord: bool = True,
+        continuation_route: bool | None = None,
+    ) -> Path:
+        """Use one shared legacy/continuation route for jobs and GUI remakes."""
+        use_continuation = (
+            self._uses_continuation(scene, overrides)
+            if continuation_route is None
+            else continuation_route
+        )
+        output_path = Path(destination)
+        if use_continuation:
+            if self.continuation_renderer is None:
+                raise ComfyHttpError(
+                    "Chunked continuation requires configured D-drive storage."
+                )
+            LOGGER.info(
+                "Job %s scene %s revision %s: using resumable 121-frame "
+                "LTX continuation.",
+                job.job_id,
+                scene.scene_id,
+                revision,
+            )
+            return self.continuation_renderer.render_scene(
+                job,
+                scene,
+                frame_path,
+                output_path,
+                revision=revision,
+                resolved_lora_filenames=resolved_lora_filenames,
+                overrides=overrides,
+                deliver_to_discord=deliver_to_discord,
+                prompt_id_callback=prompt_id_callback,
+            ).scene_path
+
+        LOGGER.info(
+            "Job %s scene %s revision %s: using the legacy single-window "
+            "I2V workflow.",
+            job.job_id,
+            scene.scene_id,
+            revision,
+        )
+        build = build_i2v_api_workflow(
+            job,
+            scene,
+            frame_path,
+            resolved_lora_filenames,
+            delivery=self.delivery if deliver_to_discord else None,
+            overrides=overrides,
+        )
+        history = self.run_or_reclaim_prompt(
+            build.api,
+            timeout_seconds=self.settings.i2v_timeout_seconds,
+            existing_prompt_id=existing_prompt_id,
+            prompt_id_callback=prompt_id_callback,
+            active_check=(
+                lambda: self.store.continuation_work_is_active(
+                    job.job_id,
+                    scene.scene_id,
+                    revision,
+                )
+            )
+            if prompt_id_callback is not None
+            else None,
+        )
+        metadata = find_video_output(history, build.output_node_id)
+        return self.comfy.download_output(metadata, output_path)
+
+    def _uses_continuation(
+        self,
+        scene: SceneSpec,
+        overrides: SceneWorkflowOverrides | None = None,
+    ) -> bool:
+        """Route from the duration that the continuation renderer will use."""
+        continuation = (
+            overrides.temporal_continuation
+            if overrides is not None
+            else scene.i2v.continuation
+        )
+        requested_duration = scene.estimated_sec
+        if continuation is not None:
+            configured_duration = continuation.get("requested_duration_seconds")
+            if isinstance(configured_duration, (int, float)) and not isinstance(
+                configured_duration, bool
+            ):
+                requested_duration = float(configured_duration)
+        return continuation_is_enabled(
+            scene_frame_count=timeline_frame_count(requested_duration),
+            continuation=continuation,
+            mode=self.settings.continuation_mode,
+        )
+
+    def _automatic_uses_continuation(
+        self,
+        job_id: str,
+        scene: SceneSpec,
+    ) -> bool:
+        """Keep an interrupted automatic scene on its originally selected route."""
+        record = next(
+            item
+            for item in self.store.scene_records(job_id)
+            if item.scene_id == scene.scene_id
+        )
+        if record.prompt_stage == "i2v_continuation":
+            return True
+        if record.prompt_stage == "i2v_legacy":
+            return False
+        if self.store.continuation_plan(job_id, scene.scene_id, 1) is not None:
+            return True
+        if record.i2v_attempts > 0:
+            # A started pre-continuation scene without a continuation plan is
+            # a durable legacy selection even if T2I recovery later replaced
+            # the scene's current prompt owner.
+            return False
+        return self._uses_continuation(scene)
+
+    def deliver_scene_video(
+        self,
+        *,
+        job: JobPayload,
+        scene: SceneSpec,
+        scene_path: str | Path,
+        revision: int,
+        overrides: SceneWorkflowOverrides | None = None,
+        prompt_id_callback: Callable[[str], None] | None = None,
+    ) -> bool:
+        """Send a Discord-only copy after generation models have been released."""
+        if self.delivery is None:
+            return True
+        if self.continuation_renderer is None:
+            raise ComfyHttpError(
+                "Discord scene delivery requires configured D-drive storage."
+            )
+        for delivery_attempt in range(1, 3):
+            try:
+                self.continuation_renderer.deliver_existing_scene(
+                    job,
+                    scene,
+                    scene_path,
+                    revision=revision,
+                    overrides=overrides,
+                    prompt_id_callback=prompt_id_callback,
+                )
+                return True
+            except ContinuationDeliveryError as error:
+                if delivery_attempt < 2:
+                    LOGGER.warning(
+                        "Discord delivery failed for job %s scene %s revision %s; "
+                        "reclaiming/retrying once: %s",
+                        job.job_id,
+                        scene.scene_id,
+                        revision,
+                        error,
+                    )
+                    continue
+                LOGGER.error(
+                    "Discord delivery failed twice for job %s scene %s revision %s. "
+                    "The raw unwatermarked scene remains valid and final assembly "
+                    "will continue: %s",
+                    job.job_id,
+                    scene.scene_id,
+                    revision,
+                    error,
+                )
+                return False
+        return False  # pragma: no cover - loop always returns.
+
     def _process_i2v_stage(
         self,
         job: JobPayload,
@@ -660,7 +1076,12 @@ class PipelineSupervisor:
                 f"I2V requires a cached T2I frame for scene {scene.scene_id}."
             )
         clip_path = self._clip_path(job.job_id, scene.scene_id)
-        if record.video_path and Path(record.video_path).is_file():
+        use_continuation = self._automatic_uses_continuation(job.job_id, scene)
+        if (
+            not use_continuation
+            and record.video_path
+            and Path(record.video_path).is_file()
+        ):
             self.store.set_scene_state(job.job_id, scene.scene_id, SceneState.SUCCEEDED)
             self._update_original_revision(
                 job,
@@ -675,7 +1096,7 @@ class PipelineSupervisor:
                 scene.scene_id,
             )
             return
-        if clip_path.is_file():
+        if not use_continuation and clip_path.is_file():
             self.store.set_scene_state(
                 job.job_id,
                 scene.scene_id,
@@ -695,35 +1116,57 @@ class PipelineSupervisor:
                 scene.scene_id,
             )
             return
-        if record.i2v_attempts >= self.settings.max_stage_attempts:
+        resume_legacy_prompt = bool(
+            not use_continuation
+            and record.prompt_id
+            and record.prompt_stage == "i2v_legacy"
+            and record.i2v_attempts > 0
+        )
+        if (
+            not use_continuation
+            and not resume_legacy_prompt
+            and record.i2v_attempts >= self.settings.max_stage_attempts
+        ):
             raise ComfyHttpError("I2V attempt limit reached.")
 
+        resume_continuation = use_continuation and record.i2v_attempts > 0
+        resume_stage = resume_continuation or resume_legacy_prompt
+        prompt_stage = (
+            "i2v_continuation" if use_continuation else "i2v_legacy"
+        )
         attempt = self.store.begin_scene_stage(
             job.job_id,
             scene.scene_id,
             PipelineState.RUNNING_I2V,
+            prompt_stage=prompt_stage,
+            resume=resume_stage,
         )
         LOGGER.info(
-            "Job %s scene %s: building and queueing I2V attempt %s.",
+            "Job %s scene %s: %s resumable I2V run %s.",
             job.job_id,
             scene.scene_id,
+            "resuming" if resume_stage else "starting",
             attempt,
         )
-        build = build_i2v_api_workflow(
-            job,
-            scene,
-            frame_path,
-            resolved_lora_filenames,
-            delivery=self.delivery,
+        self.render_i2v_scene(
+            job=job,
+            scene=scene,
+            frame_path=frame_path,
+            destination=clip_path,
+            resolved_lora_filenames=resolved_lora_filenames,
+            revision=1,
+            deliver_to_discord=False,
+            existing_prompt_id=(
+                record.prompt_id if resume_legacy_prompt else None
+            ),
+            prompt_id_callback=lambda prompt_id: self.store.set_scene_prompt_id(
+                job.job_id,
+                scene.scene_id,
+                prompt_id,
+                stage=prompt_stage,
+            ),
+            continuation_route=use_continuation,
         )
-        prompt_id = self.comfy.queue_prompt(build.api)
-        self.store.set_scene_prompt_id(job.job_id, scene.scene_id, prompt_id)
-        history = self.comfy.wait_for_prompt(
-            prompt_id,
-            timeout_seconds=self.settings.i2v_timeout_seconds,
-        )
-        metadata = find_video_output(history, build.output_node_id)
-        self.comfy.download_output(metadata, clip_path)
         self.store.set_scene_state(
             job.job_id,
             scene.scene_id,
@@ -933,7 +1376,8 @@ class PipelineSupervisor:
         except ComfyHttpError:
             LOGGER.warning("ComfyUI memory release request failed.", exc_info=True)
 
-    def _handle_fatal(self, error: FatalPipelineError) -> None:
+    def handle_fatal(self, error: FatalPipelineError) -> None:
+        """Enter durable error state, then use configured controlled recovery."""
         snapshot = self.store.snapshot()
         self.store.transition(
             PipelineState.ERROR,
@@ -942,12 +1386,40 @@ class PipelineSupervisor:
             error=str(error),
         )
         if self.restart_comfy and self.restart_comfy():
-            if snapshot.job_id:
+            if snapshot.job_id and snapshot.state in {
+                PipelineState.DOWNLOADING_ASSETS,
+                PipelineState.RUNNING_T2I,
+                PipelineState.RUNNING_I2V,
+                PipelineState.STITCHING,
+            }:
                 self.store.requeue_unfinished_scenes(snapshot.job_id)
                 self.store.transition(
                     PipelineState.DOWNLOADING_ASSETS,
                     job_id=snapshot.job_id,
                 )
-            LOGGER.warning("ComfyUI restarted; unfinished scenes will resume.")
+                LOGGER.warning("ComfyUI restarted; unfinished scenes will resume.")
+                return
+            if snapshot.state in {
+                PipelineState.IDLE,
+                PipelineState.WAITING_FOR_GROK,
+                PipelineState.AWAITING_REVIEW,
+            }:
+                self.store.transition(
+                    snapshot.state,
+                    job_id=snapshot.job_id,
+                )
+                LOGGER.warning(
+                    "ComfyUI restarted; restored non-render pipeline state %s.",
+                    snapshot.state.value,
+                )
+                return
+            LOGGER.error(
+                "ComfyUI restarted, but pipeline remains in error because its "
+                "previous state was %s.",
+                snapshot.state.value,
+            )
         else:
             LOGGER.error("Fatal pipeline error requires recovery: %s", error)
+
+    # Compatibility for callers from earlier project revisions.
+    _handle_fatal = handle_fatal

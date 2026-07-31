@@ -57,10 +57,128 @@ def payload() -> dict:
 class ContractTests(unittest.TestCase):
     def test_valid_payload_uses_ltx_frame_rule(self) -> None:
         job = parse_job_payload(payload())
+        self.assertEqual(job.schema_version, "1")
         self.assertEqual(job.character.base_model, "Anima")
         self.assertEqual(job.character.lora.weight, 0.85)
         self.assertEqual(job.scenes[0].frame_count, 433)
         self.assertEqual(seconds_for_frame_count(job.scenes[0].frame_count), 18.0)
+
+    def test_optional_continuation_contract_is_typed_without_breaking_legacy(self) -> None:
+        data = payload()
+        data["schema_version"] = "2"
+        data["scenes"][0]["i2v"].update(
+            {
+                "continuation": {
+                    "enabled": True,
+                    "strategy": "ltx23_latent_overlap_v1",
+                    "fps": 24,
+                    "base_window_transition_frames": 120,
+                    "overlap_transition_frames": 24,
+                    "seed_policy": "derived_v1",
+                },
+                "continuity": {
+                    "identity_anchors": ["The same 28-year-old adult woman."],
+                    "camera_axis": "Keep the camera south of the action axis.",
+                },
+                "segments": [
+                    {
+                        "index": 0,
+                        "requested_duration_seconds": 5.0,
+                        "positive_prompt": "She begins walking toward screen right.",
+                        "negative_prompt_additions": ["motion reset"],
+                        "variation_index": 0,
+                    }
+                ],
+            }
+        )
+
+        job = parse_job_payload(data)
+
+        self.assertEqual(job.schema_version, "2")
+        self.assertTrue(job.scenes[0].i2v.continuation["enabled"])
+        self.assertEqual(
+            job.scenes[0].i2v.continuity["camera_axis"],
+            "Keep the camera south of the action axis.",
+        )
+        self.assertEqual(job.scenes[0].i2v.segments[0]["index"], 0)
+
+    def test_continuation_profile_cannot_change_fixed_production_math(self) -> None:
+        data = payload()
+        data["scenes"][0]["i2v"]["continuation"] = {
+            "enabled": True,
+            "fps": 30,
+        }
+        with self.assertRaisesRegex(ContractValidationError, "must be the production value 24"):
+            parse_job_payload(data)
+
+        data = payload()
+        data["scenes"][0]["i2v"]["continuation"] = {
+            "enabled": True,
+            "overlap_transition_frames": 16,
+        }
+        with self.assertRaisesRegex(ContractValidationError, "must be 24"):
+            parse_job_payload(data)
+
+        data = payload()
+        data["scenes"][0]["i2v"]["continuation"] = {
+            "enabled": True,
+            "strategy": "unknown_strategy",
+        }
+        with self.assertRaisesRegex(
+            ContractValidationError,
+            "ltx23_latent_overlap_v1",
+        ):
+            parse_job_payload(data)
+
+    def test_invalid_continuation_segments_are_rejected(self) -> None:
+        data = payload()
+        data["scenes"][0]["i2v"]["segments"] = [
+            {
+                "index": 0,
+                "positive_prompt": "Beat",
+                "new_transition_frames": 25,
+            }
+        ]
+        with self.assertRaisesRegex(ContractValidationError, "multiple of 8"):
+            parse_job_payload(data)
+
+    def test_continuation_segment_timing_sources_are_mutually_exclusive(self) -> None:
+        data = payload()
+        data["scenes"][0]["i2v"]["segments"] = [
+            {
+                "index": 0,
+                "positive_prompt": "Beat",
+                "requested_duration_seconds": 5.0,
+                "new_transition_frames": 120,
+            }
+        ]
+        with self.assertRaisesRegex(
+            ContractValidationError,
+            "exactly one of requested_duration_seconds or new_transition_frames",
+        ):
+            parse_job_payload(data)
+
+    def test_segment_ltx_loras_are_rejected_until_routing_is_supported(self) -> None:
+        data = payload()
+        data["scenes"][0]["i2v"]["segments"] = [
+            {
+                "index": 0,
+                "positive_prompt": "Beat",
+                "requested_duration_seconds": 18.0,
+                "ltx_loras": [
+                    {
+                        "name": "Segment motion",
+                        "download_url": "https://civitai.com/api/download/models/987654",
+                        "weight": 0.7,
+                    }
+                ],
+            }
+        ]
+        with self.assertRaisesRegex(
+            ContractValidationError,
+            "segments\\[0\\]\\.ltx_loras is not supported",
+        ):
+            parse_job_payload(data)
 
     def test_duration_is_rejected_before_generation(self) -> None:
         data = payload()

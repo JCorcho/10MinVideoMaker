@@ -5,6 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import dataclass
 import json
+import math
 from typing import Any, Mapping
 
 from .constants import (
@@ -16,6 +17,7 @@ from .constants import (
     PRODUCTION_FPS,
     PRODUCTION_HEIGHT,
     PRODUCTION_WIDTH,
+    frame_count_for_seconds,
 )
 from .contracts import (
     ContractValidationError,
@@ -38,6 +40,9 @@ class SceneWorkflowOverrides:
     i2v_second_pass: Mapping[str, Any]
     chunking: Mapping[str, Any]
     spatial_upscaler: Mapping[str, Any]
+    temporal_continuation: Mapping[str, Any] | None
+    continuity: Mapping[str, Any] | None
+    segments: tuple[Mapping[str, Any], ...]
 
 
 @dataclass(frozen=True)
@@ -59,6 +64,50 @@ def _lora_document(lora: LoraSpec) -> dict[str, Any]:
     if lora.version_id is not None:
         result["version_id"] = lora.version_id
     return result
+
+
+def _review_duration_seconds(scene: SceneSpec) -> float:
+    """Expose the duration that an existing continuation revision actually used.
+
+    Older schema-v2 payloads could carry a second duration inside
+    ``i2v.continuation``.  The browser has one duration control, so fold that
+    legacy override into the visible scene value and omit the hidden duplicate
+    from all newly edited revisions.
+    """
+    continuation = scene.i2v.continuation
+    if continuation is not None:
+        requested = continuation.get("requested_duration_seconds")
+        if isinstance(requested, (int, float)) and not isinstance(requested, bool):
+            return float(requested)
+    return scene.estimated_sec
+
+
+def _continuation_document(scene: SceneSpec) -> dict[str, Any] | None:
+    if scene.i2v.continuation is None:
+        return None
+    result = deepcopy(dict(scene.i2v.continuation))
+    result.pop("requested_duration_seconds", None)
+    return result
+
+
+def _segment_documents(scene: SceneSpec) -> list[dict[str, Any]]:
+    result = [deepcopy(dict(item)) for item in scene.i2v.segments]
+    for segment in result:
+        if segment.get("seed_override") is not None:
+            # JSON numbers above 2**53 cannot cross the browser boundary
+            # losslessly.  Keep the typed SceneSpec integer for rendering and
+            # expose an exact decimal string to every revision/editor surface.
+            segment["seed_override"] = str(segment["seed_override"])
+    return result
+
+
+def _continuation_frame_profile(seconds: float) -> tuple[int, int]:
+    timeline_frames = max(1, round(float(seconds) * PRODUCTION_FPS))
+    generation_master_frames = max(
+        9,
+        8 * math.ceil(max(timeline_frames - 1, 0) / 8) + 1,
+    )
+    return timeline_frames, generation_master_frames
 
 
 def _default_t2i(job: JobPayload, scene: SceneSpec) -> dict[str, Any]:
@@ -159,6 +208,13 @@ def _default_i2v(scene: SceneSpec) -> dict[str, Any]:
             "overlap": 6,
             "max_size_without_tiling": 22,
         },
+        "temporal_continuation": _continuation_document(scene),
+        "continuity": (
+            deepcopy(dict(scene.i2v.continuity))
+            if scene.i2v.continuity is not None
+            else None
+        ),
+        "segments": _segment_documents(scene),
     }
 
 
@@ -170,11 +226,15 @@ def scene_review_document(job: JobPayload, scene: SceneSpec) -> dict[str, Any]:
     )
     excluded_scene = {"id", "title", "estimated_sec", "t2i", "i2v"}
     excluded_job = {"job_id", "character", "ltxv_character_lora", "scenes"}
+    estimated_seconds = _review_duration_seconds(scene)
+    timeline_frames, generation_master_frames = _continuation_frame_profile(
+        estimated_seconds
+    )
     return {
         "job_id": job.job_id,
         "scene_id": scene.scene_id,
         "title": scene.title,
-        "estimated_seconds": scene.estimated_sec,
+        "estimated_seconds": estimated_seconds,
         "character": {
             "name": job.character.name,
             "series": job.character.series,
@@ -192,7 +252,9 @@ def scene_review_document(job: JobPayload, scene: SceneSpec) -> dict[str, Any]:
             "width": PRODUCTION_WIDTH,
             "height": PRODUCTION_HEIGHT,
             "fps": PRODUCTION_FPS,
-            "frame_count": scene.frame_count,
+            "frame_count": frame_count_for_seconds(estimated_seconds),
+            "timeline_output_frames": timeline_frames,
+            "generation_master_frames": generation_master_frames,
             "locked": True,
         },
         "scene_context": {
@@ -371,6 +433,36 @@ def validate_scene_edit(
             for index, item in enumerate(_list(i2v.get("loras"), "i2v.loras"))
         ],
     }
+    temporal_continuation = i2v.get("temporal_continuation")
+    continuity = i2v.get("continuity")
+    segments = i2v.get("segments", [])
+    if temporal_continuation is not None:
+        continuation_document = deepcopy(
+            dict(_mapping(temporal_continuation, "i2v.temporal_continuation"))
+        )
+        # ``estimated_seconds`` is the only editable duration source.  Accept
+        # stale browser/revision documents, but never persist their hidden
+        # continuation-specific duplicate into a new immutable revision.
+        continuation_document.pop("requested_duration_seconds", None)
+        raw_scene["i2v"]["continuation"] = continuation_document
+    if continuity is not None:
+        raw_scene["i2v"]["continuity"] = deepcopy(
+            dict(_mapping(continuity, "i2v.continuity"))
+        )
+    normalized_segments: list[dict[str, Any]] = []
+    for index, item in enumerate(_list(segments, "i2v.segments")):
+        segment = deepcopy(dict(_mapping(item, f"i2v.segments[{index}]")))
+        if segment.get("seed_override") is not None:
+            # The browser deliberately keeps unsigned-64-bit seeds as decimal
+            # text so JavaScript cannot round them through IEEE-754 Number.
+            segment["seed_override"] = _integer(
+                segment["seed_override"],
+                f"i2v.segments[{index}].seed_override",
+                0,
+                2**64 - 1,
+            )
+        normalized_segments.append(segment)
+    raw_scene["i2v"]["segments"] = normalized_segments
     try:
         revised_job = parse_job_payload(raw)
     except ContractValidationError as error:
@@ -451,6 +543,19 @@ def validate_scene_edit(
             i2v_second_pass=second_pass,
             chunking=chunking,
             spatial_upscaler=upscaler,
+            temporal_continuation=(
+                deepcopy(dict(revised_scene.i2v.continuation))
+                if revised_scene.i2v.continuation is not None
+                else None
+            ),
+            continuity=(
+                deepcopy(dict(revised_scene.i2v.continuity))
+                if revised_scene.i2v.continuity is not None
+                else None
+            ),
+            segments=tuple(
+                deepcopy(dict(item)) for item in revised_scene.i2v.segments
+            ),
         ),
         document=json.loads(json.dumps(canonical)),
     )

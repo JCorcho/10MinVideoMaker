@@ -12,6 +12,8 @@ const state = {
   pendingBatch: null,
   status: null,
   cancellingProject: false,
+  activeChunkProgress: null,
+  progressRefreshes: new Set(),
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -22,6 +24,9 @@ function mobileView() {
   if (!mobileQuery.matches) {
     document.body.removeAttribute("data-mobile-view");
     document.documentElement.style.removeProperty("--mobile-topbar-height");
+    document.documentElement.style.removeProperty(
+      "--mobile-scene-switcher-height",
+    );
     return;
   }
   document.body.dataset.mobileView = !state.selectedJob
@@ -32,6 +37,11 @@ function mobileView() {
   document.documentElement.style.setProperty(
     "--mobile-topbar-height",
     `${$(".topbar").offsetHeight}px`,
+  );
+  const switcherHeight = $("#mobile-scene-switcher")?.offsetHeight || 76;
+  document.documentElement.style.setProperty(
+    "--mobile-scene-switcher-height",
+    `${switcherHeight}px`,
   );
 }
 
@@ -74,6 +84,32 @@ async function api(path, options = {}) {
 
 function clone(value) {
   return structuredClone(value);
+}
+
+function normalizeSceneParameters(value) {
+  const document = clone(value);
+  document.i2v ||= {};
+  if (!Array.isArray(document.i2v.segments)) {
+    document.i2v.segments = [];
+  }
+  document.i2v.segments.forEach((segment) => {
+    if (
+      segment
+      && typeof segment === "object"
+      && segment.new_transition_frames != null
+    ) {
+      delete segment.requested_duration_seconds;
+    }
+  });
+  const continuation = document.i2v.temporal_continuation;
+  if (continuation && typeof continuation === "object") {
+    const legacyDuration = Number(continuation.requested_duration_seconds);
+    if (Number.isFinite(legacyDuration) && legacyDuration > 0) {
+      document.estimated_seconds = legacyDuration;
+    }
+    delete continuation.requested_duration_seconds;
+  }
+  return document;
 }
 
 function getPath(object, path) {
@@ -192,6 +228,7 @@ function renderScenes() {
     <button class="list-card ${scene.scene_id === state.selectedScene ? "selected" : ""}" data-scene="${scene.scene_id}">
       <strong>${String(scene.scene_id).padStart(2, "0")} · ${escapeHtml(scene.title)}</strong>
       <div class="card-row">${badge(scene.state)}<span>${scene.include_in_manual_final ? "included" : "excluded"} · ${scene.revision_count} version${scene.revision_count === 1 ? "" : "s"}</span></div>
+      ${scene.chunk_progress ? `<span class="chunk-card-progress">Chunk ${scene.chunk_progress.current_chunk}/${scene.chunk_progress.total_chunks} · ${humanize(scene.chunk_progress.phase)}</span>` : ""}
     </button>
   `).join("");
   $$("[data-scene]").forEach((button) => button.addEventListener("click", () => selectScene(Number(button.dataset.scene))));
@@ -220,7 +257,7 @@ async function selectScene(sceneId) {
   $("#scene-detail").classList.remove("hidden");
   $$("[data-scene]").forEach((button) => button.classList.toggle("selected", Number(button.dataset.scene) === sceneId));
   renderRevisionPicker(draft?.source_revision);
-  state.working = clone(
+  state.working = normalizeSceneParameters(
     revisionDraft(draft, selectedRevision())?.parameters
       || revisionParameters(selectedRevision()),
   );
@@ -293,6 +330,247 @@ function renderSceneHeading(revision) {
   $("#scene-heading").textContent = state.working.title;
   const version = revision ? ` · Version ${revision.revision}` : "";
   $("#scene-kicker").textContent = `Scene ${state.selectedScene} · ${state.sceneData.record.state}${version}`;
+  renderContinuationStatus(revision?.chunk_progress || null);
+}
+
+function renderContinuationStatus(progress) {
+  const element = $("#continuation-status");
+  renderChunkLineage(progress);
+  if (!progress) {
+    element.classList.add("hidden");
+    element.textContent = "";
+    return;
+  }
+  const pieces = [
+    `Chunk ${progress.current_chunk}/${progress.total_chunks}`,
+    humanize(progress.phase),
+    `${progress.completed_chunks} complete`,
+  ];
+  if (progress.resumed) pieces.push("resumed");
+  if (progress.failed_attempts) pieces.push(`${progress.failed_attempts} failed attempt${progress.failed_attempts === 1 ? "" : "s"}`);
+  element.textContent = pieces.join(" · ");
+  element.classList.remove("hidden");
+}
+
+function lineageValue(value) {
+  if (value == null || value === "") return "None";
+  return displayValue(value);
+}
+
+function lineageFact(label, value, options = {}) {
+  if (value === undefined || value === null) return "";
+  const classes = [
+    "lineage-fact",
+    options.wide ? "lineage-wide" : "",
+    options.long ? "lineage-long" : "",
+  ].filter(Boolean).join(" ");
+  const text = escapeHtml(lineageValue(value));
+  const rendered = options.code ? `<code>${text}</code>` : text;
+  return `<div class="${classes}"><dt>${escapeHtml(label)}</dt><dd>${rendered}</dd></div>`;
+}
+
+function lineageWindow(start, end) {
+  if (start == null && end == null) return null;
+  return `[${start ?? "?"}, ${end ?? "?"})`;
+}
+
+function lineageStateBadge(value) {
+  const stateValue = value || "not_started";
+  const stateClass = String(stateValue).toLowerCase().replace(/[^a-z0-9_-]/g, "_");
+  return `<span class="badge ${stateClass}">${escapeHtml(humanize(stateValue))}</span>`;
+}
+
+function lineageLoras(loras) {
+  if (!Array.isArray(loras) || !loras.length) return null;
+  return loras.map((item) => {
+    if (!item || typeof item !== "object") return lineageValue(item);
+    const filename = item.filename || item.name || "Unnamed LoRA";
+    return item.weight == null ? filename : `${filename} · weight ${item.weight}`;
+  }).join("\n");
+}
+
+function lineageGroup(title, facts) {
+  const content = facts.filter(Boolean).join("");
+  if (!content) return "";
+  return `
+    <section class="lineage-group">
+      <h5>${escapeHtml(title)}</h5>
+      <dl class="chunk-lineage-grid">${content}</dl>
+    </section>
+  `;
+}
+
+function lineageProductionFacts(production) {
+  if (!production || typeof production !== "object" || Array.isArray(production)) return [];
+  return Object.entries(production).map(([key, value]) =>
+    lineageFact(humanize(key), value)
+  );
+}
+
+function renderChunkAttempt(attempt, acceptedAttemptNumber, chunkIndex, openAttempts) {
+  const attemptNumber = Number(attempt?.attempt_number || 0);
+  const accepted = acceptedAttemptNumber != null
+    && attemptNumber === Number(acceptedAttemptNumber);
+  const attemptKey = `${chunkIndex}:${attemptNumber}`;
+  const open = openAttempts.has(attemptKey) ? " open" : "";
+  const error = attempt?.error
+    ? `<div class="lineage-error"><strong>Attempt error</strong><span>${escapeHtml(attempt.error)}</span></div>`
+    : "";
+  const mandatoryLoras = lineageLoras(attempt?.mandatory_loras);
+
+  return `
+    <details class="chunk-attempt-card${accepted ? " accepted" : ""}" data-attempt-key="${attribute(attemptKey)}"${open}>
+      <summary class="chunk-attempt-summary">
+        <span>Attempt ${attemptNumber || "?"}</span>
+        ${lineageStateBadge(attempt?.state)}
+        ${accepted ? '<span class="accepted-chip">Accepted attempt</span>' : ""}
+      </summary>
+      <div class="chunk-attempt-body">
+        ${error}
+        ${lineageGroup("Attempt", [
+          lineageFact("Seed", attempt?.seed, {code: true}),
+          lineageFact("Variation index", attempt?.variation_index),
+          lineageFact("Stage 1 prompt ID", attempt?.stage1_prompt_id, {code: true}),
+          lineageFact("Stage 2 prompt ID", attempt?.stage2_prompt_id, {code: true}),
+          lineageFact("Artifact manifest", attempt?.artifact_manifest_path, {code: true, wide: true}),
+          lineageFact("Rendered video", attempt?.video_path, {code: true, wide: true}),
+        ])}
+        ${lineageGroup("Workflow hashes", [
+          lineageFact("Stage 1 workflow", attempt?.stage1_workflow_sha256, {code: true, wide: true}),
+          lineageFact("Stage 2 workflow", attempt?.stage2_workflow_sha256, {code: true, wide: true}),
+        ])}
+        ${lineageGroup("Artifact hashes", [
+          lineageFact("Upstream artifact", attempt?.upstream_artifact_hash, {code: true, wide: true}),
+          lineageFact("Output artifact", attempt?.artifact_hash, {code: true, wide: true}),
+          lineageFact("Raw video", attempt?.raw_video_sha256, {code: true, wide: true}),
+        ])}
+        ${lineageGroup("Model hashes", [
+          lineageFact("Stage 1 checkpoint", attempt?.stage1_checkpoint_sha256, {code: true, wide: true}),
+          lineageFact("Stage 2 checkpoint", attempt?.stage2_checkpoint_sha256, {code: true, wide: true}),
+        ])}
+        ${lineageGroup("Model files", [
+          lineageFact("Checkpoint", attempt?.checkpoint_filename, {code: true}),
+          lineageFact("Text encoder", attempt?.text_encoder_filename, {code: true}),
+          lineageFact("Spatial upscaler", attempt?.spatial_upscaler_filename, {code: true}),
+          lineageFact("Mandatory LoRAs", mandatoryLoras, {code: true, wide: true}),
+        ])}
+        ${lineageGroup("Node contracts", [
+          lineageFact("Node-contract hash", attempt?.node_contracts_sha256, {code: true, wide: true}),
+          lineageFact("Implementation hash", attempt?.implementation_sha256, {code: true, wide: true}),
+        ])}
+        ${lineageGroup("Production profile", lineageProductionFacts(attempt?.production))}
+      </div>
+    </details>
+  `;
+}
+
+function renderChunkLineage(progress) {
+  const element = $("#chunk-lineage");
+  const chunks = Array.isArray(progress?.chunks) ? progress.chunks : [];
+  if (!chunks.length) {
+    element.classList.add("hidden");
+    element.innerHTML = "";
+    delete element.dataset.lineageKey;
+    return;
+  }
+
+  const lineageKey = `${progress.job_id || ""}:${progress.scene_id || ""}:${progress.revision || ""}`;
+  const sameLineage = element.dataset.lineageKey === lineageKey;
+  const openChunks = new Set(
+    sameLineage
+      ? [...element.querySelectorAll("details.chunk-lineage-card[open]")]
+        .map((item) => item.dataset.chunkIndex)
+      : [],
+  );
+  const openAttempts = new Set(
+    sameLineage
+      ? [...element.querySelectorAll("details.chunk-attempt-card[open]")]
+        .map((item) => item.dataset.attemptKey)
+      : [],
+  );
+  const activeChunkIndex = Math.max(0, Number(progress.current_chunk || 1) - 1);
+
+  const cards = chunks.map((chunk) => {
+    const chunkIndex = Number(chunk.chunk_index ?? (chunk.chunk_number || 1) - 1);
+    const chunkNumber = Number(chunk.chunk_number || chunkIndex + 1);
+    const chunkKey = String(chunkIndex);
+    const open = (
+      openChunks.has(chunkKey)
+      || (!sameLineage && chunkIndex === activeChunkIndex)
+    ) ? " open" : "";
+    const globalWindow = lineageWindow(
+      chunk.global_window_start_frame,
+      chunk.global_window_end_frame_exclusive,
+    );
+    const newWindow = lineageWindow(
+      chunk.global_new_start_frame,
+      chunk.global_new_end_frame_exclusive,
+    );
+    const segmentIndices = Array.isArray(chunk.segment_indices)
+      ? (
+        chunk.segment_indices.length
+          ? chunk.segment_indices.map((index) => `Beat ${Number(index) + 1}`).join(", ")
+          : "None"
+      )
+      : null;
+    const attempts = Array.isArray(chunk.attempts) ? chunk.attempts : [];
+    const attemptCards = attempts.map((attempt) =>
+      renderChunkAttempt(
+        attempt,
+        chunk.accepted_attempt_number,
+        chunkIndex,
+        openAttempts,
+      )
+    ).join("");
+    const chunkError = chunk.error
+      ? `<div class="lineage-error"><strong>Chunk error</strong><span>${escapeHtml(chunk.error)}</span></div>`
+      : "";
+
+    return `
+      <details class="chunk-lineage-card" data-chunk-index="${attribute(chunkKey)}"${open}>
+        <summary class="chunk-lineage-summary">
+          <span class="chunk-lineage-name">Chunk ${chunkNumber}</span>
+          ${lineageStateBadge(chunk.state)}
+          <span class="chunk-lineage-window">${escapeHtml(globalWindow || `${chunk.model_window_frames ?? "?"} model frames`)}</span>
+          ${chunk.accepted_attempt_number == null ? "" : `<span class="accepted-chip">Accepted #${escapeHtml(chunk.accepted_attempt_number)}</span>`}
+        </summary>
+        <div class="chunk-lineage-body">
+          ${chunkError}
+          <dl class="chunk-lineage-grid">
+            ${lineageFact("Resolved prompt", chunk.prompt, {wide: true, long: true})}
+            ${lineageFact("Resolved negative", chunk.negative, {wide: true, long: true})}
+            ${lineageFact("Seed", chunk.seed, {code: true})}
+            ${lineageFact("Variation index", chunk.variation_index)}
+            ${lineageFact("Model window frames", chunk.model_window_frames)}
+            ${lineageFact("New transition frames", chunk.new_transition_frames)}
+            ${lineageFact("Global model window", globalWindow, {code: true})}
+            ${lineageFact("Global new-frame window", newWindow, {code: true})}
+            ${lineageFact("Resolved segments", segmentIndices, {wide: true})}
+            ${lineageFact("Prompt segmentation quality", chunk.prompt_segmentation_quality, {wide: true})}
+            ${lineageFact("Accepted attempt", chunk.accepted_attempt_number)}
+            ${lineageFact("Accepted artifact hash", chunk.accepted_artifact_hash, {code: true, wide: true})}
+          </dl>
+          <section class="chunk-attempts" aria-label="Chunk ${chunkNumber} generation attempts">
+            <h4>Generation attempts</h4>
+            ${attemptCards || '<p class="muted">No generation attempts recorded yet.</p>'}
+          </section>
+        </div>
+      </details>
+    `;
+  }).join("");
+
+  element.dataset.lineageKey = lineageKey;
+  element.innerHTML = `
+    <div class="chunk-lineage-header">
+      <div>
+        <p class="eyebrow">Audit trail</p>
+        <h3>Continuation lineage</h3>
+      </div>
+      <span class="muted">${chunks.length} chunk${chunks.length === 1 ? "" : "s"}</span>
+    </div>
+    <div class="chunk-lineage-list">${cards}</div>
+  `;
+  element.classList.remove("hidden");
 }
 
 function renderRevisionPicker(preferredRevision = null) {
@@ -322,7 +600,9 @@ function selectRevisionParameters() {
   const revision = selectedRevision();
   if (!revision) return;
   const saved = revisionDraft(state.drafts.get(key), revision);
-  state.working = clone(saved?.parameters || revisionParameters(revision));
+  state.working = normalizeSceneParameters(
+    saved?.parameters || revisionParameters(revision),
+  );
   renderSceneHeading(revision);
   renderMedia();
   renderForm();
@@ -331,6 +611,7 @@ function selectRevisionParameters() {
 }
 
 function renderForm() {
+  syncProductionFrameProfile();
   $$("[data-path]").forEach((input) => {
     const value = getPath(state.working, input.dataset.path);
     input.value = value ?? "";
@@ -338,6 +619,7 @@ function renderForm() {
   renderContext("#scene-context", state.working.scene_context);
   renderContext("#job-context", state.working.job_context);
   renderLoraEditor("#character-lora", "Global character LoRA", [state.working.character.global_lora], "character", false);
+  renderOptionalLtxCharacterLora();
   renderLoraEditor("#t2i-loras", "Scene T2I LoRAs", state.working.t2i.loras, "t2i", true);
   renderLoraEditor("#i2v-loras", "Scene I2V LoRAs", state.working.i2v.loras, "i2v", true);
   $("#mandatory-loras").innerHTML = `<span class="muted">Mandatory LTX LoRAs</span>` +
@@ -345,15 +627,104 @@ function renderForm() {
   renderPasses();
   renderFaceDetailer();
   renderAdvanced();
+  renderTemporalContinuation();
+  renderProductionProfile();
+  bindInputs();
+}
+
+function continuationFrameCounts(seconds, fps) {
+  const numericSeconds = Number(seconds);
+  const numericFps = Number(fps);
+  if (
+    !Number.isFinite(numericSeconds)
+    || numericSeconds <= 0
+    || !Number.isFinite(numericFps)
+    || numericFps <= 0
+  ) {
+    return null;
+  }
+  const rawFrames = numericSeconds * numericFps;
+  const lowerFrame = Math.floor(rawFrames);
+  const fraction = rawFrames - lowerFrame;
+  const roundedFrames = fraction === 0.5
+    ? (lowerFrame % 2 === 0 ? lowerFrame : lowerFrame + 1)
+    : Math.round(rawFrames);
+  const timelineFrames = Math.max(1, roundedFrames);
+  const generationMasterFrames = Math.max(
+    9,
+    8 * Math.ceil(Math.max(timelineFrames - 1, 0) / 8) + 1,
+  );
+  const legacyFrameCount = Math.max(
+    9,
+    8 * Math.ceil(rawFrames / 8) + 1,
+  );
+  return { timelineFrames, generationMasterFrames, legacyFrameCount };
+}
+
+function syncProductionFrameProfile() {
   const profile = state.working.production_profile;
+  const counts = continuationFrameCounts(
+    state.working.estimated_seconds,
+    profile.fps,
+  );
+  if (!counts) return;
+  profile.timeline_output_frames = counts.timelineFrames;
+  profile.generation_master_frames = counts.generationMasterFrames;
+  profile.frame_count = counts.legacyFrameCount;
+}
+
+function renderProductionProfile() {
+  const profile = state.working.production_profile;
+  const route = resolvedContinuationRoute();
+  const frameItems = route.continuation
+    ? [
+        `${profile.timeline_output_frames} exact final timeline frames`,
+        `${profile.generation_master_frames} LTX generation-master frames`,
+        "8n + 1 generation master",
+      ]
+    : [
+        `${profile.frame_count} frames`,
+        "8n + 1",
+      ];
   $("#production-profile").innerHTML = [
     `${profile.width} × ${profile.height}`,
     `${profile.fps} fps`,
-    `${profile.frame_count} frames`,
-    "8n + 1",
+    route.label,
+    ...frameItems,
     "32 sec maximum",
   ].map((item) => `<span class="profile-item">🔒 ${item}</span>`).join("");
-  bindInputs();
+  const finalFrames = $("#continuation-final-frames");
+  const masterFrames = $("#continuation-master-frames");
+  if (finalFrames) {
+    finalFrames.textContent =
+      `🔒 ${profile.timeline_output_frames} final output frames`;
+  }
+  if (masterFrames) {
+    masterFrames.textContent =
+      `🔒 ${profile.generation_master_frames} generation-master frames`;
+  }
+}
+
+function resolvedContinuationRoute() {
+  const profile = state.working.production_profile;
+  if (profile.timeline_output_frames <= 121) {
+    return {
+      continuation: false,
+      label: "Resolved route: legacy single window (121 frames or fewer)",
+    };
+  }
+  const continuation = state.working.i2v.temporal_continuation;
+  const explicit = continuation?.enabled;
+  const rolloutMode = state.status?.continuation_mode || "explicit";
+  const enabled = rolloutMode !== "disabled"
+    && explicit !== false
+    && (rolloutMode === "auto" || explicit === true);
+  return {
+    continuation: enabled,
+    label: enabled
+      ? "Resolved route: chunked continuation"
+      : "Resolved route: legacy single window",
+  };
 }
 
 function renderContext(selector, data) {
@@ -364,7 +735,9 @@ function renderContext(selector, data) {
 
 function renderLoraEditor(selector, title, loras, stage, allowMany) {
   const root = $(selector);
-  const localLoras = state.options[stage === "i2v" ? "i2v_loras" : "t2i_loras"] || [];
+  const localLoras = state.options[
+    stage === "i2v" || stage === "ltx_character" ? "i2v_loras" : "t2i_loras"
+  ] || [];
   root.innerHTML = `
     <div class="lora-heading"><h4>${title}</h4>${allowMany ? `<button type="button" class="secondary add-lora" data-stage="${stage}">+ Add LoRA</button>` : ""}</div>
     <div class="lora-list">${loras.map((lora, index) => `
@@ -388,6 +761,58 @@ function renderLoraEditor(selector, title, loras, stage, allowMany) {
     renderForm();
     setEditable(true);
   }));
+}
+
+function renderOptionalLtxCharacterLora() {
+  const root = $("#ltx-character-lora");
+  const lora = state.working.character.ltx_character_lora;
+  if (!lora) {
+    root.innerHTML = `
+      <div class="lora-heading">
+        <h4>LTX character LoRA (video)</h4>
+        <button id="add-ltx-character-lora" type="button" class="secondary">+ Add video character LoRA</button>
+      </div>
+      <p class="local-lora-note">Optional LTX 2.x character adapter used only by video generation.</p>
+    `;
+    $("#add-ltx-character-lora").addEventListener("click", () => {
+      state.working.character.ltx_character_lora = {
+        name: "New LTX character LoRA",
+        download_url: "https://civitai.com/api/download/models/",
+        weight: 0.8,
+      };
+      renderForm();
+      setEditable(true);
+      saveDraft();
+    });
+    return;
+  }
+  renderLoraEditor(
+    "#ltx-character-lora",
+    "LTX character LoRA (video)",
+    [lora],
+    "ltx_character",
+    false,
+  );
+  const heading = root.querySelector(".lora-heading");
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "remove-lora";
+  remove.textContent = "Remove";
+  remove.addEventListener("click", () => {
+    state.working.character.ltx_character_lora = null;
+    renderForm();
+    setEditable(true);
+    saveDraft();
+  });
+  heading.append(remove);
+}
+
+function loraTarget(stage, index) {
+  if (stage === "character") return state.working.character.global_lora;
+  if (stage === "ltx_character") {
+    return state.working.character.ltx_character_lora;
+  }
+  return state.working[stage].loras[index];
 }
 
 function localLoraName(value) {
@@ -466,6 +891,212 @@ function renderAdvanced() {
   ).join("");
 }
 
+function continuationRoutingValue() {
+  const value = state.working.i2v.temporal_continuation;
+  if (value == null) return "default";
+  return value.enabled === false ? "disabled" : "enabled";
+}
+
+function ensureContinuationSettings(enabled = true) {
+  const current = state.working.i2v.temporal_continuation;
+  state.working.i2v.temporal_continuation = {
+    ...(current || {}),
+    enabled,
+    strategy: "ltx23_latent_overlap_v1",
+    fps: 24,
+    base_window_transition_frames: 120,
+    overlap_transition_frames: 24,
+    seed_policy: "derived_v1",
+  };
+  delete state.working.i2v.temporal_continuation.requested_duration_seconds;
+}
+
+function anchorLines(value) {
+  if (Array.isArray(value)) return value.join("\n");
+  return value == null ? "" : String(value);
+}
+
+function renderTemporalContinuation() {
+  const root = $("#temporal-continuation");
+  if (!Array.isArray(state.working.i2v.segments)) {
+    state.working.i2v.segments = [];
+  }
+  const continuity = state.working.i2v.continuity || {};
+  const segments = state.working.i2v.segments;
+  const profile = state.working.production_profile;
+  root.innerHTML = `
+    <div class="continuation-routing">
+      <label>Long-scene routing
+        <select id="continuation-routing">
+          <option value="default" ${continuationRoutingValue() === "default" ? "selected" : ""}>Pipeline default</option>
+          <option value="enabled" ${continuationRoutingValue() === "enabled" ? "selected" : ""}>Force chunked continuation</option>
+          <option value="disabled" ${continuationRoutingValue() === "disabled" ? "selected" : ""}>Force legacy single window</option>
+        </select>
+      </label>
+      <div class="locked-list continuation-locks">
+        <span class="locked-chip">🔒 24 fps</span>
+        <span class="locked-chip">🔒 120 base transitions</span>
+        <span class="locked-chip">🔒 24-frame overlap</span>
+        <span class="locked-chip">🔒 up to 96 new transitions</span>
+        <span id="continuation-final-frames" class="locked-chip">🔒 ${profile.timeline_output_frames} final output frames</span>
+        <span id="continuation-master-frames" class="locked-chip">🔒 ${profile.generation_master_frames} generation-master frames</span>
+      </div>
+    </div>
+    <h4>Continuity anchors</h4>
+    <div class="field-grid two continuity-grid">
+      <label>Identity anchors<textarea rows="3" data-continuity-key="identity_anchors" data-continuity-list="true">${escapeHtml(anchorLines(continuity.identity_anchors))}</textarea></label>
+      <label>Wardrobe anchors<textarea rows="3" data-continuity-key="wardrobe_anchors" data-continuity-list="true">${escapeHtml(anchorLines(continuity.wardrobe_anchors))}</textarea></label>
+      <label>Environment anchors<textarea rows="3" data-continuity-key="environment_anchors" data-continuity-list="true">${escapeHtml(anchorLines(continuity.environment_anchors))}</textarea></label>
+      <label>Camera axis<input data-continuity-key="camera_axis" value="${attribute(continuity.camera_axis || "")}"></label>
+      <label>Screen direction<input data-continuity-key="screen_direction" value="${attribute(continuity.screen_direction || "")}"></label>
+    </div>
+    <div class="lora-heading continuation-segment-heading">
+      <h4>Ordered scene beats</h4>
+      <button id="add-continuation-segment" type="button" class="secondary">+ Add beat</button>
+    </div>
+    <p class="muted">Beats are mapped onto overlapping LTX windows. Large seed overrides stay as exact decimal text.</p>
+    <p id="beat-coverage" class="muted">${escapeHtml(beatCoverageText())}</p>
+    <div class="continuation-segments">
+      ${segments.map((segment, index) => continuationSegmentCard(segment, index)).join("") || `<p class="muted">No explicit beats. The scene motion prompt will be reused with continuity instructions.</p>`}
+    </div>
+  `;
+  $("#continuation-routing").addEventListener("change", (event) => {
+    if (event.target.value === "default") {
+      state.working.i2v.temporal_continuation = null;
+    } else {
+      ensureContinuationSettings(event.target.value === "enabled");
+    }
+    renderProductionProfile();
+    saveDraft();
+  });
+  $$("[data-continuity-key]").forEach((input) => input.addEventListener("input", () => {
+    const key = input.dataset.continuityKey;
+    const value = input.dataset.continuityList
+      ? input.value.split("\n").map((item) => item.trim()).filter(Boolean)
+      : input.value;
+    state.working.i2v.continuity = {
+      ...(state.working.i2v.continuity || {}),
+      [key]: value,
+    };
+    saveDraft();
+  }));
+  $$("[data-segment-key]").forEach((input) => input.addEventListener("input", () => {
+    const segment = state.working.i2v.segments[Number(input.dataset.segmentIndex)];
+    const key = input.dataset.segmentKey;
+    if (input.dataset.segmentList) {
+      segment[key] = input.value.split("\n").map((item) => item.trim()).filter(Boolean);
+    } else if (input.dataset.segmentInteger || input.dataset.segmentNumber) {
+      if (input.value === "") delete segment[key];
+      else segment[key] = Number(input.value);
+      if (key === "requested_duration_seconds") {
+        delete segment.new_transition_frames;
+      } else if (key === "new_transition_frames") {
+        delete segment.requested_duration_seconds;
+      }
+    } else if (key === "seed_override") {
+      if (input.value.trim()) segment[key] = input.value.trim();
+      else delete segment[key];
+    } else {
+      segment[key] = input.value;
+    }
+    updateBeatCoverage();
+    saveDraft();
+  }));
+  $$("[data-segment-timing-mode]").forEach((select) => select.addEventListener("change", () => {
+    const segment = state.working.i2v.segments[Number(select.dataset.segmentIndex)];
+    if (select.value === "transitions") {
+      delete segment.requested_duration_seconds;
+      if (segment.new_transition_frames == null) segment.new_transition_frames = 96;
+    } else {
+      delete segment.new_transition_frames;
+      if (segment.requested_duration_seconds == null) {
+        segment.requested_duration_seconds = 4;
+      }
+    }
+    renderForm();
+    setEditable(true);
+    saveDraft();
+  }));
+  $$(".remove-continuation-segment").forEach((button) => button.addEventListener("click", () => {
+    state.working.i2v.segments.splice(Number(button.dataset.segmentIndex), 1);
+    state.working.i2v.segments.forEach((segment, index) => { segment.index = index; });
+    renderForm();
+    setEditable(true);
+    saveDraft();
+  }));
+  $("#add-continuation-segment").addEventListener("click", () => {
+    const index = state.working.i2v.segments.length;
+    state.working.i2v.segments.push({
+      index,
+      requested_duration_seconds: 4,
+      positive_prompt: state.working.i2v.prompt,
+      negative_prompt_additions: [],
+      variation_index: 0,
+    });
+    renderForm();
+    setEditable(true);
+    saveDraft();
+  });
+}
+
+function segmentTimingMode(segment) {
+  return segment.new_transition_frames != null ? "transitions" : "duration";
+}
+
+function beatCoverageText() {
+  const segments = state.working.i2v.segments;
+  if (!segments.length) return "Beat coverage: no explicit beats.";
+  const fps = Number(state.working.production_profile.fps);
+  const target = Number(state.working.production_profile.timeline_output_frames);
+  const covered = segments.reduce((total, segment) => {
+    if (segment.new_transition_frames != null) {
+      return total + Math.max(1, Number(segment.new_transition_frames) || 0);
+    }
+    return total + (
+      continuationFrameCounts(segment.requested_duration_seconds, fps)?.timelineFrames
+      || 0
+    );
+  }, 0);
+  const difference = covered - target;
+  const status = difference === 0
+    ? "complete"
+    : difference < 0
+      ? `${Math.abs(difference)} frame(s) short`
+      : `${difference} frame(s) over`;
+  return `Beat coverage: ${covered}/${target} timeline frames · ${status}.`;
+}
+
+function updateBeatCoverage() {
+  const element = $("#beat-coverage");
+  if (element) element.textContent = beatCoverageText();
+}
+
+function continuationSegmentCard(segment, index) {
+  const timingMode = segmentTimingMode(segment);
+  const timingInput = timingMode === "transitions"
+    ? `<label>New transitions (8n)<input type="number" min="0" step="8" data-segment-index="${index}" data-segment-key="new_transition_frames" data-segment-integer="true" value="${attribute(segment.new_transition_frames ?? "")}"></label>`
+    : `<label>Requested seconds<input type="number" min="0.04" max="32" step="0.01" data-segment-index="${index}" data-segment-key="requested_duration_seconds" data-segment-number="true" value="${attribute(segment.requested_duration_seconds ?? "")}"></label>`;
+  return `
+    <div class="continuation-segment-card">
+      <div class="lora-heading">
+        <strong>Beat ${index + 1}</strong>
+        <button type="button" class="remove-continuation-segment" data-segment-index="${index}">Remove</button>
+      </div>
+      <label>Positive prompt<textarea rows="4" data-segment-index="${index}" data-segment-key="positive_prompt">${escapeHtml(segment.positive_prompt || "")}</textarea></label>
+      <div class="field-grid three segment-timing-grid">
+        <label>Timing mode<select data-segment-timing-mode="true" data-segment-index="${index}">
+          <option value="duration" ${timingMode === "duration" ? "selected" : ""}>Duration in seconds</option>
+          <option value="transitions" ${timingMode === "transitions" ? "selected" : ""}>Exact transition count</option>
+        </select></label>
+        ${timingInput}
+        <label>Variation index<input type="number" min="0" step="1" data-segment-index="${index}" data-segment-key="variation_index" data-segment-integer="true" value="${attribute(segment.variation_index ?? 0)}"></label>
+      </div>
+      <label>Negative additions<textarea rows="2" data-segment-index="${index}" data-segment-key="negative_prompt_additions" data-segment-list="true">${escapeHtml((segment.negative_prompt_additions || []).join("\n"))}</textarea></label>
+      <label>Seed override (optional)<input type="text" inputmode="numeric" data-segment-index="${index}" data-segment-key="seed_override" value="${attribute(segment.seed_override ?? "")}"></label>
+    </div>
+  `;
+}
+
 function bindInputs() {
   $$("[data-path]").forEach((input) => {
     input.addEventListener("input", () => {
@@ -473,15 +1104,17 @@ function bindInputs() {
       if (input.dataset.sigmas) value = value.split(",").map((item) => Number(item.trim())).filter((item) => !Number.isNaN(item));
       else if (input.type === "number") value = Number(value);
       setPath(state.working, input.dataset.path, value);
+      if (input.dataset.path === "estimated_seconds") {
+        syncProductionFrameProfile();
+        renderProductionProfile();
+      }
       saveDraft();
     });
   });
   $$("[data-lora-key]").forEach((input) => {
     input.addEventListener("input", () => {
       const stage = input.dataset.loraStage;
-      const target = stage === "character"
-        ? state.working.character.global_lora
-        : state.working[stage].loras[Number(input.dataset.loraIndex)];
+      const target = loraTarget(stage, Number(input.dataset.loraIndex));
       target[input.dataset.loraKey] = input.type === "number" ? Number(input.value) : input.value;
       saveDraft();
     });
@@ -490,9 +1123,7 @@ function bindInputs() {
     picker.addEventListener("change", () => {
       if (!picker.value) return;
       const stage = picker.dataset.loraStage;
-      const target = stage === "character"
-        ? state.working.character.global_lora
-        : state.working[stage].loras[Number(picker.dataset.loraIndex)];
+      const target = loraTarget(stage, Number(picker.dataset.loraIndex));
       target.name = localLoraName(picker.value);
       saveDraft();
       renderForm();
@@ -601,6 +1232,81 @@ async function queueManualFinal() {
   }
 }
 
+function chunkProgressKey(progress) {
+  return progress
+    ? `${progress.job_id}:${progress.scene_id}:${progress.revision}`
+    : null;
+}
+
+function applyChunkProgressToCaches(progress) {
+  if (!progress) return;
+  if (progress.job_id === state.selectedJob) {
+    const scene = state.scenes.find(
+      (item) => item.scene_id === progress.scene_id,
+    );
+    if (scene) scene.chunk_progress = progress;
+    renderScenes();
+  }
+  if (
+    progress.job_id === state.selectedJob
+    && progress.scene_id === state.selectedScene
+  ) {
+    const revision = state.sceneData?.revisions.find(
+      (item) => item.revision === progress.revision,
+    );
+    if (revision) revision.chunk_progress = progress;
+    if (selectedRevision()?.revision === progress.revision) {
+      renderContinuationStatus(progress);
+    }
+  }
+}
+
+async function refreshChunkProgress(progress) {
+  const key = chunkProgressKey(progress);
+  if (!key || state.progressRefreshes.has(key)) return;
+  state.progressRefreshes.add(key);
+  try {
+    const sceneData = await api(
+      `/api/jobs/${encodeURIComponent(progress.job_id)}/scenes/${progress.scene_id}`,
+    );
+    const latestProgress = sceneData.revisions[0]?.chunk_progress || null;
+    if (progress.job_id === state.selectedJob) {
+      const scene = state.scenes.find(
+        (item) => item.scene_id === progress.scene_id,
+      );
+      if (scene) {
+        scene.state = sceneData.record.state;
+        scene.chunk_progress = latestProgress;
+      }
+      renderScenes();
+    }
+    if (
+      progress.job_id === state.selectedJob
+      && progress.scene_id === state.selectedScene
+      && state.sceneData
+    ) {
+      state.sceneData.record = sceneData.record;
+      sceneData.revisions.forEach((freshRevision) => {
+        const cachedRevision = state.sceneData.revisions.find(
+          (item) => item.revision === freshRevision.revision,
+        );
+        if (cachedRevision) {
+          cachedRevision.chunk_progress = freshRevision.chunk_progress;
+          cachedRevision.state = freshRevision.state;
+          cachedRevision.frame_url = freshRevision.frame_url;
+          cachedRevision.video_url = freshRevision.video_url;
+        }
+      });
+      renderContinuationStatus(selectedRevision()?.chunk_progress || null);
+      renderMedia();
+    }
+  } catch (error) {
+    console.warn("Could not refresh continuation progress.", error);
+  } finally {
+    state.progressRefreshes.delete(key);
+  }
+}
+
 function updateStatus(status) {
   state.status = status;
   const element = $("#status");
@@ -618,6 +1324,19 @@ function updateStatus(status) {
     state.manualFinal = status.manual_final;
     renderManualFinalControls();
   }
+  const previousProgress = state.activeChunkProgress;
+  const nextProgress = status.chunk_progress || null;
+  if (nextProgress) {
+    applyChunkProgressToCaches(nextProgress);
+  }
+  if (
+    previousProgress
+    && chunkProgressKey(previousProgress) !== chunkProgressKey(nextProgress)
+  ) {
+    void refreshChunkProgress(previousProgress);
+  }
+  state.activeChunkProgress = nextProgress;
+  if (state.working) renderProductionProfile();
   mobileView();
 }
 
@@ -677,7 +1396,9 @@ $("#mark-remake").addEventListener("change", () => {
     for (const draftKey of state.revisionDrafts.keys()) {
       if (draftKey.startsWith(`${key}:`)) state.revisionDrafts.delete(draftKey);
     }
-    state.working = clone(revisionParameters(selectedRevision()));
+    state.working = normalizeSceneParameters(
+      revisionParameters(selectedRevision()),
+    );
     renderSceneHeading(selectedRevision());
     renderForm();
     updateDraftCount();

@@ -67,7 +67,10 @@ def _record_document(record: SceneRecord) -> dict[str, Any]:
     return result
 
 
-def _revision_document(revision: SceneRevision) -> dict[str, Any]:
+def _revision_document(
+    revision: SceneRevision,
+    controller: SupervisorController | None = None,
+) -> dict[str, Any]:
     result = asdict(revision)
     result["remake_mode"] = revision.remake_mode.value
     result["state"] = revision.state.value
@@ -80,6 +83,15 @@ def _revision_document(revision: SceneRevision) -> dict[str, Any]:
     result["video_url"] = (
         f"/api/media/{revision.job_id}/{revision.scene_id}/{revision.revision}/video"
         if revision.video_path
+        else None
+    )
+    result["chunk_progress"] = (
+        controller.chunk_progress_document(
+            revision.job_id,
+            revision.scene_id,
+            revision.revision,
+        )
+        if controller is not None
         else None
     )
     return result
@@ -231,6 +243,30 @@ def create_gui_app(
             )
         except StateTransitionError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
+        scenes: list[dict[str, Any]] = []
+        for record in records:
+            revisions = controller.store.scene_revisions(job_id, record.scene_id)
+            latest = revisions[0] if revisions else None
+            scenes.append(
+                {
+                    **_record_document(record),
+                    "title": next(
+                        scene.title
+                        for scene in job.scenes
+                        if scene.scene_id == record.scene_id
+                    ),
+                    "revision_count": len(revisions),
+                    "chunk_progress": (
+                        controller.chunk_progress_document(
+                            job_id,
+                            record.scene_id,
+                            latest.revision,
+                        )
+                        if latest is not None
+                        else None
+                    ),
+                }
+            )
         return {
             "job_id": job.job_id,
             "display_name": _project_display_name(job, job_record.created_at),
@@ -244,20 +280,7 @@ def create_gui_app(
                 for key, value in job.raw.items()
                 if key not in {"job_id", "character", "ltxv_character_lora", "scenes"}
             },
-            "scenes": [
-                {
-                    **_record_document(record),
-                    "title": next(
-                        scene.title
-                        for scene in job.scenes
-                        if scene.scene_id == record.scene_id
-                    ),
-                    "revision_count": len(
-                        controller.store.scene_revisions(job_id, record.scene_id)
-                    ),
-                }
-                for record in records
-            ],
+            "scenes": scenes,
             "manual_final": _manual_final_document(
                 controller.store.latest_manual_final(job_id)
             ),
@@ -279,7 +302,9 @@ def create_gui_app(
         return {
             "parameters": scene_review_document(job, scene),
             "record": _record_document(record),
-            "revisions": [_revision_document(item) for item in revisions],
+            "revisions": [
+                _revision_document(item, controller) for item in revisions
+            ],
         }
 
     @app.post("/api/jobs/{job_id}/approve")

@@ -18,8 +18,10 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from tenminvideomaker.assembly import FfmpegAssembler, probe_video
 from tenminvideomaker.assets import ComfyLoraAssetClient
+from tenminvideomaker.chunk_assembly import SceneChunkAssembler
 from tenminvideomaker.comfy_http import ComfyHttpClient
 from tenminvideomaker.configuration import load_project_environment
+from tenminvideomaker.continuation_validation import require_auto_rollout_approval
 from tenminvideomaker.delivery import DiscordDeliverySettings
 from tenminvideomaker.mail import GmailClient, GmailSettings
 from tenminvideomaker.ownership import (
@@ -30,6 +32,23 @@ from tenminvideomaker.ownership import (
 from tenminvideomaker.state_store import PipelineStateStore
 from tenminvideomaker.storage import StorageLayout, migrate_legacy_storage
 from tenminvideomaker.supervisor import PipelineSupervisor, SupervisorSettings
+
+
+def _require_auto_continuation_approval(
+    supervisor: PipelineSupervisor,
+    storage: StorageLayout,
+) -> None:
+    """Keep unvalidated continuation opt-in; fail closed before auto rollout."""
+    if supervisor.settings.continuation_mode != "auto":
+        return
+    renderer = supervisor.continuation_renderer
+    if renderer is None:
+        raise RuntimeError("Automatic continuation requires D-drive continuation storage.")
+    require_auto_rollout_approval(
+        storage,
+        implementation_sha256=renderer.implementation_sha256(),
+        node_contracts_sha256=renderer.runtime_contract_sha256(),
+    )
 
 
 def restart_comfyui() -> bool:
@@ -91,7 +110,7 @@ def build_supervisor(
             settings,
             require_human_review=require_human_review,
         )
-    return PipelineSupervisor(
+    supervisor = PipelineSupervisor(
         store=PipelineStateStore(storage.database_path),
         mail_client=GmailClient(GmailSettings.from_environment()),
         asset_manager=ComfyLoraAssetClient(comfy),
@@ -105,7 +124,13 @@ def build_supervisor(
         video_probe=partial(probe_video, ffprobe_executable=ffprobe),
         delivery=DiscordDeliverySettings.from_environment(configured_environment),
         storage=storage,
+        chunk_assembler=SceneChunkAssembler(
+            ffmpeg_executable=ffmpeg,
+            ffprobe_executable=ffprobe,
+        ),
     )
+    _require_auto_continuation_approval(supervisor, storage)
+    return supervisor
 
 
 def main() -> int:

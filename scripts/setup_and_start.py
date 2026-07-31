@@ -80,6 +80,10 @@ def _log_level(value: str) -> bool:
     return value.upper() in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
 
 
+def _continuation_mode(value: str) -> bool:
+    return value.strip().casefold() in {"disabled", "explicit", "auto"}
+
+
 def _valid_email(value: str) -> bool:
     return bool(re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", value.strip()))
 
@@ -155,6 +159,16 @@ OPTIONAL_SETTINGS = (
         "2",
         "Persistent retry budget for each scene stage.",
         _positive_integer,
+    ),
+    OptionalSetting(
+        "TENMIN_LTX_CONTINUATION_MODE",
+        "LTX temporal continuation",
+        "explicit",
+        (
+            "disabled, explicit (only payloads that opt in), or auto "
+            "(all new scenes longer than 121 frames)."
+        ),
+        _continuation_mode,
     ),
     OptionalSetting(
         "TENMIN_FFMPEG",

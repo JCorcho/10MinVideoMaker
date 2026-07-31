@@ -7,7 +7,7 @@ import unittest
 
 from tenminvideomaker.contracts import parse_job_payload
 from tenminvideomaker.state_store import PipelineStateStore, SceneState
-from tenminvideomaker.storage import StorageLayout, migrate_legacy_storage
+from tenminvideomaker.storage import StorageError, StorageLayout, migrate_legacy_storage
 
 from test_contracts import payload
 
@@ -26,6 +26,61 @@ class StorageTests(unittest.TestCase):
             layout.final_path("job-1"),
             Path(r"D:\LTX_Supervisor_Storage\finals\job-1_final.mp4"),
         )
+
+    def test_chunk_artifacts_stay_under_the_scene_revision(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            layout = StorageLayout(Path(directory))
+            revision_root = layout.revision_root("job-1", 4, 2)
+            checkpoint = layout.chunk_checkpoint_path(
+                "job-1",
+                4,
+                2,
+                3,
+                1,
+            )
+            self.assertTrue(checkpoint.is_relative_to(revision_root))
+            self.assertEqual(
+                checkpoint,
+                revision_root
+                / "chunks"
+                / "chunk_0003"
+                / "attempts"
+                / "0001"
+                / "stage1_handoff.safetensors",
+            )
+            self.assertTrue(
+                layout.scene_generation_master_path("job-1", 4, 2).is_relative_to(
+                    revision_root
+                )
+            )
+
+    def test_chunk_paths_reject_invalid_coordinates_and_artifact_kinds(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            layout = StorageLayout(Path(directory))
+            with self.assertRaises(StorageError):
+                layout.chunk_root("job-1", 1, 1, -1)
+            with self.assertRaises(StorageError):
+                layout.chunk_attempt_root("job-1", 1, 1, 0, 0)
+            with self.assertRaises(StorageError):
+                layout.chunk_checkpoint_path(
+                    "job-1",
+                    1,
+                    1,
+                    0,
+                    1,
+                    "arbitrary-path",
+                )
+            self.assertEqual(
+                layout.chunk_checkpoint_path(
+                    "job-1",
+                    1,
+                    1,
+                    0,
+                    1,
+                    "stage2_audio",
+                ).name,
+                "stage2_audio.safetensors",
+            )
 
     def test_migration_copies_database_payloads_and_media_without_deleting_sources(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

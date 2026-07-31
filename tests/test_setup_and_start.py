@@ -305,7 +305,9 @@ class SetupAndStartTests(unittest.TestCase):
             self.assertEqual(resumed, job.job_id)
             self.assertEqual(store.snapshot().state, PipelineState.DOWNLOADING_ASSETS)
             self.assertEqual(store.scene_states(job.job_id), {1: SceneState.PENDING})
-            self.assertIsNone(store.scene_records(job.job_id)[0].prompt_id)
+            record = store.scene_records(job.job_id)[0]
+            self.assertEqual(record.prompt_id, "active-prompt")
+            self.assertEqual(record.prompt_stage, "i2v_legacy")
 
     def test_declining_running_job_cancels_project_prompt_before_abandon(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

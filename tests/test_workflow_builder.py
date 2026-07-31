@@ -377,6 +377,134 @@ class WorkflowBuilderTests(unittest.TestCase):
             ),
         )
 
+    def test_live_contract_validator_rejects_unknown_inputs_and_combo_literals(self) -> None:
+        graph = {
+            "1": {
+                "class_type": "Choice",
+                "inputs": {"mode": "removed-value", "extra": 1},
+            }
+        }
+        object_info = {
+            "Choice": {
+                "input": {
+                    "required": {
+                        "mode": [["current-value", "other-value"]],
+                    }
+                },
+                "output": [],
+            }
+        }
+        self.assertEqual(
+            validate_against_object_info(graph, object_info),
+            (
+                "node 1.mode has invalid combo value 'removed-value'",
+                "node 1 (Choice) has unknown input extra",
+            ),
+        )
+
+    def test_live_contract_validator_supports_modern_combo_schema(self) -> None:
+        graph = {
+            "1": {
+                "class_type": "Choice",
+                "inputs": {"mode": "current-value"},
+            }
+        }
+        object_info = {
+            "Choice": {
+                "input": {
+                    "required": {
+                        "mode": [
+                            "COMBO",
+                            {"options": ["current-value", "other-value"]},
+                        ],
+                    }
+                },
+                "output": [],
+            }
+        }
+        self.assertEqual(validate_against_object_info(graph, object_info), ())
+        graph["1"]["inputs"]["mode"] = "removed-value"
+        self.assertEqual(
+            validate_against_object_info(graph, object_info),
+            ("node 1.mode has invalid combo value 'removed-value'",),
+        )
+
+    def test_live_contract_validator_rejects_scalar_type_and_bounds(self) -> None:
+        graph = {
+            "1": {
+                "class_type": "LTXVAddGuide",
+                "inputs": {
+                    "frame_idx": 10_000,
+                    "strength": "1.0",
+                    "enabled": 1,
+                    "finite": float("nan"),
+                },
+            }
+        }
+        object_info = {
+            "LTXVAddGuide": {
+                "input": {
+                    "required": {
+                        "frame_idx": ["INT", {"min": 0, "max": 9_999}],
+                        "strength": ["FLOAT", {"min": 0.0, "max": 1.0}],
+                        "enabled": ["BOOLEAN"],
+                        "finite": ["FLOAT", {"min": 0.0, "max": 1.0}],
+                    }
+                },
+                "output": [],
+            }
+        }
+
+        self.assertEqual(
+            validate_against_object_info(graph, object_info),
+            (
+                "node 1.frame_idx value 10000 is above maximum 9999",
+                "node 1.strength expects a literal FLOAT, got str",
+                "node 1.enabled expects a literal BOOLEAN, got int",
+                "node 1.finite expects a finite FLOAT, got nan",
+            ),
+        )
+
+    def test_live_contract_validator_supports_vhs_format_fields(self) -> None:
+        graph = {
+            "1": {
+                "class_type": "VHS_VideoCombine",
+                "inputs": {
+                    "format": "video/h264-mp4",
+                    "pix_fmt": "yuv420p",
+                    "crf": 19,
+                },
+            }
+        }
+        object_info = {
+            "VHS_VideoCombine": {
+                "input": {
+                    "required": {
+                        "format": [
+                            ["video/h264-mp4"],
+                            {
+                                "formats": {
+                                    "video/h264-mp4": [
+                                        ["pix_fmt", ["yuv420p", "yuv420p10le"]],
+                                        ["crf", "INT", {"default": 19}],
+                                    ]
+                                }
+                            },
+                        ]
+                    }
+                },
+                "output": [],
+            }
+        }
+        self.assertEqual(validate_against_object_info(graph, object_info), ())
+        del graph["1"]["inputs"]["crf"]
+        self.assertEqual(
+            validate_against_object_info(graph, object_info),
+            (
+                "node 1 (VHS_VideoCombine) is missing required input crf",
+            ),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

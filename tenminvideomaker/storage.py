@@ -149,6 +149,136 @@ class StorageLayout:
     ) -> Path:
         return self.revision_root(job_id, scene_id, revision) / "generation-manifest.json"
 
+    def chunk_root(
+        self,
+        job_id: str,
+        scene_id: int,
+        revision: int,
+        chunk_index: int,
+    ) -> Path:
+        _validate_chunk_index(chunk_index)
+        return (
+            self.revision_root(job_id, scene_id, revision)
+            / "chunks"
+            / f"chunk_{chunk_index:04d}"
+        )
+
+    def chunk_attempt_root(
+        self,
+        job_id: str,
+        scene_id: int,
+        revision: int,
+        chunk_index: int,
+        attempt_number: int,
+    ) -> Path:
+        _validate_attempt_number(attempt_number)
+        return (
+            self.chunk_root(job_id, scene_id, revision, chunk_index)
+            / "attempts"
+            / f"{attempt_number:04d}"
+        )
+
+    def chunk_checkpoint_path(
+        self,
+        job_id: str,
+        scene_id: int,
+        revision: int,
+        chunk_index: int,
+        attempt_number: int,
+        artifact_kind: str = "stage1_handoff",
+    ) -> Path:
+        if artifact_kind not in {
+            "stage1_handoff",
+            "stage2_video",
+            "stage2_audio",
+        }:
+            raise StorageError("Unsupported chunk checkpoint artifact kind.")
+        return (
+            self.chunk_attempt_root(
+                job_id,
+                scene_id,
+                revision,
+                chunk_index,
+                attempt_number,
+            )
+            / f"{artifact_kind}.safetensors"
+        )
+
+    def chunk_checkpoint_manifest_path(
+        self,
+        job_id: str,
+        scene_id: int,
+        revision: int,
+        chunk_index: int,
+        attempt_number: int,
+        artifact_kind: str = "stage1_handoff",
+    ) -> Path:
+        return self.chunk_checkpoint_path(
+            job_id,
+            scene_id,
+            revision,
+            chunk_index,
+            attempt_number,
+            artifact_kind,
+        ).with_suffix(".json")
+
+    def chunk_video_path(
+        self,
+        job_id: str,
+        scene_id: int,
+        revision: int,
+        chunk_index: int,
+        attempt_number: int,
+    ) -> Path:
+        return (
+            self.chunk_attempt_root(
+                job_id,
+                scene_id,
+                revision,
+                chunk_index,
+                attempt_number,
+            )
+            / "window.mkv"
+        )
+
+    def chunk_attempt_manifest_path(
+        self,
+        job_id: str,
+        scene_id: int,
+        revision: int,
+        chunk_index: int,
+        attempt_number: int,
+    ) -> Path:
+        return (
+            self.chunk_attempt_root(
+                job_id,
+                scene_id,
+                revision,
+                chunk_index,
+                attempt_number,
+            )
+            / "COMPLETE.json"
+        )
+
+    def scene_assembly_root(self, job_id: str, scene_id: int, revision: int) -> Path:
+        return self.revision_root(job_id, scene_id, revision) / "assembly"
+
+    def scene_generation_master_path(
+        self,
+        job_id: str,
+        scene_id: int,
+        revision: int,
+    ) -> Path:
+        return self.scene_assembly_root(job_id, scene_id, revision) / "generation-master.mp4"
+
+    def continuation_plan_path(
+        self,
+        job_id: str,
+        scene_id: int,
+        revision: int,
+    ) -> Path:
+        return self.scene_assembly_root(job_id, scene_id, revision) / "continuation-plan.json"
+
     def final_path(self, job_id: str) -> Path:
         _validate_job_id(job_id)
         return self.finals_root / f"{job_id}_final.mp4"
@@ -167,6 +297,24 @@ def _validate_job_id(job_id: str) -> None:
 def _validate_scene_id(scene_id: int) -> None:
     if isinstance(scene_id, bool) or not isinstance(scene_id, int) or scene_id < 1:
         raise StorageError("scene_id must be a positive integer.")
+
+
+def _validate_chunk_index(chunk_index: int) -> None:
+    if (
+        isinstance(chunk_index, bool)
+        or not isinstance(chunk_index, int)
+        or chunk_index < 0
+    ):
+        raise StorageError("chunk_index must be a non-negative integer.")
+
+
+def _validate_attempt_number(attempt_number: int) -> None:
+    if (
+        isinstance(attempt_number, bool)
+        or not isinstance(attempt_number, int)
+        or attempt_number < 1
+    ):
+        raise StorageError("attempt_number must be a positive integer.")
 
 
 def _copy_if_missing(source: Path, destination: Path) -> bool:

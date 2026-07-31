@@ -112,14 +112,76 @@ class ComfyHttpClient:
         self.cancel_prompt(prompt_id)
         raise ComfyHttpError(f"ComfyUI prompt {prompt_id} exceeded {timeout_seconds:g} seconds.")
 
+    def completed_prompt(self, prompt_id: str) -> Mapping[str, Any] | None:
+        """Return a successful history record without waiting.
+
+        A persisted prompt ID lets a restarted supervisor reclaim work that
+        ComfyUI finished while the Python process was unavailable.
+        """
+        response = self._json_request("GET", f"/history/{prompt_id}", timeout=10)
+        record = response.get(prompt_id) if isinstance(response, Mapping) else None
+        if not isinstance(record, Mapping):
+            return None
+        status = record.get("status", {})
+        if status.get("completed") and status.get("status_str") == "success":
+            return record
+        if status.get("status_str") in {"error", "failed"}:
+            raise ComfyHttpError(_history_error(record, prompt_id))
+        return None
+
+    def prompt_is_queued(self, prompt_id: str) -> bool:
+        """Return whether this exact project-owned prompt is pending or running."""
+        queue = self._json_request("GET", "/queue", timeout=10)
+        if not isinstance(queue, Mapping):
+            raise ComfyHttpError("ComfyUI returned an invalid queue response.")
+        pending = queue.get("queue_pending", [])
+        running = queue.get("queue_running", [])
+        if not isinstance(pending, list) or not isinstance(running, list):
+            raise ComfyHttpError("ComfyUI returned invalid queue lists.")
+        return any(
+            _queue_prompt_id(item) == prompt_id
+            and _queue_client_id(item) == self.client_id
+            for item in (*pending, *running)
+        )
+
     def cancel_prompt(self, prompt_id: str) -> None:
+        """Best-effort compatibility wrapper for an owned prompt cancellation."""
+        self.cancel_owned_prompt(prompt_id)
+
+    def cancel_owned_prompt(self, prompt_id: str) -> bool:
+        """Cancel this exact prompt only when the queue confirms project ownership."""
         queue = self._json_request("GET", "/queue", timeout=10)
         pending = queue.get("queue_pending", []) if isinstance(queue, Mapping) else []
         running = queue.get("queue_running", []) if isinstance(queue, Mapping) else []
-        if any(_queue_prompt_id(item) == prompt_id for item in pending):
+        pending_owned = any(
+            _queue_prompt_id(item) == prompt_id
+            and _queue_client_id(item) == self.client_id
+            for item in pending
+        )
+        running_owned = any(
+            _queue_prompt_id(item) == prompt_id
+            and _queue_client_id(item) == self.client_id
+            for item in running
+        )
+        if pending_owned:
             self._json_request("POST", "/queue", {"delete": [prompt_id]}, timeout=10)
-        if any(_queue_prompt_id(item) == prompt_id for item in running):
-            self._json_request("POST", "/interrupt", {}, timeout=10)
+        if running_owned:
+            fresh = self._json_request("GET", "/queue", timeout=10)
+            fresh_running = (
+                fresh.get("queue_running", []) if isinstance(fresh, Mapping) else []
+            )
+            still_owned = any(
+                _queue_prompt_id(item) == prompt_id
+                and _queue_client_id(item) == self.client_id
+                for item in fresh_running
+            )
+            safe_to_interrupt = bool(fresh_running) and all(
+                _queue_client_id(item) == self.client_id for item in fresh_running
+            )
+            if still_owned and safe_to_interrupt:
+                self._json_request("POST", "/interrupt", {}, timeout=10)
+                return True
+        return pending_owned
 
     def cancel_project_prompts(self) -> tuple[str, ...]:
         """Cancel queued/running prompts owned by this project client only."""
@@ -140,9 +202,22 @@ class ComfyHttpClient:
         ]
         if pending_ids:
             self._json_request("POST", "/queue", {"delete": pending_ids}, timeout=10)
+        cancelled_running_ids: list[str] = []
         if running_ids:
-            self._json_request("POST", "/interrupt", {}, timeout=10)
-        return tuple(dict.fromkeys((*pending_ids, *running_ids)))
+            fresh = self._json_request("GET", "/queue", timeout=10)
+            fresh_running = (
+                fresh.get("queue_running", []) if isinstance(fresh, Mapping) else []
+            )
+            if fresh_running and all(
+                _queue_client_id(item) == self.client_id for item in fresh_running
+            ):
+                cancelled_running_ids = [
+                    prompt_id
+                    for item in fresh_running
+                    if (prompt_id := _queue_prompt_id(item)) is not None
+                ]
+                self._json_request("POST", "/interrupt", {}, timeout=10)
+        return tuple(dict.fromkeys((*pending_ids, *cancelled_running_ids)))
 
     def free_memory(self) -> None:
         self._json_request(
@@ -224,14 +299,29 @@ def _history_error(record: Mapping[str, Any], prompt_id: str) -> str:
 def find_video_output(
     record: Mapping[str, Any],
     output_node_id: str,
+    *,
+    expected_suffixes: tuple[str, ...] = (".mp4",),
 ) -> Mapping[str, Any]:
-    """Find an MP4 only beneath the designated raw VHS output node.
+    """Find an expected video only beneath the designated raw VHS output node.
 
-    A workflow can contain additional MP4-producing delivery nodes. Their
+    A workflow can contain additional video-producing delivery nodes. Their
     output must never be chosen for the durable clean scene clip.
     """
     if not isinstance(output_node_id, str) or not output_node_id:
         raise ComfyHttpError("The designated raw video output node ID is required.")
+    if (
+        not isinstance(expected_suffixes, tuple)
+        or not expected_suffixes
+        or any(
+            not isinstance(suffix, str)
+            or not suffix.startswith(".")
+            or suffix != suffix.casefold()
+            for suffix in expected_suffixes
+        )
+    ):
+        raise ComfyHttpError(
+            "Expected video suffixes must be a non-empty tuple of lowercase extensions."
+        )
     outputs = record.get("outputs", {})
     if not isinstance(outputs, Mapping):
         raise ComfyHttpError("ComfyUI completed I2V with invalid output metadata.")
@@ -245,11 +335,14 @@ def find_video_output(
         value = stack.pop()
         if isinstance(value, Mapping):
             filename = value.get("filename")
-            if isinstance(filename, str) and filename.casefold().endswith(".mp4"):
+            if isinstance(filename, str) and filename.casefold().endswith(
+                expected_suffixes
+            ):
                 return value
             stack.extend(value.values())
         elif isinstance(value, list):
             stack.extend(value)
     raise ComfyHttpError(
-        f"ComfyUI raw video node {output_node_id} returned no MP4 output metadata."
+        f"ComfyUI raw video node {output_node_id} returned no "
+        f"{'/'.join(expected_suffixes)} output metadata."
     )

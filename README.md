@@ -41,6 +41,38 @@ every required T2I frame first, unloads the image model once, then creates every
 remake batch follows the same policy—its image+video edits create frames first (grouped by Anima/Pony family when
 mixed), then every successful remake, including video-only edits, runs through one LTX video pass.
 
+Long LTX scenes can use the versioned `ltx23_latent_overlap_v1` continuation route. Its nominal model
+window is 121 frames: the initial window contributes 120 transitions, and each full continuation adds 96 new
+transitions while regenerating a 24-frame overlap. The route keeps each diffusion invocation and persisted latent
+tail bounded instead of retaining the full scene latent. Later second passes use core `LTXVAddGuide` with the prior
+window's 25-frame final-resolution visible overlap at frame eight, after the sacrificial causal preroll; the latent
+loader also verifies the exact expected
+  temporal-token count before reuse. Each refined window atomically checkpoints both its video and audio latent;
+  if encoding is interrupted after diffusion, restart runs only a checkpoint decode/mux graph. For example, an
+  exact 30-second timeline uses eight model windows, builds a
+721-frame `8n + 1` generation master, and trims the revision-facing scene clip to exactly 720 frames at 24 fps.
+
+Continuation remains a beta/manual opt-in. `TENMIN_LTX_CONTINUATION_MODE=explicit` is the default: only a scene
+longer than 121 generation frames whose `i2v.continuation.enabled` value is true uses the route. `disabled` forces
+the legacy single-generation route. `auto` fails closed at supervisor construction unless
+`<TENMIN_STORAGE_ROOT>\state\continuation-validation-v1.json` (default
+`D:\LTX_Supervisor_Storage\state\continuation-validation-v1.json`) is approved and bound to a hash covering the
+current continuation generation, routing, and recovery implementation plus hashes covering every node contract
+used by the representative live continuation graphs. It must record the required external-asset hashes, contain
+all four bounded-generation results, and accept every rollout decision. Scenes at or below 121 frames remain
+single-window in every mode. Existing completed legacy clips are never invalidated merely because the feature
+exists.
+
+The continuation unit suite and live no-render contract validator do not establish visual quality, seam quality,
+runtime, or 16 GB VRAM acceptance. The required GPU runs and human visual comparisons have not yet been performed,
+so this repository makes no production-quality claim for continuation and must remain in `explicit` mode.
+
+Continuation worker graphs contain no watermark or Discord sender. Their raw windows and the exact assembled
+revision `video.mp4` stay unwatermarked for remakes, project assembly, and later upscaling. Each raw window is first
+stored as lossless FFV1/yuv444p `window.mkv`; delayed-commit assembly performs the route's only H.264 scene encode.
+Only after raw scene assembly succeeds does a separate, restart-reclaimable delivery graph reload that scene, apply
+`wm.png`, and send it through DiscordSendSaveVideo with local output disabled.
+
 ## One-click start
 
 Double-click `Start 10MinVideoMaker.bat` in the repository root. On first run it:
@@ -105,6 +137,10 @@ Windows' context menu.
   I2V LoRAs, accepts verified LTX 2.x dynamic LoRAs for LTX 2.3, and blocks LTX 1.x and image-model LoRAs from I2V.
 - **Release Memory** — runs Python and CUDA cache cleanup.
 - **Save Scene Frame** — atomically caches a deterministic 768×1344 PNG for the matching scene.
+- **Save Chunk Latent** — atomically persists a bounded LTX video or audio latent and its SHA-256 manifest under
+  the matching D-drive chunk attempt.
+- **Load Chunk Latent** — verifies the checkpoint identity, size, hash, tensor descriptors, and LTX shape before
+  returning it to a continuation workflow, including the caller's exact expected temporal-token count.
 - **Stitch Clips** — verifies every clip is 768×1344 at 24 fps before FFmpeg concat.
 
 Nodes that access Gmail, download assets, or stitch video have side effects and should only be queued deliberately.
@@ -136,4 +172,10 @@ Before implementing a node or workflow, inspect its live contract through the lo
 routing without rendering before running any expensive generation. See `AI_DEVELOPMENT_RULES.md` for the detailed
 project rules and verification commands.
 
-See `docs/user-guide.md` for workflow locations, Gmail environment variables, and the current no-render boundary.
+Run `python scripts\validate_continuation_workflows.py` while ComfyUI is healthy to build representative
+initial/later/final continuation graphs, checkpoint-only decode, and delivery, then validate them against live
+`/object_info`; the command never queues a prompt. GUI startup also checks the Save Scene Frame and both
+chunk-latent contracts, and restarts ComfyUI only when those contracts are stale and the queue is empty.
+
+See `docs/user-guide.md` for workflow locations, Gmail environment variables, and the current beta/no-render
+boundary.

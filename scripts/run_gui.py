@@ -86,15 +86,47 @@ def _gui_binding(
     return "0.0.0.0", password
 
 
-def _save_frame_revision_loaded(comfy: ComfyHttpClient) -> bool:
-    document = comfy.object_info("10MinVideoMaker_SaveSceneFrame")
-    node = document.get("10MinVideoMaker_SaveSceneFrame", {})
+def _required_inputs(comfy: ComfyHttpClient, node_type: str) -> dict:
+    document = comfy.object_info(node_type)
+    node = document.get(node_type, {})
     required = node.get("input", {}).get("required", {})
-    return isinstance(required, dict) and "revision" in required
+    return required if isinstance(required, dict) else {}
+
+
+def _artifact_kind_options(required: dict) -> set[str]:
+    specification = required.get("artifact_kind")
+    if (
+        not isinstance(specification, (list, tuple))
+        or not specification
+        or not isinstance(specification[0], (list, tuple))
+    ):
+        return set()
+    return {
+        value
+        for value in specification[0]
+        if isinstance(value, str)
+    }
+
+
+def _current_node_contract_loaded(comfy: ComfyHttpClient) -> bool:
+    expected_artifacts = {
+        "stage1_handoff",
+        "stage2_video",
+        "stage2_audio",
+    }
+    save_frame = _required_inputs(comfy, "10MinVideoMaker_SaveSceneFrame")
+    save_chunk = _required_inputs(comfy, "10MinVideoMaker_SaveChunkLatent")
+    load_chunk = _required_inputs(comfy, "10MinVideoMaker_LoadChunkLatent")
+    return (
+        "revision" in save_frame
+        and _artifact_kind_options(save_chunk) == expected_artifacts
+        and _artifact_kind_options(load_chunk) == expected_artifacts
+        and "expected_temporal_tokens" in load_chunk
+    )
 
 
 def _ensure_current_node_contract(comfy: ComfyHttpClient) -> None:
-    if _save_frame_revision_loaded(comfy):
+    if _current_node_contract_loaded(comfy):
         return
     running, pending = comfy.queue_counts()
     if running or pending:
@@ -102,10 +134,10 @@ def _ensure_current_node_contract(comfy: ComfyHttpClient) -> None:
             "ComfyUI must reload the updated 10MinVideoMaker nodes, but its queue is busy. "
             "Let the active work finish and launch the GUI again."
         )
-    LOGGER.info("Reloading ComfyUI once to activate versioned scene-frame saving.")
-    if not restart_comfyui() or not _save_frame_revision_loaded(comfy):
+    LOGGER.info("Reloading ComfyUI once to activate current continuation artifact nodes.")
+    if not restart_comfyui() or not _current_node_contract_loaded(comfy):
         raise OwnershipError(
-            "ComfyUI restarted but did not expose the updated Save Scene Frame contract."
+            "ComfyUI restarted but did not expose the current continuation artifact contracts."
         )
 
 

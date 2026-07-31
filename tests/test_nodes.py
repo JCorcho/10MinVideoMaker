@@ -1,12 +1,26 @@
 from __future__ import annotations
 
+import json
+import math
+from pathlib import Path
+import sys
+import tempfile
+from types import SimpleNamespace
 import unittest
+from unittest.mock import MagicMock, patch
+
+import torch
 
 from tenminvideomaker.nodes import (
     NODE_CLASS_MAPPINGS,
+    NODE_DISPLAY_NAME_MAPPINGS,
+    TenMinLoadChunkLatentNode,
     TenMinPipelineStatusNode,
+    TenMinResolveLorasNode,
+    TenMinSaveChunkLatentNode,
     TenMinValidateJobNode,
 )
+from tenminvideomaker.storage import StorageLayout
 
 from test_contracts import payload
 
@@ -23,8 +37,14 @@ class NodeSurfaceTests(unittest.TestCase):
                 "10MinVideoMaker_ResolveLoras",
                 "10MinVideoMaker_ReleaseMemory",
                 "10MinVideoMaker_SaveSceneFrame",
+                "10MinVideoMaker_SaveChunkLatent",
+                "10MinVideoMaker_LoadChunkLatent",
                 "10MinVideoMaker_StitchClips",
             },
+        )
+        self.assertEqual(
+            set(NODE_CLASS_MAPPINGS),
+            set(NODE_DISPLAY_NAME_MAPPINGS),
         )
 
     def test_validate_node_exposes_fixed_production_profile(self) -> None:
@@ -38,6 +58,162 @@ class NodeSurfaceTests(unittest.TestCase):
         self.assertNotEqual(
             TenMinPipelineStatusNode.IS_CHANGED(),
             TenMinPipelineStatusNode.IS_CHANGED(),
+        )
+
+    def test_chunk_latent_nodes_round_trip_by_coordinates_and_hash(self) -> None:
+        tests_root = Path(__file__).resolve().parent
+        with tempfile.TemporaryDirectory(dir=tests_root) as temporary:
+            layout = StorageLayout(Path(temporary))
+            latent = {
+                "samples": torch.arange(
+                    128 * 3 * 2 * 2,
+                    dtype=torch.float32,
+                ).reshape(1, 128, 3, 2, 2),
+                "downscale_ratio_spacial": 32.0,
+            }
+            with patch("tenminvideomaker.nodes.STORAGE", layout):
+                saved = TenMinSaveChunkLatentNode().execute(
+                    latent,
+                    "job-1",
+                    2,
+                    3,
+                    4,
+                    5,
+                    "stage1_handoff",
+                )
+                self.assertIs(saved[0], latent)
+                self.assertEqual(len(saved[2]), 64)
+                self.assertEqual(
+                    saved[1],
+                    str(
+                        layout.chunk_checkpoint_path(
+                            "job-1",
+                            2,
+                            3,
+                            4,
+                            5,
+                            "stage1_handoff",
+                        )
+                    ),
+                )
+                self.assertEqual(
+                    TenMinLoadChunkLatentNode.IS_CHANGED(
+                        "job-1",
+                        2,
+                        3,
+                        4,
+                        5,
+                        "stage1_handoff",
+                        3,
+                    ),
+                    f"{saved[2]}:3",
+                )
+                loaded = TenMinLoadChunkLatentNode().execute(
+                    "job-1",
+                    2,
+                    3,
+                    4,
+                    5,
+                    "stage1_handoff",
+                    3,
+                )
+
+            torch.testing.assert_close(loaded[0]["samples"], latent["samples"])
+            self.assertEqual(loaded[0]["downscale_ratio_spacial"], 32.0)
+            self.assertEqual(loaded[1:], saved[1:])
+
+    def test_load_chunk_latent_cache_rejects_corrupt_checkpoint(self) -> None:
+        tests_root = Path(__file__).resolve().parent
+        with tempfile.TemporaryDirectory(dir=tests_root) as temporary:
+            layout = StorageLayout(Path(temporary))
+            latent = {"samples": torch.zeros((1, 128, 2, 1, 1))}
+            with patch("tenminvideomaker.nodes.STORAGE", layout):
+                saved = TenMinSaveChunkLatentNode().execute(
+                    latent,
+                    "job-2",
+                    1,
+                    1,
+                    0,
+                    1,
+                )
+                Path(saved[1]).write_bytes(Path(saved[1]).read_bytes() + b"corrupt")
+                fingerprint = TenMinLoadChunkLatentNode.IS_CHANGED(
+                    "job-2",
+                    1,
+                    1,
+                    0,
+                    1,
+                )
+                self.assertTrue(math.isnan(fingerprint))
+                with self.assertRaisesRegex(RuntimeError, "byte size"):
+                    TenMinLoadChunkLatentNode().execute(
+                        "job-2",
+                        1,
+                        1,
+                        0,
+                        1,
+                    )
+
+    def test_chunk_latent_nodes_do_not_accept_arbitrary_paths(self) -> None:
+        tests_root = Path(__file__).resolve().parent
+        with tempfile.TemporaryDirectory(dir=tests_root) as temporary:
+            layout = StorageLayout(Path(temporary))
+            with patch("tenminvideomaker.nodes.STORAGE", layout):
+                with self.assertRaisesRegex(RuntimeError, "unsafe path"):
+                    TenMinSaveChunkLatentNode().execute(
+                        {"samples": torch.zeros((1, 128, 1, 1, 1))},
+                        "../outside",
+                        1,
+                        1,
+                        0,
+                        1,
+                    )
+                self.assertTrue(
+                    math.isnan(
+                        TenMinLoadChunkLatentNode.IS_CHANGED(
+                            "../outside",
+                            1,
+                            1,
+                            0,
+                            1,
+                        )
+                    )
+                )
+
+    def test_save_chunk_latent_is_output_node_and_always_reexecutes(self) -> None:
+        self.assertTrue(TenMinSaveChunkLatentNode.OUTPUT_NODE)
+        self.assertNotEqual(
+            TenMinSaveChunkLatentNode.IS_CHANGED(),
+            TenMinSaveChunkLatentNode.IS_CHANGED(),
+        )
+
+    def test_resolve_loras_uses_configured_storage_manifest(self) -> None:
+        fake_folder_paths = SimpleNamespace(
+            get_folder_paths=lambda _kind: [r"C:\models\loras"],
+            get_filename_list=lambda _kind: [],
+        )
+        manager = MagicMock()
+        manager.resolve_many.return_value = []
+        with (
+            patch.dict(sys.modules, {"folder_paths": fake_folder_paths}),
+            patch(
+                "tenminvideomaker.nodes.LoraAssetManager",
+                return_value=manager,
+            ) as manager_type,
+            patch(
+                "tenminvideomaker.nodes.load_project_environment",
+                return_value={},
+            ),
+        ):
+            result = TenMinResolveLorasNode().execute(
+                json.dumps(payload()),
+                "t2i",
+            )
+
+        self.assertEqual(result, ("[]", True))
+        self.assertEqual(
+            manager_type.call_args.args[1],
+            StorageLayout.configured().asset_manifest_path,
         )
 
 
