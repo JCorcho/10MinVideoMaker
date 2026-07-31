@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Continuation Acceptance Review · 10MinVideoMaker</title>
+  <link rel="stylesheet" href="/acceptance-review.css">
+</head>
+<body>
+  <header class="review-topbar">
+    <a class="back-link" href="/">← Supervisor</a>
+    <div>
+      <p class="eyebrow">LTX continuation acceptance</p>
+      <h1>Boundary review</h1>
+    </div>
+    <p id="review-status" class="status" role="status">Loading review…</p>
+  </header>
+
+  <main class="review-workspace">
+    <section class="review-controls" aria-label="Review selection">
+      <label>Acceptance run
+        <select id="run-select" aria-label="Acceptance run"></select>
+      </label>
+      <label>Continuation method
+        <select id="case-select" aria-label="Continuation method"></select>
+      </label>
+      <button id="show-seam" class="primary" type="button" disabled>Show exact seam</button>
+    </section>
+
+    <section class="comparison-intro" aria-live="polite">
+      <p id="case-summary">Select an acceptance run.</p>
+      <p id="boundary-summary" class="muted"></p>
+    </section>
+
+    <section class="comparison-grid" aria-label="Base and continuation comparison">
+      <article class="video-card">
+        <header>
+          <p class="eyebrow">Left</p>
+          <h2>Shared base window</h2>
+          <p id="base-label" class="muted">Reference video.</p>
+        </header>
+        <div class="video-stage"><video id="base-video" controls playsinline webkit-playsinline preload="metadata"></video></div>
+        <p class="watch-note">Watch final base motion. Compare pose, identity, anatomy, and camera movement against continuation start.</p>
+      </article>
+
+      <article class="video-card">
+        <header>
+          <p class="eyebrow">Right</p>
+          <h2 id="case-title">Continuation window</h2>
+          <p id="case-label" class="muted">Select a method.</p>
+        </header>
+        <div class="video-stage"><video id="case-video" controls playsinline webkit-playsinline preload="metadata"></video></div>
+        <p class="watch-note">Watch continuation boundary. Look for freeze, jump, reverse motion, identity drift, or anatomy changes.</p>
+      </article>
+    </section>
+
+    <section class="review-section">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Exact seam frames</p>
+          <h2>These images are one sequence, not choices</h2>
+        </div>
+      </div>
+      <div id="stills" class="stills-grid" aria-live="polite"></div>
+    </section>
+
+    <section id="visual-checklist" class="review-section checklist">
+      <p class="eyebrow">What to inspect</p>
+      <h2>Approve no method yet</h2>
+      <ol>
+        <li>Same person: face, hair, wardrobe, proportions.</li>
+        <li>Stable anatomy: hands, limbs, joints, and hand/object contact.</li>
+        <li>Continuous motion: same direction and camera velocity.</li>
+        <li>No freeze, hard cut, duplicate frame, ghosting, or reverse movement.</li>
+        <li>At seam, first new continuation frame must look like next moment, not new shot.</li>
+      </ol>
+      <p class="muted">Pick best whole method only after watching base end then continuation start. This page never approves rollout or changes pipeline state.</p>
+    </section>
+  </main>
+
+  <script src="/acceptance-review.js"></script>
+</body>
+</html>

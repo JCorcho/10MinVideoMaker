@@ -21,6 +21,42 @@ from test_contracts import payload
 
 
 class GuiStaticAssetTests(unittest.TestCase):
+    def test_acceptance_review_page_shows_labeled_boundary_comparison(self) -> None:
+        web_root = Path(__file__).parents[1] / "web"
+        markup = (web_root / "acceptance-review.html").read_text(encoding="utf-8")
+        script = (web_root / "acceptance-review.js").read_text(encoding="utf-8")
+        styles = (web_root / "acceptance-review.css").read_text(encoding="utf-8")
+        index = (web_root / "index.html").read_text(encoding="utf-8")
+
+        self.assertRegex(
+            markup,
+            r'<video[^>]*id="base-video"[^>]*controls[^>]*playsinline[^>]*webkit-playsinline',
+        )
+        self.assertRegex(
+            markup,
+            r'<video[^>]*id="case-video"[^>]*controls[^>]*playsinline[^>]*webkit-playsinline',
+        )
+        self.assertIn('id="show-seam"', markup)
+        self.assertIn('id="visual-checklist"', markup)
+        self.assertIn("Show exact seam", markup)
+        self.assertIn("case_order", script)
+        self.assertIn("currentTime", script)
+        self.assertIn("/api/acceptance-runs", script)
+        self.assertRegex(
+            styles,
+            r"(?s)\.comparison-grid\s*\{[^}]*grid-template-columns:\s*repeat\(2,",
+        )
+        self.assertRegex(
+            styles,
+            r"(?s)@media \(max-width: 760px\).*?"
+            r"\.comparison-grid\s*\{[^}]*grid-template-columns:\s*1fr;",
+        )
+        self.assertRegex(
+            styles,
+            r"(?s)\.video-stage video\s*\{[^}]*width:\s*100%;[^}]*height:\s*auto;",
+        )
+        self.assertIn('id="acceptance-review-link"', index)
+
     def test_chunk_lineage_is_collapsible_human_readable_and_mobile_ready(self) -> None:
         web_root = Path(__file__).parents[1] / "web"
         styles = (web_root / "styles.css").read_text(encoding="utf-8")
