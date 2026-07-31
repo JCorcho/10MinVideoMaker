@@ -1089,3 +1089,32 @@
   - `python -m compileall -q tenminvideomaker tests`
   - `python scripts\validate_continuation_workflows.py`
   - `git diff --check`
+
+### 2026-07-31 — decoded-guide diagnostic temporal-slot repair
+
+- Changed files: `tenminvideomaker/continuation_workflow.py`,
+  `tests/test_continuation_workflow.py`, and this file.
+- Evidence: the first corrected GPU matrix completed the common base and
+  single-frame cases, then `decoded_25_frame` failed inside `SamplerCustom`
+  with a 21,168-by-128 guide tensor targeting 20,160-by-128 latent positions.
+  Reducing the load cap to 24 changed both values by exactly one token and
+  retained the mismatch. The live `LTXVAddGuide` contract requires the guide
+  to be `8n+1` frames, so the original 25-frame guide is correct.
+- Root cause: the diagnostic initial-refinement graph first used
+  `LTXVImgToVideoInplaceKJ` to reserve a single frame and then added the
+  25-frame decoded guide. The two guide routes competed for one temporal
+  position. For this diagnostic-only branch, `LTXVAddGuide` now consumes the
+  full-resolution upscaled latent directly. It owns all 25 guide frames and
+  supplies the sampler conditioning itself. Normal initial refinement and all
+  later production overlap routing are unchanged.
+- Reproduction: run the D-drive acceptance matrix with an empty queue. The
+  failed matrix remains at
+  `D:\LTX_Supervisor_Storage\acceptance\continuation-acceptance-20260731-gpu5`.
+  The regression verifies that a decoded 25-frame guide has no preceding
+  `LTXVImgToVideoInplaceKJ` or `LTXReferenceConditioning`, and that its guide
+  latent is the direct output of `LTXVLatentUpsamplerTiled`.
+- Verification commands:
+  - `python -m unittest discover -s tests -p "test_continuation_workflow.py" -v`
+  - `python -m compileall -q tenminvideomaker tests`
+  - `python scripts\validate_continuation_workflows.py`
+  - `git diff --check`

@@ -532,7 +532,38 @@ def build_continuation_stage2_workflow(
         debug=False,
     )
 
-    if chunk.is_initial:
+    if chunk.is_initial and initial_guide is not None:
+        # LTXVAddGuide owns its temporal guide tokens. Do not first inject the
+        # cached still at frame zero: that reserves one token and makes the
+        # exact 25-frame (8n+1) decoded guide one token too long.
+        previous_video = graph.add(
+            "VHS_LoadVideoPath",
+            "Load decoded 25-frame diagnostic guide",
+            video=str(initial_guide),
+            force_rate=float(PRODUCTION_FPS),
+            custom_width=0,
+            custom_height=0,
+            frame_load_cap=25,
+            skip_first_frames=initial_guide_skip_frames,
+            select_every_nth=1,
+            format="None",
+        )
+        initial_guide_node = graph.add(
+            "LTXVAddGuide",
+            "Guide initial refinement with decoded 25-frame overlap",
+            positive=positive,
+            negative=negative,
+            vae=graph.output(checkpoint, 2),
+            latent=graph.output(upscaled),
+            image=graph.output(previous_video, 0),
+            frame_idx=0,
+            strength=1.0,
+        )
+        sampling_positive = graph.output(initial_guide_node, 0)
+        sampling_negative = graph.output(initial_guide_node, 1)
+        video_latent = graph.output(initial_guide_node, 2)
+        final_model = model
+    elif chunk.is_initial:
         _scaled, preprocessed = _source_image(
             graph,
             frame_path,
@@ -575,33 +606,6 @@ def build_continuation_stage2_workflow(
         sampling_positive = positive
         sampling_negative = negative
         final_model = graph.output(sampling_model)
-        if initial_guide is not None:
-            previous_video = graph.add(
-                "VHS_LoadVideoPath",
-                "Load decoded 25-frame diagnostic guide",
-                video=str(initial_guide),
-                force_rate=float(PRODUCTION_FPS),
-                custom_width=0,
-                custom_height=0,
-                frame_load_cap=25,
-                skip_first_frames=initial_guide_skip_frames,
-                select_every_nth=1,
-                format="None",
-            )
-            initial_guide_node = graph.add(
-                "LTXVAddGuide",
-                "Guide initial refinement with decoded 25-frame overlap",
-                positive=sampling_positive,
-                negative=sampling_negative,
-                vae=graph.output(checkpoint, 2),
-                latent=video_latent,
-                image=graph.output(previous_video, 0),
-                frame_idx=0,
-                strength=1.0,
-            )
-            sampling_positive = graph.output(initial_guide_node, 0)
-            sampling_negative = graph.output(initial_guide_node, 1)
-            video_latent = graph.output(initial_guide_node, 2)
     else:
         previous_chunk = plan.chunks[chunk.index - 1]
         previous_preroll = (

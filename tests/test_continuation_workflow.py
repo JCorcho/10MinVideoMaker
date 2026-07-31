@@ -189,6 +189,17 @@ class ContinuationWorkflowTests(unittest.TestCase):
         guide = nodes_of_type(build.workflow.api, "LTXVAddGuide")[0]["inputs"]
         self.assertEqual(guide["frame_idx"], 0)
         self.assertEqual(guide["strength"], 1.0)
+        self.assertFalse(
+            nodes_of_type(build.workflow.api, "LTXVImgToVideoInplaceKJ"),
+            "A 25-frame guide must replace, not follow, the initial single-frame guide.",
+        )
+        self.assertFalse(nodes_of_type(build.workflow.api, "LTXReferenceConditioning"))
+        upscaled = next(
+            node_id
+            for node_id, node in build.workflow.api.items()
+            if node["class_type"] == "LTXVLatentUpsamplerTiled"
+        )
+        self.assertEqual(guide["latent"], [upscaled, 0])
         self.assertEqual(
             guide["image"][0],
             next(
