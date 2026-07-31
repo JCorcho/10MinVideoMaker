@@ -40,6 +40,7 @@ class NodeSurfaceTests(unittest.TestCase):
                 "10MinVideoMaker_SaveChunkLatent",
                 "10MinVideoMaker_LoadChunkLatent",
                 "10MinVideoMaker_IsolateConditioning",
+                "10MinVideoMaker_IsolateModel",
                 "10MinVideoMaker_StitchClips",
             },
         )
@@ -78,6 +79,23 @@ class NodeSurfaceTests(unittest.TestCase):
         self.assertIsNot(result[0][1]["pooled_output"], source[0][1]["pooled_output"])
         result[0][0].zero_()
         self.assertTrue(torch.equal(source[0][0], torch.ones((1, 2))))
+        self.assertNotEqual(
+            node_type.IS_CHANGED(source, "test scope"),
+            node_type.IS_CHANGED(source, "test scope"),
+        )
+
+    def test_model_isolator_clones_model_patcher_and_never_reuses_cache(self) -> None:
+        class FakeModelPatcher:
+            def clone(self):
+                return FakeModelPatcher()
+
+        node_type = NODE_CLASS_MAPPINGS["10MinVideoMaker_IsolateModel"]
+        source = FakeModelPatcher()
+
+        result = node_type().execute(source, "test scope")[0]
+
+        self.assertIsInstance(result, FakeModelPatcher)
+        self.assertIsNot(result, source)
         self.assertNotEqual(
             node_type.IS_CHANGED(source, "test scope"),
             node_type.IS_CHANGED(source, "test scope"),

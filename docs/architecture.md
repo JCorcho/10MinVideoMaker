@@ -84,6 +84,11 @@ attached. This is required because ComfyUI may reuse static prompt-node outputs 
 later continuation graph has a separately scoped node-ID range. The barrier changes no prompt, sampler, sigma, or
 model setting; it only supplies a fresh conditioning object for each prompt.
 
+`ModelPatcher` wrappers are also mutable under LTX continuation. The graph clones the wrapper once before and once
+after `LTXVChunkFeedForward`, with an always-reexecuted `10MinVideoMaker_IsolateModel` node. This does not duplicate
+the diffusion-model weights; it prevents mutable model options from surviving in ComfyUI's cached LoRA/chunk-feed
+output and reaching a later `LTXVExtendSampler` call.
+
 The full-resolution second pass uses the existing tiled x2 spatial upscaler and second LCM schedule. The initial
 121-frame window selects 16 temporal latent tokens. A later 121-frame visible window selects 17 tokens: a nonzero
 LTX temporal token cannot safely become the special first token after slicing, so the extra token acts as an

@@ -169,6 +169,7 @@ class GuiAppTests(unittest.TestCase):
                         ],
                         "expected_temporal_tokens": ["INT"],
                         "conditioning": ["CONDITIONING"],
+                        "model": ["MODEL"],
                         "scope": ["STRING"],
                     }
                 }
@@ -185,6 +186,7 @@ class GuiAppTests(unittest.TestCase):
                 "10MinVideoMaker_SaveChunkLatent",
                 "10MinVideoMaker_LoadChunkLatent",
                 "10MinVideoMaker_IsolateConditioning",
+                "10MinVideoMaker_IsolateModel",
             ],
         )
         current.queue_counts.assert_not_called()
@@ -235,6 +237,11 @@ class GuiAppTests(unittest.TestCase):
             elif node_type == "10MinVideoMaker_IsolateConditioning":
                 required = {
                     "conditioning": ["CONDITIONING"],
+                    "scope": ["STRING"],
+                }
+            elif node_type == "10MinVideoMaker_IsolateModel":
+                required = {
+                    "model": ["MODEL"],
                     "scope": ["STRING"],
                 }
             else:

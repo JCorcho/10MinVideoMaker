@@ -64,6 +64,7 @@ CONTINUATION_CONTRACT_NODE_TYPES = (
     "10MinVideoMaker_LoadChunkLatent",
     "10MinVideoMaker_SaveChunkLatent",
     "10MinVideoMaker_IsolateConditioning",
+    "10MinVideoMaker_IsolateModel",
     "CLIPTextEncode",
     "CheckpointLoaderSimple",
     "DaSiWa_Watermark",

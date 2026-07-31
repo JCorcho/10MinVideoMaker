@@ -144,6 +144,7 @@ def _model_stack(
     chunking: Mapping[str, Any],
     *,
     needs_audio_vae: bool,
+    cache_scope: str,
 ) -> tuple[str, str, str | None, list[Any]]:
     checkpoint = graph.add(
         "CheckpointLoaderSimple",
@@ -173,14 +174,26 @@ def _model_stack(
         scene,
         resolved_lora_filenames,
     )
+    isolated_before_chunking = graph.add(
+        "10MinVideoMaker_IsolateModel",
+        "Isolate model before continuation chunk feed-forward",
+        model=model,
+        scope=f"{cache_scope}:before-chunk-feed-forward",
+    )
     chunked = graph.add(
         "LTXVChunkFeedForward",
         "16 GB VRAM chunking",
-        model=model,
+        model=graph.output(isolated_before_chunking),
         chunks=chunking["chunks"],
         dim_threshold=chunking["dimension_threshold"],
     )
-    return checkpoint, text_encoder, audio_vae, graph.output(chunked)
+    isolated_after_chunking = graph.add(
+        "10MinVideoMaker_IsolateModel",
+        "Isolate model after continuation chunk feed-forward",
+        model=graph.output(chunked),
+        scope=f"{cache_scope}:after-chunk-feed-forward",
+    )
+    return checkpoint, text_encoder, audio_vae, graph.output(isolated_after_chunking)
 
 
 def _conditioning(
@@ -337,6 +350,7 @@ def build_continuation_stage1_workflow(
         resolved_lora_filenames,
         chunking,
         needs_audio_vae=False,
+        cache_scope=f"stage1:{job.job_id}:{scene.scene_id}:{revision}:{attempt_number}:{chunk.index}",
     )
     positive, negative = _conditioning(
         graph,
@@ -563,6 +577,7 @@ def build_continuation_stage2_workflow(
         resolved_lora_filenames,
         chunking,
         needs_audio_vae=True,
+        cache_scope=f"stage2:{job.job_id}:{scene.scene_id}:{revision}:{attempt_number}:{chunk.index}",
     )
     assert audio_vae is not None
     positive, negative = _conditioning(

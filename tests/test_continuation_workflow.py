@@ -134,6 +134,33 @@ class ContinuationWorkflowTests(unittest.TestCase):
             all("stage1" in node["inputs"]["scope"] for node in isolates)
         )
 
+    def test_stage1_isolates_model_before_and_after_chunk_feed_forward(self):
+        build = build_continuation_stage1_workflow(
+            self.job,
+            self.scene,
+            self.frame,
+            self.plan,
+            self.plan.chunks[1],
+            revision=1,
+            attempt_number=1,
+            previous_attempt_number=1,
+        )
+
+        isolates = nodes_of_type(build.api, "10MinVideoMaker_IsolateModel")
+        self.assertEqual(len(isolates), 2)
+        isolate_ids = {
+            node_id
+            for node_id, node in build.api.items()
+            if node["class_type"] == "10MinVideoMaker_IsolateModel"
+        }
+        chunk = nodes_of_type(build.api, "LTXVChunkFeedForward")[0]["inputs"]
+        self.assertIn(chunk["model"][0], isolate_ids)
+        guider = nodes_of_type(build.api, "STGGuiderAdvanced")[0]["inputs"]
+        self.assertIn(guider["model"][0], isolate_ids)
+        self.assertTrue(
+            all("stage1" in node["inputs"]["scope"] for node in isolates)
+        )
+
     def test_continuation_graph_ids_are_scoped_per_stage_and_chunk(self):
         initial = build_continuation_stage1_workflow(
             self.job,

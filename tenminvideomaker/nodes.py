@@ -539,6 +539,39 @@ class TenMinIsolateConditioningNode(_AlwaysRun):
         return (_clone_conditioning_value(conditioning),)
 
 
+class TenMinIsolateModelNode(_AlwaysRun):
+    """Clone one ModelPatcher wrapper before LTX may mutate its options."""
+
+    CATEGORY = "10MinVideoMaker/Continuation"
+    DESCRIPTION = (
+        "Clones the ModelPatcher wrapper without duplicating model weights so "
+        "LTX continuation state cannot leak through ComfyUI's model cache."
+    )
+    FUNCTION = "execute"
+    RETURN_TYPES = ("MODEL",)
+    RETURN_NAMES = ("model",)
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "model": ("MODEL",),
+                "scope": ("STRING", {"default": "continuation"}),
+            }
+        }
+
+    def execute(self, model, scope: str):
+        if not scope.strip():
+            raise RuntimeError("scope must not be blank.")
+        clone = getattr(model, "clone", None)
+        if not callable(clone):
+            raise RuntimeError("MODEL input does not support ModelPatcher.clone().")
+        isolated = clone()
+        if isolated is model:
+            raise RuntimeError("ModelPatcher.clone() returned the cached model instance.")
+        return (isolated,)
+
+
 class TenMinStitchClipsNode(_AlwaysRun):
     CATEGORY = "10MinVideoMaker/Assembly"
     DESCRIPTION = (
@@ -586,6 +619,7 @@ NODE_CLASS_MAPPINGS = {
     "10MinVideoMaker_SaveChunkLatent": TenMinSaveChunkLatentNode,
     "10MinVideoMaker_LoadChunkLatent": TenMinLoadChunkLatentNode,
     "10MinVideoMaker_IsolateConditioning": TenMinIsolateConditioningNode,
+    "10MinVideoMaker_IsolateModel": TenMinIsolateModelNode,
     "10MinVideoMaker_StitchClips": TenMinStitchClipsNode,
 }
 
@@ -600,5 +634,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "10MinVideoMaker_SaveChunkLatent": "10Min Video Maker: Save Chunk Latent",
     "10MinVideoMaker_LoadChunkLatent": "10Min Video Maker: Load Chunk Latent",
     "10MinVideoMaker_IsolateConditioning": "10Min Video Maker: Isolate Conditioning",
+    "10MinVideoMaker_IsolateModel": "10Min Video Maker: Isolate Model",
     "10MinVideoMaker_StitchClips": "10Min Video Maker: Stitch Clips",
 }

@@ -1065,9 +1065,16 @@
 - Decision: preserve the documented 24-frame overlap and 97-frame full extension. Before `LTXVConditioning`, clone
   each positive/negative `CONDITIONING` value through `10MinVideoMaker_IsolateConditioning`; that node always
   reexecutes, so the downstream LTX conditioning chain receives fresh tensors and metadata on every prompt.
+- Follow-up evidence: the conditioning barrier and `LTXVConditioning` both reexecuted in GPU15, but prompt
+  `4cfb6821-2747-4342-9c5f-4e42e909dc46` still failed while its static checkpoint, LoRA, and
+  `LTXVChunkFeedForward` chain was cached. Its all-fresh-ID counterpart
+  `fa1055ab-aa47-4037-a3b5-c51400e18988` completed. Treat `MODEL` wrappers as mutable too: clone them immediately
+  before and after chunk feed-forward with always-reexecuted `10MinVideoMaker_IsolateModel` nodes. `ModelPatcher`
+  cloning creates wrapper copies, not model-weight copies.
 - Reproduction: with an empty ComfyUI queue, reuse a failed later-stage graph. The unmodified graph may cache its
   static conditioning chain and fail. Renumbering every node must succeed. The production graph must instead expose
-  two `10MinVideoMaker_IsolateConditioning` nodes feeding `LTXVConditioning` and retain `frame_overlap=24`.
+  two `10MinVideoMaker_IsolateConditioning` nodes feeding `LTXVConditioning`, two
+  `10MinVideoMaker_IsolateModel` nodes bracketing `LTXVChunkFeedForward`, and retain `frame_overlap=24`.
 - Verification commands:
   - `python -m unittest discover -s tests -p "test_nodes.py" -v`
   - `python -m unittest discover -s tests -p "test_continuation_workflow.py" -v`
