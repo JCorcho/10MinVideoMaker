@@ -16,6 +16,10 @@ class AcceptanceReviewError(RuntimeError):
     """Raised when an acceptance review artifact cannot be safely served."""
 
 
+class AcceptanceReviewProxyError(AcceptanceReviewError):
+    """Raised when FFmpeg cannot prepare browser-safe review media."""
+
+
 _RUN_ID = re.compile(r"continuation-acceptance-\d{8}-\d{6}\Z")
 _BASE_ROLE = "base"
 _CASE_ORDER = (
@@ -180,7 +184,7 @@ class AcceptanceReviewService:
             if completed.returncode != 0 or not temporary.is_file() or temporary.stat().st_size == 0:
                 temporary.unlink(missing_ok=True)
                 detail = (completed.stderr or "FFmpeg did not produce review media.").strip()
-                raise AcceptanceReviewError(f"FFmpeg review proxy failed: {detail}")
+                raise AcceptanceReviewProxyError(f"FFmpeg review proxy failed: {detail}")
             temporary.replace(proxy)
         return proxy
 

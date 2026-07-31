@@ -16,6 +16,11 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+from .acceptance_review import (
+    AcceptanceReviewError,
+    AcceptanceReviewProxyError,
+    AcceptanceReviewService,
+)
 from .comfy_http import ComfyHttpError
 from .gui_service import GuiServiceError, SupervisorController
 from .review import (
@@ -202,6 +207,7 @@ def create_gui_app(
         docs_url=None,
         redoc_url=None,
     )
+    acceptance_review = AcceptanceReviewService(storage)
 
     if lan_password:
         @app.middleware("http")
@@ -448,6 +454,39 @@ def create_gui_app(
                 _combo_values(i2v_loader, "LoraLoaderModelOnly", "lora_name")
             ),
         }
+
+    @app.get("/api/acceptance-runs")
+    def acceptance_runs() -> list[dict[str, object]]:
+        return acceptance_review.list_runs()
+
+    @app.get("/api/acceptance-runs/{run_id}")
+    def acceptance_run(run_id: str) -> dict[str, object]:
+        try:
+            return acceptance_review.review_document(run_id)
+        except AcceptanceReviewError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+
+    @app.get("/api/acceptance-runs/{run_id}/media/{role}")
+    def acceptance_media(run_id: str, role: str) -> FileResponse:
+        try:
+            path = acceptance_review.review_proxy_path(run_id, role)
+        except AcceptanceReviewProxyError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        except AcceptanceReviewError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        return FileResponse(path, media_type="video/mp4", filename=path.name)
+
+    @app.get("/api/acceptance-runs/{run_id}/stills/{case_name}/{asset_name}")
+    def acceptance_still(
+        run_id: str,
+        case_name: str,
+        asset_name: str,
+    ) -> FileResponse:
+        try:
+            path = acceptance_review.still_path(run_id, case_name, asset_name)
+        except AcceptanceReviewError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        return FileResponse(path, media_type="image/png", filename=path.name)
 
     @app.get("/api/media/{job_id}/{scene_id}/{revision}/{kind}")
     async def scene_media(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 from pathlib import Path
 from types import SimpleNamespace
 import tempfile
@@ -502,6 +503,113 @@ class GuiAppTests(unittest.TestCase):
             self.assertEqual(
                 secured_client.get(
                     "/api/status",
+                    headers={"Authorization": f"Basic {credentials}"},
+                ).status_code,
+                200,
+            )
+
+    def test_acceptance_review_routes_expose_only_validated_review_assets(self) -> None:
+        from tenminvideomaker.gui_app import create_gui_app
+
+        run_id = "continuation-acceptance-20260731-065935"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            storage = StorageLayout(root / "storage")
+            storage.ensure()
+            run_root = storage.root / "acceptance" / run_id
+            run_root.mkdir(parents=True)
+            raw_paths = {
+                "common_base": storage.chunk_video_path(run_id, 1, 1, 0, 1),
+                "single_frame": storage.chunk_video_path(run_id, 1, 2, 0, 1),
+                "decoded_17_frame": storage.chunk_video_path(run_id, 1, 3, 0, 1),
+                "latent_overlap": storage.chunk_video_path(run_id, 1, 1, 1, 1),
+            }
+            for raw_path in raw_paths.values():
+                raw_path.parent.mkdir(parents=True, exist_ok=True)
+                raw_path.write_bytes(b"raw")
+            (run_root / "review").mkdir()
+            (run_root / "review" / "base.mp4").write_bytes(b"review")
+            still = run_root / "metrics" / "single_frame" / "base_0119.png"
+            still.parent.mkdir(parents=True)
+            still.write_bytes(b"png")
+            for filename in ("base_0120.png", "case_0000.png", "case_0001.png"):
+                (still.parent / filename).write_bytes(b"png")
+            for case_name, filenames in {
+                "decoded_17_frame": (
+                    "base_0096.png", "base_0111.png", "base_0112.png",
+                    "case_0000.png", "case_0016.png", "case_0017.png",
+                ),
+                "latent_overlap": (
+                    "base_0096.png", "base_0119.png", "base_0120.png",
+                    "case_0000.png", "case_0024.png", "case_0025.png",
+                ),
+            }.items():
+                metric_root = run_root / "metrics" / case_name
+                metric_root.mkdir(parents=True)
+                for filename in filenames:
+                    (metric_root / filename).write_bytes(b"png")
+            (run_root / "run.json").write_text(
+                json.dumps(
+                    {
+                        "run_id": run_id,
+                        "state": "awaiting_human_review",
+                        "source_job_id": "20260730-0217",
+                        "source_scene_id": 1,
+                        "cases": {
+                            name: {"stage2": {"raw_video_path": str(path)}}
+                            for name, path in raw_paths.items()
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            controller = SimpleNamespace(
+                store=PipelineStateStore(storage.database_path),
+            )
+            client = TestClient(
+                create_gui_app(controller, storage, Path(__file__).parents[1])
+            )
+
+            listed = client.get("/api/acceptance-runs")
+            self.assertEqual(listed.status_code, 200)
+            self.assertEqual(listed.json()[0]["run_id"], run_id)
+            document = client.get(f"/api/acceptance-runs/{run_id}")
+            self.assertEqual(document.status_code, 200)
+            self.assertEqual(
+                document.json()["cases"]["latent_overlap"]["boundary"]["right"],
+                [24, 25],
+            )
+            self.assertNotIn(str(storage.root), document.text)
+            self.assertEqual(
+                client.get(f"/api/acceptance-runs/{run_id}/media/base").headers[
+                    "content-type"
+                ].split(";", 1)[0],
+                "video/mp4",
+            )
+            self.assertEqual(
+                client.get(
+                    f"/api/acceptance-runs/{run_id}/stills/single_frame/base_0119.png"
+                ).headers["content-type"].split(";", 1)[0],
+                "image/png",
+            )
+            self.assertEqual(
+                client.get("/api/acceptance-runs/not-a-run").status_code,
+                404,
+            )
+
+            secured_client = TestClient(
+                create_gui_app(
+                    controller,
+                    storage,
+                    Path(__file__).parents[1],
+                    lan_password="mobile-password",
+                )
+            )
+            self.assertEqual(secured_client.get("/api/acceptance-runs").status_code, 401)
+            credentials = base64.b64encode(b"10min:mobile-password").decode("ascii")
+            self.assertEqual(
+                secured_client.get(
+                    "/api/acceptance-runs",
                     headers={"Authorization": f"Basic {credentials}"},
                 ).status_code,
                 200,

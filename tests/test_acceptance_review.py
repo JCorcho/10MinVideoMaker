@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from tenminvideomaker.acceptance_review import (
     AcceptanceReviewError,
+    AcceptanceReviewProxyError,
     AcceptanceReviewService,
 )
 from tenminvideomaker.storage import StorageLayout
@@ -160,7 +161,7 @@ class AcceptanceReviewServiceTests(unittest.TestCase):
             "tenminvideomaker.acceptance_review.subprocess.run",
             return_value=subprocess.CompletedProcess(["ffmpeg"], 1, stderr="failed"),
         ):
-            with self.assertRaisesRegex(AcceptanceReviewError, "FFmpeg"):
+            with self.assertRaisesRegex(AcceptanceReviewProxyError, "FFmpeg"):
                 self.service.review_proxy_path(RUN_ID, "single_frame")
 
         self.assertFalse(
