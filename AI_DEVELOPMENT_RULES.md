@@ -1297,3 +1297,38 @@
   - embedded Python `test_gui_app.py` suite
   - `python -m compileall -q tenminvideomaker scripts tests`
   - `git diff --check`
+
+### 2026-07-31 — human continuation decision and exact assembled review
+
+- Changed files: `tenminvideomaker/acceptance_review.py`,
+  `tenminvideomaker/gui_app.py`, `web/acceptance-review.html`,
+  `web/acceptance-review.js`, `web/acceptance-review.css`, focused tests,
+  `experiments/ltx23-style-conversion/`, `docs/research/continuation_acceptance_20260731_human_review.md`,
+  `docs/user-guide.md`, and this file. Project-owned evidence was added under
+  `D:\LTX_Supervisor_Storage\acceptance\continuation-acceptance-20260731-065935\human-review*`.
+- Human decision: approve no production method. `single_frame` is only the next
+  baseline and remains rejected for blur/detail loss. `decoded_17_frame` is
+  rejected for same-style continuation but preserved as a high-value
+  anime-to-live-action research lead. `latent_overlap` is rejected and
+  preserved as a weaker anime-to-semi-realistic-3D lead. Automatic rollout
+  remains locked; do not infer approval from the separate `human-review.json`.
+- Preservation: exact decoded-guide and latent-overlap stage-one/stage-two API
+  workflows are frozen and SHA-256-bound under
+  `experiments/ltx23-style-conversion/`. Large raw videos remain only on D:.
+  New research must copy the frozen evidence instead of editing it.
+- Assembly routing: the review service creates one unwatermarked, video-only
+  H.264 proxy per case. Exact cuts are single-frame base 0–120 plus case 1+;
+  decoded-guide base 0–112 plus case 17+; latent-overlap base 0–120 plus case
+  25+. FFmpeg writes a same-directory partial file, validates non-empty output,
+  atomically replaces the cache, and never modifies raw windows.
+- Reproduction: open `/acceptance-review.html?run=continuation-acceptance-20260731-065935`,
+  select each method, and play **True assembled result** below the existing
+  side-by-side view. The review-only application must not expose supervisor
+  routes, submit prompts, or create `continuation-validation-v1.json`.
+- Verification commands:
+  - embedded Python `test_experiment_preservation.py`
+  - embedded Python `test_acceptance_review.py`
+  - embedded Python `test_gui_app.py`
+  - `python -m unittest discover -s tests -v`
+  - `python -m compileall -q tenminvideomaker scripts tests`
+  - `git diff --check`

@@ -160,9 +160,13 @@ read-only **Continuation review** page at `http://127.0.0.1:8765/acceptance-revi
 evidence remains available. In that fallback it does not start ComfyUI, Gmail polling, or any render work.
 
 The four GPU generations completed mechanically for acceptance run
-`continuation-acceptance-20260731-065935`; human visual decisions remain pending. Unit tests and live no-render
-schema validation are not substitutes. Keep `explicit` selected and opt in only scenes you are prepared to inspect;
-there is currently no production-quality or 16 GB VRAM acceptance claim.
+`continuation-acceptance-20260731-065935`. Human review approved no method:
+`single_frame` retained style but introduced unacceptable blur/detail loss,
+`decoded_17_frame` changed the scene to photoreal live action, and
+`latent_overlap` changed it to semi-realistic 3D with robotic motion. Unit tests
+and live no-render schema validation are not substitutes. Keep `explicit`
+selected and opt in only scenes you are prepared to inspect; there is currently
+no production-quality or 16 GB VRAM acceptance claim.
 
 ### Continuation acceptance review
 
@@ -179,9 +183,17 @@ continuation 24/25 for the latent overlap. Review identity, anatomy and hand/obj
 velocity, freeze/jump/reverse motion, ghosting, and whether the first new continuation frame appears to be the next
 moment rather than a new shot.
 
-The first video request creates a review-only, unwatermarked H.264/AAC MP4 proxy under
+Below the side-by-side comparison, **True assembled result** plays the actual
+cut that would be retained: base 0–120 plus continuation 1 onward for
+single-frame; base 0–112 plus continuation 17 onward for decoded-guide; and base
+0–120 plus continuation 25 onward for latent-overlap. This removes the
+conditioning/overlap frames so the seam can be judged in one uninterrupted
+video. Selecting another method updates all three videos and the assembly label.
+
+The first individual-video request creates a review-only, unwatermarked H.264/AAC MP4 proxy under
 `D:\LTX_Supervisor_Storage\acceptance\<run-id>\review\`. Original FFV1/FLAC windows under
 `D:\LTX_Supervisor_Storage\jobs\<run-id>` are read as the proxy source but never changed, watermarked, or deleted.
+The assembled request creates a cached, unwatermarked H.264 video-only proxy in the same review directory.
 This review page only reads acceptance artifacts: it cannot queue ComfyUI, control the supervisor, change job state,
 or approve automatic continuation rollout.
 
