@@ -231,6 +231,16 @@ def _register_acceptance_review_routes(
             raise HTTPException(status_code=404, detail=str(error)) from error
         return FileResponse(path, media_type="video/mp4", filename=path.name)
 
+    @app.get("/api/acceptance-runs/{run_id}/assembled/{case_name}")
+    def acceptance_assembled(run_id: str, case_name: str) -> FileResponse:
+        try:
+            path = acceptance_review.assembled_proxy_path(run_id, case_name)
+        except AcceptanceReviewProxyError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        except AcceptanceReviewError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        return FileResponse(path, media_type="video/mp4", filename=path.name)
+
     @app.get("/api/acceptance-runs/{run_id}/stills/{case_name}/{asset_name}")
     def acceptance_still(
         run_id: str,

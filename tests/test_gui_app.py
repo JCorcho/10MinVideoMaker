@@ -36,12 +36,19 @@ class GuiStaticAssetTests(unittest.TestCase):
             markup,
             r'<video[^>]*id="case-video"[^>]*controls[^>]*playsinline[^>]*webkit-playsinline',
         )
+        self.assertRegex(
+            markup,
+            r'<video[^>]*id="assembled-video"[^>]*controls[^>]*playsinline[^>]*webkit-playsinline',
+        )
         self.assertIn('id="show-seam"', markup)
         self.assertIn('id="visual-checklist"', markup)
         self.assertIn("Show exact seam", markup)
         self.assertIn("case_order", script)
+        self.assertIn("assembled_video_url", script)
+        self.assertIn("assembly.summary", script)
         self.assertIn("currentTime", script)
         self.assertIn("/api/acceptance-runs", script)
+        self.assertIn(".assembled-video-card", styles)
         self.assertRegex(
             styles,
             r"(?s)\.comparison-grid\s*\{[^}]*grid-template-columns:\s*repeat\(2,",
@@ -631,6 +638,9 @@ class GuiAppTests(unittest.TestCase):
                 raw_path.write_bytes(b"raw")
             (run_root / "review").mkdir()
             (run_root / "review" / "base.mp4").write_bytes(b"review")
+            (run_root / "review" / "assembled-single_frame.mp4").write_bytes(
+                b"assembled-review"
+            )
             still = run_root / "metrics" / "single_frame" / "base_0119.png"
             still.parent.mkdir(parents=True)
             still.write_bytes(b"png")
@@ -686,6 +696,12 @@ class GuiAppTests(unittest.TestCase):
                 client.get(f"/api/acceptance-runs/{run_id}/media/base").headers[
                     "content-type"
                 ].split(";", 1)[0],
+                "video/mp4",
+            )
+            self.assertEqual(
+                client.get(
+                    f"/api/acceptance-runs/{run_id}/assembled/single_frame"
+                ).headers["content-type"].split(";", 1)[0],
                 "video/mp4",
             )
             self.assertEqual(

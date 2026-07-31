@@ -55,8 +55,10 @@ function renderCase() {
   const boundary = caseDocument.boundary;
   setVideoSource($("#base-video"), reviewState.document.base.video_url);
   setVideoSource($("#case-video"), caseDocument.video_url);
+  setVideoSource($("#assembled-video"), caseDocument.assembled_video_url);
   $("#case-title").textContent = caseDocument.title;
   $("#case-summary").textContent = caseDocument.summary;
+  $("#assembly-summary").textContent = caseDocument.assembly.summary;
   $("#base-label").textContent = `Compare base frames ${boundary.left[0]}–${boundary.left[1]}; final left frame is seam reference.`;
   $("#case-label").textContent = `Compare continuation frames ${boundary.right[0]}–${boundary.right[1]}; final right frame is first new motion.`;
   $("#boundary-summary").textContent = `Exact boundary: base ${boundary.left[1]} then continuation ${boundary.right[0]}. Use “Show exact seam” to seek both videos.`;

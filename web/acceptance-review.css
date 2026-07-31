@@ -34,12 +34,15 @@ select { width: 100%; min-height: 39px; padding: 7px 10px; border: 1px solid #3b
 .comparison-intro { display: grid; gap: 5px; margin: 16px 0; line-height: 1.5; }
 
 .comparison-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
-.video-card, .review-section { overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
-.video-card header { display: grid; gap: 5px; padding: 15px; border-bottom: 1px solid var(--line); }
+.video-card, .assembled-video-card, .review-section { overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+.video-card header, .assembled-video-card header { display: grid; gap: 5px; padding: 15px; border-bottom: 1px solid var(--line); }
 .video-card h2, .review-section h2 { font-size: 17px; }
 .video-stage { background: #030609; }
 .video-stage video { display: block; width: 100%; height: auto; max-height: min(72vh, 920px); background: #030609; }
 .watch-note { min-height: 58px; padding: 12px 15px; color: var(--muted); font-size: 13px; line-height: 1.45; }
+.assembled-video-card { margin-top: 16px; }
+.assembled-video-card h2 { font-size: 17px; }
+.assembled-video-card .video-stage video { width: 100%; height: auto; }
 
 .review-section { margin-top: 16px; padding: 16px; }
 .section-heading { margin-bottom: 13px; }
@@ -58,6 +61,7 @@ select { width: 100%; min-height: 39px; padding: 7px 10px; border: 1px solid #3b
   .review-workspace { padding: 12px; }
   .review-controls { grid-template-columns: 1fr; padding: 12px; }
   .comparison-grid { grid-template-columns: 1fr; }
+  .assembled-video-card { width: 100%; }
   .video-stage video { max-height: none; }
   .stills-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
   .review-section { padding: 13px; }
