@@ -53,9 +53,13 @@ class WorkflowBuild:
 
 
 class _Graph:
-    def __init__(self) -> None:
+    def __init__(self, *, node_id_offset: int = 0) -> None:
+        if isinstance(node_id_offset, bool) or not isinstance(node_id_offset, int):
+            raise WorkflowBuildError("node_id_offset must be an integer.")
+        if node_id_offset < 0:
+            raise WorkflowBuildError("node_id_offset must be non-negative.")
         self.nodes: dict[str, dict[str, Any]] = {}
-        self._next_id = 1
+        self._next_id = node_id_offset + 1
 
     def add(self, class_type: str, title: str, **inputs: Any) -> str:
         node_id = str(self._next_id)

@@ -1022,6 +1022,33 @@
   - `python scripts\validate_continuation_workflows.py`
   - `git diff --check`
 
+### 2026-07-31 — continuation graph cache-isolation repair
+
+- Changed files: `tenminvideomaker/workflow_builder.py`,
+  `tenminvideomaker/continuation_workflow.py`,
+  `tests/test_continuation_workflow.py`, `docs/architecture.md`,
+  `docs/research/ltx23_chunked_continuation_plan.md`, and this file.
+- Evidence: `gpu12` completed base, single-frame, and decoded-guide cases, then
+  its 97-frame later `LTXVExtendSampler` failed at 5,040-versus-4,788 tokens.
+  The exact failed graph, with the same client ID and only every node ID shifted
+  by 1,000, completed at
+  `D:\LTX_Supervisor_Storage\jobs\continuation-acceptance-20260731-gpu12-probe-unique-ids`.
+  The clean-client 97-frame probe had also completed; only shared numeric IDs
+  reproduced the mismatch.
+- Rule: continuation graph IDs must be unique across job, scene, revision,
+  chunk, attempt, and phase. Do not reuse `1..N` for all continuation prompts:
+  locally cached mutable LTX conditioning can otherwise leak between stages.
+- Reproduction: with an empty Comfy queue, clone the failed history prompt,
+  change only all node IDs and internal links to a fresh numeric range, keep the
+  same client ID, and queue the isolated raw stage-one saver. It must succeed
+  before changing generation behavior.
+- Verification commands:
+  - `python -m unittest discover -s tests -p "test_continuation_workflow.py" -v`
+  - `python -m unittest discover -s tests`
+  - `python -m compileall -q tenminvideomaker scripts tests`
+  - `python scripts\validate_continuation_workflows.py`
+  - `git diff --check`
+
 ### 2026-07-31 — `LTXVExtendSampler` endpoint-frame repair
 
 - Changed files: `tenminvideomaker/continuation_workflow.py`,

@@ -77,6 +77,10 @@ prompts prepend stable identity, wardrobe, environment, camera-axis, and screen-
 Explicit beat segments are mapped to the model windows they overlap; old payloads reuse the scene prompt with a
 deterministic “continue seamlessly” instruction without rewriting the source JSON.
 
+Continuation worker node IDs are deterministically scoped by job, scene, revision, chunk, attempt, and phase.
+LTX conditioning nodes can mutate their cached outputs; separate numeric node-ID ranges prevent ComfyUI from
+reusing one stage's mutable conditioning in another stage or chunk.
+
 The full-resolution second pass uses the existing tiled x2 spatial upscaler and second LCM schedule. The initial
 121-frame window selects 16 temporal latent tokens. A later 121-frame visible window selects 17 tokens: a nonzero
 LTX temporal token cannot safely become the special first token after slicing, so the extra token acts as an

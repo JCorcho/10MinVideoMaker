@@ -108,6 +108,41 @@ class ContinuationWorkflowTests(unittest.TestCase):
         )
         self.assertFalse(nodes_of_type(build.api, "LTXVConcatAVLatent"))
 
+    def test_continuation_graph_ids_are_scoped_per_stage_and_chunk(self):
+        initial = build_continuation_stage1_workflow(
+            self.job,
+            self.scene,
+            self.frame,
+            self.plan,
+            self.plan.chunks[0],
+            revision=1,
+            attempt_number=1,
+        )
+        later = build_continuation_stage1_workflow(
+            self.job,
+            self.scene,
+            self.frame,
+            self.plan,
+            self.plan.chunks[1],
+            revision=1,
+            attempt_number=1,
+            previous_attempt_number=1,
+        )
+        refinement = build_continuation_stage2_workflow(
+            self.job,
+            self.scene,
+            self.frame,
+            self.plan,
+            self.plan.chunks[0],
+            revision=1,
+            attempt_number=1,
+        ).workflow
+        self.assertTrue(set(initial.api).isdisjoint(later.api))
+        self.assertTrue(set(initial.api).isdisjoint(refinement.api))
+        self.assertEqual(validate_api_graph(initial.api), ())
+        self.assertEqual(validate_api_graph(later.api), ())
+        self.assertEqual(validate_api_graph(refinement.api), ())
+
     def test_first_refinement_window_is_121_frames_and_raw_only(self):
         build = build_continuation_stage2_workflow(
             self.job,

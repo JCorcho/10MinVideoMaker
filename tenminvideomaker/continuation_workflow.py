@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -46,6 +47,36 @@ class ContinuationStage2Build:
     workflow: WorkflowBuild
     video_checkpoint_node_id: str
     audio_checkpoint_node_id: str
+
+
+def _continuation_graph(
+    *,
+    job: JobPayload,
+    scene: SceneSpec,
+    revision: int,
+    chunk_index: int,
+    attempt_number: int,
+    phase: str,
+) -> _Graph:
+    """Build a graph whose IDs cannot reuse mutable cached LTX conditioning."""
+    material = "\0".join(
+        (
+            job.job_id,
+            str(scene.scene_id),
+            str(revision),
+            str(chunk_index),
+            str(attempt_number),
+            phase,
+        )
+    ).encode("utf-8")
+    # Keep IDs numeric and below JavaScript's exact-integer limit. ComfyUI's
+    # execution cache keys node ID as well as inputs; distinct stages/chunks
+    # must not share mutable LTX conditioning outputs.
+    offset = 1_000_000_000_000 + int.from_bytes(
+        hashlib.blake2b(material, digest_size=6).digest(),
+        "big",
+    )
+    return _Graph(node_id_offset=offset)
 
 
 def _validated_chunk(
@@ -277,7 +308,14 @@ def build_continuation_stage1_workflow(
         raise WorkflowBuildError("Continuation chunk requires its accepted upstream attempt.")
 
     first, _second, chunking, _upscaler = _pass_settings(overrides)
-    graph = _Graph()
+    graph = _continuation_graph(
+        job=job,
+        scene=scene,
+        revision=revision,
+        chunk_index=chunk.index,
+        attempt_number=attempt_number,
+        phase="stage1",
+    )
     checkpoint, text_encoder, _audio_vae, model = _model_stack(
         graph,
         job,
@@ -491,7 +529,14 @@ def build_continuation_stage2_workflow(
         )
 
     _first, second, chunking, upscaler_settings = _pass_settings(overrides)
-    graph = _Graph()
+    graph = _continuation_graph(
+        job=job,
+        scene=scene,
+        revision=revision,
+        chunk_index=chunk.index,
+        attempt_number=attempt_number,
+        phase="stage2",
+    )
     checkpoint, text_encoder, audio_vae, model = _model_stack(
         graph,
         job,
@@ -801,7 +846,14 @@ def build_continuation_decode_workflow(
 ) -> WorkflowBuild:
     """Decode/mux verified stage-two AV checkpoints without diffusion."""
     _validated_chunk(plan, chunk)
-    graph = _Graph()
+    graph = _continuation_graph(
+        job=job,
+        scene=scene,
+        revision=revision,
+        chunk_index=chunk.index,
+        attempt_number=attempt_number,
+        phase="decode",
+    )
     checkpoint = graph.add(
         "CheckpointLoaderSimple",
         "LTX 2.3 checkpoint for checkpoint-only decode",
@@ -901,7 +953,14 @@ def build_assembled_scene_delivery_workflow(
         raise WorkflowBuildError("raw_scene_path must be absolute.")
     if not webhook_url:
         raise WorkflowBuildError("Discord delivery requires a webhook URL.")
-    graph = _Graph()
+    graph = _continuation_graph(
+        job=job,
+        scene=scene,
+        revision=0,
+        chunk_index=0,
+        attempt_number=0,
+        phase=f"delivery:{path}",
+    )
     loaded = graph.add(
         "VHS_LoadVideoPath",
         "Load assembled raw scene",

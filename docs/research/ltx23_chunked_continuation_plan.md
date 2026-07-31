@@ -11,7 +11,9 @@
 > encode 20 and completed. Every local `LTXVAddGuide` output must pass through `LTXVCropGuides` before AV sampling;
 > the node removes its temporary appended guide tokens. `LTXVExtendSampler` receives the planned new-transition
 > count plus its endpoint frame: 96 transitions require `num_new_frames=97`, so its internal overlap-plus-new
-> latent remains an `8n+1` span. This supersedes only initial diagnostic described below.
+> latent remains an `8n+1` span. Every continuation graph also uses a deterministic stage/chunk-scoped numeric
+> node-ID range, preventing mutable cached conditioning outputs from one prompt leaking into another. This
+> supersedes only initial diagnostic described below.
 
 ---
 
