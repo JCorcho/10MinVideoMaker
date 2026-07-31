@@ -97,6 +97,20 @@ def build_representative_workflows() -> dict[str, dict[str, dict[str, Any]]]:
             previous_chunk_path=previous_path,
         ).workflow.api
 
+    decoded_guide = build_continuation_stage2_workflow(
+        job,
+        scene,
+        frame_path,
+        plan,
+        initial,
+        revision=1,
+        attempt_number=1,
+        initial_guide_path=Path(
+            r"D:\LTX_Supervisor_Storage\validation\decoded-guide.mkv"
+        ),
+        initial_guide_skip_frames=96,
+    ).workflow.api
+
     delivery = build_assembled_scene_delivery_workflow(
         job,
         scene,
@@ -116,6 +130,7 @@ def build_representative_workflows() -> dict[str, dict[str, dict[str, Any]]]:
         "stage1_later": stage1(later),
         "stage1_final": stage1(final),
         "stage2_initial": stage2(initial),
+        "stage2_decoded_guide": decoded_guide,
         "stage2_later": stage2(later),
         "stage2_final": stage2(final),
         "decode": decode,

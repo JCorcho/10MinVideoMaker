@@ -445,6 +445,8 @@ def build_continuation_stage2_workflow(
     attempt_number: int,
     previous_attempt_number: int | None = None,
     previous_chunk_path: str | Path | None = None,
+    initial_guide_path: str | Path | None = None,
+    initial_guide_skip_frames: int = 0,
     resolved_lora_filenames: Mapping[str, str] | None = None,
     overrides: SceneWorkflowOverrides | None = None,
 ) -> ContinuationStage2Build:
@@ -461,6 +463,25 @@ def build_continuation_stage2_workflow(
     if not chunk.is_initial and (prior_path is None or not prior_path.is_absolute()):
         raise WorkflowBuildError(
             "Refined continuation requires an absolute prior raw chunk path."
+        )
+    initial_guide = (
+        Path(initial_guide_path) if initial_guide_path is not None else None
+    )
+    if initial_guide is not None and not chunk.is_initial:
+        raise WorkflowBuildError(
+            "An initial decoded guide is only valid for an initial refinement window."
+        )
+    if initial_guide is not None and not initial_guide.is_absolute():
+        raise WorkflowBuildError("initial_guide_path must be absolute.")
+    if (
+        isinstance(initial_guide_skip_frames, bool)
+        or not isinstance(initial_guide_skip_frames, int)
+        or initial_guide_skip_frames < 0
+    ):
+        raise WorkflowBuildError("initial_guide_skip_frames must be non-negative.")
+    if initial_guide is None and initial_guide_skip_frames:
+        raise WorkflowBuildError(
+            "initial_guide_skip_frames requires initial_guide_path."
         )
 
     _first, second, chunking, upscaler_settings = _pass_settings(overrides)
@@ -554,6 +575,33 @@ def build_continuation_stage2_workflow(
         sampling_positive = positive
         sampling_negative = negative
         final_model = graph.output(sampling_model)
+        if initial_guide is not None:
+            previous_video = graph.add(
+                "VHS_LoadVideoPath",
+                "Load decoded 25-frame diagnostic guide",
+                video=str(initial_guide),
+                force_rate=float(PRODUCTION_FPS),
+                custom_width=0,
+                custom_height=0,
+                frame_load_cap=25,
+                skip_first_frames=initial_guide_skip_frames,
+                select_every_nth=1,
+                format="None",
+            )
+            initial_guide_node = graph.add(
+                "LTXVAddGuide",
+                "Guide initial refinement with decoded 25-frame overlap",
+                positive=sampling_positive,
+                negative=sampling_negative,
+                vae=graph.output(checkpoint, 2),
+                latent=video_latent,
+                image=graph.output(previous_video, 0),
+                frame_idx=0,
+                strength=1.0,
+            )
+            sampling_positive = graph.output(initial_guide_node, 0)
+            sampling_negative = graph.output(initial_guide_node, 1)
+            video_latent = graph.output(initial_guide_node, 2)
     else:
         previous_chunk = plan.chunks[chunk.index - 1]
         previous_preroll = (

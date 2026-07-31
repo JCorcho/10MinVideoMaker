@@ -85,6 +85,19 @@ class ComfyHttpTests(unittest.TestCase):
             with self.assertRaisesRegex(ComfyHttpError, "invalid queue lists"):
                 client.queue_counts()
 
+    def test_system_stats_returns_live_mapping(self) -> None:
+        client = ComfyHttpClient()
+        document = {"devices": [{"vram_total": 16, "vram_free": 12}]}
+        with patch.object(client, "_json_request", return_value=document) as request:
+            self.assertIs(client.system_stats(), document)
+        request.assert_called_once_with("GET", "/system_stats", timeout=10)
+
+    def test_system_stats_rejects_non_mapping_response(self) -> None:
+        client = ComfyHttpClient()
+        with patch.object(client, "_json_request", return_value=[]):
+            with self.assertRaisesRegex(ComfyHttpError, "invalid system statistics"):
+                client.system_stats()
+
     def test_persisted_prompt_can_be_reclaimed_from_history_or_owned_queue(self) -> None:
         client = ComfyHttpClient(client_id="10MinVideoMaker-supervisor")
         successful = {

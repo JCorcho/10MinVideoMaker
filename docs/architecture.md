@@ -348,7 +348,7 @@ interval.
 - `python scripts/setup_and_start.py --help`
 - `python scripts\validate_continuation_workflows.py`
 - `git diff --check`
-- The continuation validator builds initial, later, and final graphs for both passes plus post-assembly delivery,
+- The continuation validator builds initial, decoded-guide, later, and final graphs for both passes plus post-assembly delivery,
   fetches only their live `/object_info/<node type>` contracts, and never posts to `/prompt`.
 - Restart ComfyUI only with an empty queue, then query `/object_info/<node type>` for the project types, including
   `10MinVideoMaker_SaveChunkLatent` and `10MinVideoMaker_LoadChunkLatent`.
@@ -358,7 +358,9 @@ interval.
   unavailable classes or mismatched routes, lays out nodes by dependency depth, checks node overlaps and group bounds,
   and writes both API and GUI forms.
 
-These checks prove graph/schema consistency and deterministic accounting only. The bounded four-generation GPU
-matrix, peak-VRAM capture, and human visual seam/anatomy/runtime decisions have not been run. Until that evidence
-exists and the D-drive approval manifest is bound to the current runtime, continuation has no production-quality
-claim and `explicit` must remain the default.
+These checks prove graph/schema consistency and deterministic accounting only. The separate
+`scripts\run_continuation_acceptance.py` creates a unique D-drive-only test job from one existing cached frame,
+runs common-base, single-frame, decoded-25-frame-guide, and latent-overlap cases without touching the supervisor
+database state, captures ComfyUI peak-VRAM/runtime telemetry plus FFmpeg/Pillow/OpenCV seam evidence, and ends in
+human review. It cannot enable `auto` or create the approval manifest. Until GPU evidence and human visual review
+exist, continuation has no production-quality claim and `explicit` remains the default.

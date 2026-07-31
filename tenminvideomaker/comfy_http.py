@@ -60,6 +60,13 @@ class ComfyHttpClient:
         except ComfyHttpError:
             return False
 
+    def system_stats(self) -> Mapping[str, Any]:
+        """Return live ComfyUI system statistics for project telemetry."""
+        response = self._json_request("GET", "/system_stats", timeout=10)
+        if not isinstance(response, Mapping):
+            raise ComfyHttpError("ComfyUI returned invalid system statistics.")
+        return response
+
     def queue_counts(self) -> tuple[int, int]:
         """Return running and pending prompt counts without exposing workflow contents."""
         queue = self._json_request("GET", "/queue", timeout=10)

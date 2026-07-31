@@ -1024,3 +1024,36 @@
 - Acceptance boundary: the unit/no-render checks do not validate image quality. No bounded GPU generation matrix,
   visual seam comparison, anatomy comparison, peak-VRAM acceptance, or runtime acceptance has been completed.
   Therefore continuation has no production-quality claim and `auto` must remain locked.
+
+### 2026-07-31 — bounded continuation acceptance runner
+
+- Changed files: `tenminvideomaker/continuation_acceptance.py`,
+  `tenminvideomaker/continuation_workflow.py`, `tenminvideomaker/comfy_http.py`,
+  `scripts/run_continuation_acceptance.py`, `scripts/validate_continuation_workflows.py`, focused continuation,
+  HTTP-client, and runner tests, `README.md`, `docs/architecture.md`, `docs/user-guide.md`, and this file.
+- Architecture: a unique `continuation-acceptance-*` job namespace is created only in
+  `D:\LTX_Supervisor_Storage\acceptance` and project-owned job paths. The runner reads the selected saved payload
+  through SQLite read-only mode and reuses only its exact D-drive cached T2I frame. It never starts the supervisor,
+  edits `pipeline.sqlite3`, or changes production rollout mode.
+- Routing: all cases share one production two-pass 121-frame base. `single_frame` consumes its exact final decoded
+  frame; `decoded_25_frame` uses a diagnostic initial refinement branch which loads frames 96–120 through
+  `LTXVAddGuide` at frame zero; `latent_overlap` uses the normal 24-frame `LTXVExtendSampler` route plus later
+  full-resolution guide at causal-preroll frame eight. The diagnostic initial guide is opt-in and cannot alter
+  standard production initial chunks.
+- Evidence: every stage records prompt ID, runtime, sampled peak VRAM, SHA-256, lossless raw video, ffprobe data,
+  RGB/luma/chroma boundary differences, optional Farneback flow discontinuity, and explicit pending human anatomy,
+  contact, identity, camera, and motion-restart decisions. Completion always remains `awaiting_human_review`; it
+  cannot manufacture `continuation-validation-v1.json` or unlock `auto`.
+- Reproduction: with an empty ComfyUI queue, run
+  `python scripts\run_continuation_acceptance.py --source-job-id <saved-id> --source-scene-id <scene-id> --dry-run`
+  first. Remove `--dry-run` only for deliberate GPU acceptance work. Inspect
+  `D:\LTX_Supervisor_Storage\acceptance\<run-id>\run.json`; review raw windows without exposing or using the
+  supervisor's active state.
+- Verification commands:
+  - `python -m unittest discover -s tests -p "test_continuation*.py" -v`
+  - `python -m unittest discover -s tests -p "test_comfy_http.py" -v`
+  - `python -m unittest discover -s tests -p "test_run_continuation_acceptance.py" -v`
+  - `python -m compileall -q tenminvideomaker scripts tests`
+  - `python scripts\validate_continuation_workflows.py`
+  - `python scripts\run_continuation_acceptance.py --source-job-id <saved-id> --source-scene-id <scene-id> --dry-run`
+  - `git diff --check`

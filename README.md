@@ -177,5 +177,11 @@ initial/later/final continuation graphs, checkpoint-only decode, and delivery, t
 `/object_info`; the command never queues a prompt. GUI startup also checks the Save Scene Frame and both
 chunk-latent contracts, and restarts ComfyUI only when those contracts are stale and the queue is empty.
 
+For the explicit continuation beta, `python scripts\run_continuation_acceptance.py --source-job-id <id>
+--source-scene-id <id> --dry-run` validates the actual four-case acceptance matrix without rendering. Remove
+`--dry-run` only when the ComfyUI queue is empty and GPU time is intentionally reserved: it stores all prompts,
+lossless raw windows, telemetry, metrics, and a human-review manifest only under
+`D:\LTX_Supervisor_Storage\acceptance`. It never starts the supervisor or enables automatic rollout.
+
 See `docs/user-guide.md` for workflow locations, Gmail environment variables, and the current beta/no-render
 boundary.

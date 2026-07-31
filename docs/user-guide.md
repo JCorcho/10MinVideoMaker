@@ -486,14 +486,23 @@ python -m unittest discover -s tests -v
 python -m compileall -q tenminvideomaker scripts __init__.py
 python scripts\setup_and_start.py --help
 python scripts\validate_continuation_workflows.py
+python scripts\run_continuation_acceptance.py --source-job-id <id> --source-scene-id <id> --dry-run
 python scripts\export_workflows.py --install-approved-shared-copies
 python scripts\run_supervisor.py --help
 git diff --check
 ```
 
-The continuation validator builds representative initial/later/final two-pass graphs, checkpoint-only decode, and
+The continuation validator builds representative initial/later/final two-pass graphs, the decoded-25-frame guide
+diagnostic, checkpoint-only decode, and
 delivery, then reads only the running ComfyUI `/object_info` contracts. It never queues a prompt. The export command
 is also no-render validation; it does not load models, download assets, or generate media.
+
+The acceptance runner is intentionally separate from normal operation. Its `--dry-run` mode only validates all
+four comparison graphs. Without that flag it requires an empty ComfyUI queue, reads one completed cached frame from
+the selected D-drive job, and stores its own prompts, raw FFV1 windows, telemetry, frame metrics, and
+`awaiting_human_review` decision record under `D:\LTX_Supervisor_Storage\acceptance\<run-id>`. It does not start,
+pause, cancel, or update the saved supervisor job, and it never creates the rollout approval file or enables
+automatic continuation.
 
 At GUI startup, the node guard checks Save Scene Frame revision support, both Save/Load Chunk Latent artifact-kind
 options, and Load Chunk Latent's expected-token input. If any are stale, it may run the path-verified ComfyUI

@@ -4,7 +4,7 @@ import unittest
 
 
 class ContinuationWorkflowValidationScriptTests(unittest.TestCase):
-    def test_builds_initial_later_final_stage_graphs_and_delivery(self) -> None:
+    def test_builds_initial_later_final_and_decoded_guide_graphs(self) -> None:
         from tenminvideomaker.continuation_renderer import (
             CONTINUATION_CONTRACT_NODE_TYPES,
         )
@@ -21,6 +21,7 @@ class ContinuationWorkflowValidationScriptTests(unittest.TestCase):
                 "stage1_later",
                 "stage1_final",
                 "stage2_initial",
+                "stage2_decoded_guide",
                 "stage2_later",
                 "stage2_final",
                 "decode",
@@ -34,6 +35,7 @@ class ContinuationWorkflowValidationScriptTests(unittest.TestCase):
         self.assertNotIn("LTXVExtendSampler", classes["stage1_initial"])
         self.assertIn("LTXVExtendSampler", classes["stage1_later"])
         self.assertIn("LTXVExtendSampler", classes["stage1_final"])
+        self.assertIn("LTXVAddGuide", classes["stage2_decoded_guide"])
         self.assertIn("10MinVideoMaker_LoadChunkLatent", classes["decode"])
         self.assertNotIn("SamplerCustom", classes["decode"])
         self.assertIn("DiscordSendSaveVideo", classes["delivery"])

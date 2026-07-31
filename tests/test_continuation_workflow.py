@@ -167,6 +167,38 @@ class ContinuationWorkflowTests(unittest.TestCase):
             (4, 1, 16, 1),
         )
 
+    def test_initial_refinement_can_use_a_decoded_25_frame_diagnostic_guide(self):
+        guide_path = Path(
+            r"D:\LTX_Supervisor_Storage\acceptance\base\window.mkv"
+        )
+        build = build_continuation_stage2_workflow(
+            self.job,
+            self.scene,
+            self.frame,
+            self.plan,
+            self.plan.chunks[0],
+            revision=1,
+            attempt_number=1,
+            initial_guide_path=guide_path,
+            initial_guide_skip_frames=96,
+        )
+        loader = nodes_of_type(build.workflow.api, "VHS_LoadVideoPath")[0]["inputs"]
+        self.assertEqual(loader["video"], str(guide_path))
+        self.assertEqual(loader["frame_load_cap"], 25)
+        self.assertEqual(loader["skip_first_frames"], 96)
+        guide = nodes_of_type(build.workflow.api, "LTXVAddGuide")[0]["inputs"]
+        self.assertEqual(guide["frame_idx"], 0)
+        self.assertEqual(guide["strength"], 1.0)
+        self.assertEqual(
+            guide["image"][0],
+            next(
+                node_id
+                for node_id, node in build.workflow.api.items()
+                if node["class_type"] == "VHS_LoadVideoPath"
+            ),
+        )
+        self.assertEqual(validate_api_graph(build.workflow.api), ())
+
     def test_later_refinement_has_causal_preroll_and_25_frame_visible_guide(self):
         prior = Path(
             r"D:\LTX_Supervisor_Storage\jobs\job\chunks\chunk_0000\window.mkv"
