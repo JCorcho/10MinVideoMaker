@@ -9,7 +9,9 @@
 > refinement diagnostic uses only a 17-frame decoded guide (frames 96–112). Live LTX testing proved initial
 > refined latent has 20 guide-token positions: a 25-frame `8n+1` guide encodes 21 and is rejected; 17 frames
 > encode 20 and completed. Every local `LTXVAddGuide` output must pass through `LTXVCropGuides` before AV sampling;
-> the node removes its temporary appended guide tokens. This supersedes only initial diagnostic described below.
+> the node removes its temporary appended guide tokens. `LTXVExtendSampler` receives the planned new-transition
+> count plus its endpoint frame: 96 transitions require `num_new_frames=97`, so its internal overlap-plus-new
+> latent remains an `8n+1` span. This supersedes only initial diagnostic described below.
 
 ---
 

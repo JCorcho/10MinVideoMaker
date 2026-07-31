@@ -1021,6 +1021,29 @@
   - `python -m compileall -q tenminvideomaker scripts tests`
   - `python scripts\validate_continuation_workflows.py`
   - `git diff --check`
+
+### 2026-07-31 — `LTXVExtendSampler` endpoint-frame repair
+
+- Changed files: `tenminvideomaker/continuation_workflow.py`,
+  `tests/test_continuation_workflow.py`, `README.md`, `docs/architecture.md`,
+  `docs/research/ltx23_chunked_continuation_plan.md`, `docs/user-guide.md`, and
+  this file.
+- Reproduction: GPU acceptance `continuation-acceptance-20260731-gpu11` completed
+  base, single-frame, and decoded-guide cases, then failed the first later
+  `LTXVExtendSampler` at 96 with a 4,788-versus-4,536 token shape mismatch.
+  The isolated same-graph probe changed only `num_new_frames` to 97 and
+  completed, saving a 17-token bounded handoff for chunk 1 at
+  `D:\LTX_Supervisor_Storage\jobs\continuation-acceptance-20260731-gpu11-probe97`.
+- Rule: plan fields count transitions; the sampler expects pixel-frame count.
+  Pass `chunk.new_transition_frames + 1` so `frame_overlap + num_new_frames`
+  remains `8n+1`. Full 96-transition extensions therefore pass 97; short final
+  extensions follow the same rule. Do not regress to 96.
+- Verification commands:
+  - `python -m unittest discover -s tests -p "test_continuation_workflow.py" -v`
+  - `python -m unittest discover -s tests`
+  - `python -m compileall -q tenminvideomaker scripts tests`
+  - `python scripts\validate_continuation_workflows.py`
+  - `git diff --check`
 - Acceptance boundary: the unit/no-render checks do not validate image quality. No bounded GPU generation matrix,
   visual seam comparison, anatomy comparison, peak-VRAM acceptance, or runtime acceptance has been completed.
   Therefore continuation has no production-quality claim and `auto` must remain locked.

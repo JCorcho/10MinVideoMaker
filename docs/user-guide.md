@@ -108,6 +108,10 @@ at frame eight, immediately after the sacrificial causal-token preroll. Its outp
 checkpoint tail; it does not yet prove acceptable seams,
 anatomy, runtime, or peak VRAM on this machine.
 
+Internally, each later first-pass continuation gives LTX one endpoint frame in addition to its planned new
+transitions: 96 transitions are submitted as 97 pixel frames. This preserves `8n+1` temporal geometry without
+changing requested duration or exported 24 fps timing.
+
 The displayed generation-window count is not the number of five-second pieces in the final video. A 30-second scene
 uses eight model windows because each later full window spends 24 frames reworking the seam. Those windows produce a
 valid 721-frame LTX generation master, then assembly trims the ordinary scene `video.mp4` to exactly 720 frames at

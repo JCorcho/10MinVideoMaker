@@ -82,7 +82,7 @@ class ContinuationWorkflowTests(unittest.TestCase):
         )
         self.assertEqual(validate_api_graph(build.api), ())
         extension = nodes_of_type(build.api, "LTXVExtendSampler")[0]["inputs"]
-        self.assertEqual(extension["num_new_frames"], 96)
+        self.assertEqual(extension["num_new_frames"], 97)
         self.assertEqual(extension["frame_overlap"], 24)
         self.assertEqual(extension["strength"], 0.5)
         loader = nodes_of_type(
@@ -318,6 +318,21 @@ class ContinuationWorkflowTests(unittest.TestCase):
     def test_short_final_extension_keeps_causal_preroll(self):
         prior = Path(
             r"D:\LTX_Supervisor_Storage\jobs\job\chunks\chunk_0001\window.mkv"
+        )
+        stage1 = build_continuation_stage1_workflow(
+            self.job,
+            self.scene,
+            self.frame,
+            self.plan,
+            self.plan.chunks[2],
+            revision=1,
+            attempt_number=1,
+            previous_attempt_number=1,
+        )
+        extension = nodes_of_type(stage1.api, "LTXVExtendSampler")[0]["inputs"]
+        self.assertEqual(
+            extension["num_new_frames"],
+            self.plan.chunks[2].new_transition_frames + 1,
         )
         build = build_continuation_stage2_workflow(
             self.job,

@@ -71,7 +71,8 @@ scene latent is never retained. Both stage-one and stage-two checkpoint reuse su
 `expected_temporal_tokens` to `10MinVideoMaker_LoadChunkLatent`. The node validates that count with the checkpoint
 identity, manifest SHA-256, tensor descriptors, and LTX shape, and its cache fingerprint includes the hash and
 expected token count. Later first passes use the official `LTXVExtendSampler` with the fixed 24-frame overlap, up to
-96 new transitions, the existing first-pass LCM sigmas, and a deterministic unsigned-64-bit derived seed. Chunk
+96 new transitions plus their endpoint frame (`num_new_frames=97` for a full window), the existing first-pass LCM
+sigmas, and a deterministic unsigned-64-bit derived seed. Chunk
 prompts prepend stable identity, wardrobe, environment, camera-axis, and screen-direction anchors when supplied.
 Explicit beat segments are mapped to the model windows they overlap; old payloads reuse the scene prompt with a
 deterministic “continue seamlessly” instruction without rewriting the source JSON.

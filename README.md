@@ -53,6 +53,10 @@ loader also verifies the exact expected
   exact 30-second timeline uses eight model windows, builds a
 721-frame `8n + 1` generation master, and trims the revision-facing scene clip to exactly 720 frames at 24 fps.
 
+Later first-pass `LTXVExtendSampler` windows receive the planned transition count plus one endpoint pixel frame.
+This keeps their internal overlap-plus-new latent on LTX's `8n+1` temporal grid: 96 new transitions use
+`num_new_frames=97`.
+
 Continuation remains a beta/manual opt-in. `TENMIN_LTX_CONTINUATION_MODE=explicit` is the default: only a scene
 longer than 121 generation frames whose `i2v.continuation.enabled` value is true uses the route. `disabled` forces
 the legacy single-generation route. `auto` fails closed at supervisor construction unless

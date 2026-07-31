@@ -392,7 +392,11 @@ def build_continuation_stage1_workflow(
             model=model,
             vae=graph.output(checkpoint, 2),
             latents=graph.output(previous, 0),
-            num_new_frames=chunk.new_transition_frames,
+            # LTXVExtendSampler builds an EmptyLTXVLatentVideo with
+            # ``frame_overlap + num_new_frames``.  The latter must be an
+            # 8n+1 pixel-frame span, so add the endpoint frame to the planned
+            # transition count (96 transitions -> 97 pixel frames).
+            num_new_frames=chunk.new_transition_frames + 1,
             frame_overlap=plan.overlap_pixel_frames,
             guider=guider,
             sampler=graph.output(sampler),
