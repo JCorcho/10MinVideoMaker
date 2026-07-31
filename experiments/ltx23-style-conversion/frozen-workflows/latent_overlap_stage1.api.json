@@ -1,0 +1,304 @@
+{
+  "155224176714144": {
+    "_meta": {
+      "title": "Fresh LTX 2.3 continuation checkpoint"
+    },
+    "class_type": "10MinVideoMaker_FreshCheckpoint",
+    "inputs": {
+      "ckpt_name": "10Eros_v1.4_fp8mixed_learned.safetensors",
+      "scope": "stage1:continuation-acceptance-20260731-065935:1:1:1:1:checkpoint"
+    }
+  },
+  "155224176714145": {
+    "_meta": {
+      "title": "LTX 2.3 text encoder"
+    },
+    "class_type": "LTXAVTextEncoderLoader",
+    "inputs": {
+      "ckpt_name": "10Eros_v1.4_fp8mixed_learned.safetensors",
+      "device": "default",
+      "text_encoder": "gemma-3-12b-it-ablit-norms-biproj-fp8mixed.safetensors"
+    }
+  },
+  "155224176714146": {
+    "_meta": {
+      "title": "Mandatory I2V LoRA: LTX2.3_DMD_reshaped_r256.safetensors"
+    },
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {
+      "lora_name": "LTX2.3_DMD_reshaped_r256.safetensors",
+      "model": [
+        "155224176714144",
+        0
+      ],
+      "strength_model": 1.0
+    }
+  },
+  "155224176714147": {
+    "_meta": {
+      "title": "Mandatory I2V LoRA: JoyAI-Echo-content_r256.safetensors"
+    },
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {
+      "lora_name": "JoyAI-Echo-content_r256.safetensors",
+      "model": [
+        "155224176714146",
+        0
+      ],
+      "strength_model": 0.5
+    }
+  },
+  "155224176714148": {
+    "_meta": {
+      "title": "Isolate model before continuation chunk feed-forward"
+    },
+    "class_type": "10MinVideoMaker_IsolateModel",
+    "inputs": {
+      "model": [
+        "155224176714147",
+        0
+      ],
+      "scope": "stage1:continuation-acceptance-20260731-065935:1:1:1:1:before-chunk-feed-forward"
+    }
+  },
+  "155224176714149": {
+    "_meta": {
+      "title": "16 GB VRAM chunking"
+    },
+    "class_type": "LTXVChunkFeedForward",
+    "inputs": {
+      "chunks": 2,
+      "dim_threshold": 4096,
+      "model": [
+        "155224176714148",
+        0
+      ]
+    }
+  },
+  "155224176714150": {
+    "_meta": {
+      "title": "Isolate model after continuation chunk feed-forward"
+    },
+    "class_type": "10MinVideoMaker_IsolateModel",
+    "inputs": {
+      "model": [
+        "155224176714149",
+        0
+      ],
+      "scope": "stage1:continuation-acceptance-20260731-065935:1:1:1:1:after-chunk-feed-forward"
+    }
+  },
+  "155224176714151": {
+    "_meta": {
+      "title": "Chunk 2 motion prompt"
+    },
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": [
+        "155224176714145",
+        0
+      ],
+      "text": "The same clearly adult person remains consistent. The same fully clothed wardrobe remains unchanged. The interior and directional lighting remain stable. Preserve the lateral tracking axis. Movement continues toward screen right. Continue seamlessly from the preceding frames without restarting pose, motion, camera movement, wardrobe, lighting, or environment. A clearly adult, fully clothed person walks steadily toward screen right through a softly lit interior while keeping one hand on a handled travel bag. The camera tracks laterally at a slow constant speed; the subject's visible hands, clothing, and stable directional lighting remain clear. Then The same clearly adult, fully clothed person keeps walking toward screen right without pausing, keeps one hand on the handled travel bag, gradually turns the torso toward camera, and continues through the stable directional light while the slow lateral camera tracking never stops."
+    }
+  },
+  "155224176714152": {
+    "_meta": {
+      "title": "Chunk 2 negative prompt"
+    },
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": [
+        "155224176714145",
+        0
+      ],
+      "text": "blurry, low quality, deformed, extra limbs, text, watermark, still image, motion restart, scene cut, motion restart, pose reset, scene cut"
+    }
+  },
+  "155224176714153": {
+    "_meta": {
+      "title": "Isolate positive conditioning from prior continuation caches"
+    },
+    "class_type": "10MinVideoMaker_IsolateConditioning",
+    "inputs": {
+      "conditioning": [
+        "155224176714151",
+        0
+      ],
+      "scope": "stage1:continuation-acceptance-20260731-065935:1:1:1:1:positive"
+    }
+  },
+  "155224176714154": {
+    "_meta": {
+      "title": "Isolate negative conditioning from prior continuation caches"
+    },
+    "class_type": "10MinVideoMaker_IsolateConditioning",
+    "inputs": {
+      "conditioning": [
+        "155224176714152",
+        0
+      ],
+      "scope": "stage1:continuation-acceptance-20260731-065935:1:1:1:1:negative"
+    }
+  },
+  "155224176714155": {
+    "_meta": {
+      "title": "24 fps chunk conditioning"
+    },
+    "class_type": "LTXVConditioning",
+    "inputs": {
+      "frame_rate": 24.0,
+      "negative": [
+        "155224176714154",
+        0
+      ],
+      "positive": [
+        "155224176714153",
+        0
+      ]
+    }
+  },
+  "155224176714156": {
+    "_meta": {
+      "title": "First-pass LCM sampler"
+    },
+    "class_type": "KSamplerSelect",
+    "inputs": {
+      "sampler_name": "lcm"
+    }
+  },
+  "155224176714157": {
+    "_meta": {
+      "title": "First-pass continuation sigmas"
+    },
+    "class_type": "ManualSigmas",
+    "inputs": {
+      "sigmas": "1, 0.99375, 0.9875, 0.98125, 0.975, 0.909375, 0.725, 0.421875, 0"
+    }
+  },
+  "155224176714158": {
+    "_meta": {
+      "title": "Deterministic chunk noise"
+    },
+    "class_type": "RandomNoise",
+    "inputs": {
+      "noise_seed": 14005304055458111461
+    }
+  },
+  "155224176714159": {
+    "_meta": {
+      "title": "Load accepted bounded first-pass handoff"
+    },
+    "class_type": "10MinVideoMaker_LoadChunkLatent",
+    "inputs": {
+      "artifact_kind": "stage1_handoff",
+      "attempt_number": 1,
+      "chunk_index": 0,
+      "expected_temporal_tokens": 16,
+      "job_id": "continuation-acceptance-20260731-065935",
+      "revision": 1,
+      "scene_id": 1
+    }
+  },
+  "155224176714160": {
+    "_meta": {
+      "title": "LCM pass-through guider (STG disabled)"
+    },
+    "class_type": "STGGuiderAdvanced",
+    "inputs": {
+      "apg_cfg_scale": 1.0,
+      "apply_apg": false,
+      "cfg_star_rescale": false,
+      "cfg_values": "1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0",
+      "eta": 1.0,
+      "model": [
+        "155224176714150",
+        0
+      ],
+      "negative": [
+        "155224176714155",
+        1
+      ],
+      "norm_threshold": 0.0,
+      "positive": [
+        "155224176714155",
+        0
+      ],
+      "sigmas": "1, 0.99375, 0.9875, 0.98125, 0.975, 0.909375, 0.725, 0.421875, 0",
+      "skip_steps_sigma_threshold": 100.0,
+      "stg_layers_indices": "[29], [29], [29], [29], [29], [29], [29], [29], [29]",
+      "stg_rescale_values": "1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0",
+      "stg_scale_values": "0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0"
+    }
+  },
+  "155224176714161": {
+    "_meta": {
+      "title": "Official latent-overlap continuation"
+    },
+    "class_type": "LTXVExtendSampler",
+    "inputs": {
+      "frame_overlap": 24,
+      "guider": [
+        "155224176714160",
+        0
+      ],
+      "latents": [
+        "155224176714159",
+        0
+      ],
+      "model": [
+        "155224176714150",
+        0
+      ],
+      "noise": [
+        "155224176714158",
+        0
+      ],
+      "num_new_frames": 97,
+      "sampler": [
+        "155224176714156",
+        0
+      ],
+      "sigmas": [
+        "155224176714157",
+        0
+      ],
+      "strength": 0.5,
+      "vae": [
+        "155224176714144",
+        2
+      ]
+    }
+  },
+  "155224176714162": {
+    "_meta": {
+      "title": "Persist bounded current window plus causal predecessor"
+    },
+    "class_type": "LTXVSelectLatents",
+    "inputs": {
+      "end_index": -1,
+      "samples": [
+        "155224176714161",
+        0
+      ],
+      "start_index": -17
+    }
+  },
+  "155224176714163": {
+    "_meta": {
+      "title": "Durably checkpoint bounded first-pass handoff"
+    },
+    "class_type": "10MinVideoMaker_SaveChunkLatent",
+    "inputs": {
+      "artifact_kind": "stage1_handoff",
+      "attempt_number": 1,
+      "chunk_index": 1,
+      "job_id": "continuation-acceptance-20260731-065935",
+      "latent": [
+        "155224176714162",
+        0
+      ],
+      "revision": 1,
+      "scene_id": 1
+    }
+  }
+}

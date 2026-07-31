@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "source_run_id": "continuation-acceptance-20260731-065935",
+  "source_job_id": "20260730-0217",
+  "source_scene_id": 1,
+  "production_status": "rejected_for_style_continuation",
+  "methods": {
+    "decoded_17_frame": "preserved_live_action_conversion_lead",
+    "latent_overlap": "preserved_semirealistic_3d_conversion_lead"
+  },
+  "workflows": [
+    {
+      "relative_path": "frozen-workflows/decoded_17_frame_stage1.api.json",
+      "sha256": "6228ea618cd3990e90f1e109db56dcda5660e7c65de2919daa8cfff7d5724da1"
+    },
+    {
+      "relative_path": "frozen-workflows/decoded_17_frame_stage2.api.json",
+      "sha256": "29328ba66823b2c13cd03a80e6b0c68e7ca3632129ac850ebce830dcdb268a84"
+    },
+    {
+      "relative_path": "frozen-workflows/latent_overlap_stage1.api.json",
+      "sha256": "bdb6277b3ea0af42d7183f7e2ee41dc30361afc0214759761895cd9385fed745"
+    },
+    {
+      "relative_path": "frozen-workflows/latent_overlap_stage2.api.json",
+      "sha256": "de4805fce799c7ee36522a68aaa28125aed2b4472fdeb759d9e090801966af87"
+    }
+  ],
+  "raw_media": [
+    {
+      "case_name": "decoded_17_frame",
+      "audit_path": "D:\\LTX_Supervisor_Storage\\jobs\\continuation-acceptance-20260731-065935\\scenes\\scene_0001\\revisions\\0003\\chunks\\chunk_0000\\attempts\\0001\\window.mkv",
+      "sha256": "018adbb695db2e5f6e3bb0d5b4a652228362a5f7c997bdfc6153f541807b3c11"
+    },
+    {
+      "case_name": "latent_overlap",
+      "audit_path": "D:\\LTX_Supervisor_Storage\\jobs\\continuation-acceptance-20260731-065935\\scenes\\scene_0001\\revisions\\0001\\chunks\\chunk_0001\\attempts\\0001\\window.mkv",
+      "sha256": "7fe7ba9dde3668e159866171b623d639eef28fa75db748791098fbb6cbf63a97"
+    }
+  ]
+}

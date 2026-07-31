@@ -1,0 +1,370 @@
+{
+  "33533357039352": {
+    "_meta": {
+      "title": "Fresh LTX 2.3 continuation checkpoint"
+    },
+    "class_type": "10MinVideoMaker_FreshCheckpoint",
+    "inputs": {
+      "ckpt_name": "10Eros_v1.4_fp8mixed_learned.safetensors",
+      "scope": "stage1:continuation-acceptance-20260731-065935:1:3:1:0:checkpoint"
+    }
+  },
+  "33533357039353": {
+    "_meta": {
+      "title": "LTX 2.3 text encoder"
+    },
+    "class_type": "LTXAVTextEncoderLoader",
+    "inputs": {
+      "ckpt_name": "10Eros_v1.4_fp8mixed_learned.safetensors",
+      "device": "default",
+      "text_encoder": "gemma-3-12b-it-ablit-norms-biproj-fp8mixed.safetensors"
+    }
+  },
+  "33533357039354": {
+    "_meta": {
+      "title": "Mandatory I2V LoRA: LTX2.3_DMD_reshaped_r256.safetensors"
+    },
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {
+      "lora_name": "LTX2.3_DMD_reshaped_r256.safetensors",
+      "model": [
+        "33533357039352",
+        0
+      ],
+      "strength_model": 1.0
+    }
+  },
+  "33533357039355": {
+    "_meta": {
+      "title": "Mandatory I2V LoRA: JoyAI-Echo-content_r256.safetensors"
+    },
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {
+      "lora_name": "JoyAI-Echo-content_r256.safetensors",
+      "model": [
+        "33533357039354",
+        0
+      ],
+      "strength_model": 0.5
+    }
+  },
+  "33533357039356": {
+    "_meta": {
+      "title": "Isolate model before continuation chunk feed-forward"
+    },
+    "class_type": "10MinVideoMaker_IsolateModel",
+    "inputs": {
+      "model": [
+        "33533357039355",
+        0
+      ],
+      "scope": "stage1:continuation-acceptance-20260731-065935:1:3:1:0:before-chunk-feed-forward"
+    }
+  },
+  "33533357039357": {
+    "_meta": {
+      "title": "16 GB VRAM chunking"
+    },
+    "class_type": "LTXVChunkFeedForward",
+    "inputs": {
+      "chunks": 2,
+      "dim_threshold": 4096,
+      "model": [
+        "33533357039356",
+        0
+      ]
+    }
+  },
+  "33533357039358": {
+    "_meta": {
+      "title": "Isolate model after continuation chunk feed-forward"
+    },
+    "class_type": "10MinVideoMaker_IsolateModel",
+    "inputs": {
+      "model": [
+        "33533357039357",
+        0
+      ],
+      "scope": "stage1:continuation-acceptance-20260731-065935:1:3:1:0:after-chunk-feed-forward"
+    }
+  },
+  "33533357039359": {
+    "_meta": {
+      "title": "Chunk 1 motion prompt"
+    },
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": [
+        "33533357039353",
+        0
+      ],
+      "text": "The same clearly adult person remains consistent. The same fully clothed wardrobe remains unchanged. The interior and directional lighting remain stable. Preserve the lateral tracking axis. Movement continues toward screen right. Continue seamlessly from the preceding frames without restarting pose, motion, camera movement, wardrobe, lighting, or environment. A clearly adult, fully clothed person walks steadily toward screen right through a softly lit interior while keeping one hand on a handled travel bag. The camera tracks laterally at a slow constant speed; the subject's visible hands, clothing, and stable directional lighting remain clear. Then The same clearly adult, fully clothed person keeps walking toward screen right without pausing, keeps one hand on the handled travel bag, gradually turns the torso toward camera, and continues through the stable directional light while the slow lateral camera tracking never stops."
+    }
+  },
+  "33533357039360": {
+    "_meta": {
+      "title": "Chunk 1 negative prompt"
+    },
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": [
+        "33533357039353",
+        0
+      ],
+      "text": "blurry, low quality, deformed, extra limbs, text, watermark, still image, motion restart, scene cut, motion restart, pose reset, scene cut"
+    }
+  },
+  "33533357039361": {
+    "_meta": {
+      "title": "Isolate positive conditioning from prior continuation caches"
+    },
+    "class_type": "10MinVideoMaker_IsolateConditioning",
+    "inputs": {
+      "conditioning": [
+        "33533357039359",
+        0
+      ],
+      "scope": "stage1:continuation-acceptance-20260731-065935:1:3:1:0:positive"
+    }
+  },
+  "33533357039362": {
+    "_meta": {
+      "title": "Isolate negative conditioning from prior continuation caches"
+    },
+    "class_type": "10MinVideoMaker_IsolateConditioning",
+    "inputs": {
+      "conditioning": [
+        "33533357039360",
+        0
+      ],
+      "scope": "stage1:continuation-acceptance-20260731-065935:1:3:1:0:negative"
+    }
+  },
+  "33533357039363": {
+    "_meta": {
+      "title": "24 fps chunk conditioning"
+    },
+    "class_type": "LTXVConditioning",
+    "inputs": {
+      "frame_rate": 24.0,
+      "negative": [
+        "33533357039362",
+        0
+      ],
+      "positive": [
+        "33533357039361",
+        0
+      ]
+    }
+  },
+  "33533357039364": {
+    "_meta": {
+      "title": "First-pass LCM sampler"
+    },
+    "class_type": "KSamplerSelect",
+    "inputs": {
+      "sampler_name": "lcm"
+    }
+  },
+  "33533357039365": {
+    "_meta": {
+      "title": "First-pass continuation sigmas"
+    },
+    "class_type": "ManualSigmas",
+    "inputs": {
+      "sigmas": "1, 0.99375, 0.9875, 0.98125, 0.975, 0.909375, 0.725, 0.421875, 0"
+    }
+  },
+  "33533357039366": {
+    "_meta": {
+      "title": "Deterministic chunk noise"
+    },
+    "class_type": "RandomNoise",
+    "inputs": {
+      "noise_seed": 14005304055458111461
+    }
+  },
+  "33533357039367": {
+    "_meta": {
+      "title": "Load exact cached T2I frame"
+    },
+    "class_type": "VHS_LoadImagePath",
+    "inputs": {
+      "custom_height": 0,
+      "custom_width": 0,
+      "image": "D:\\LTX_Supervisor_Storage\\acceptance\\continuation-acceptance-20260731-065935\\frames\\base_final.png"
+    }
+  },
+  "33533357039368": {
+    "_meta": {
+      "title": "Scale frame for first continuation pass"
+    },
+    "class_type": "ImageScale",
+    "inputs": {
+      "crop": "disabled",
+      "height": 672,
+      "image": [
+        "33533357039367",
+        0
+      ],
+      "upscale_method": "lanczos",
+      "width": 384
+    }
+  },
+  "33533357039369": {
+    "_meta": {
+      "title": "Preprocess first continuation pass reference"
+    },
+    "class_type": "LTXVPreprocess",
+    "inputs": {
+      "image": [
+        "33533357039368",
+        0
+      ],
+      "img_compression": 35
+    }
+  },
+  "33533357039370": {
+    "_meta": {
+      "title": "121-frame-or-shorter first window"
+    },
+    "class_type": "EmptyLTXVLatentVideo",
+    "inputs": {
+      "batch_size": 1,
+      "height": 672,
+      "length": 121,
+      "width": 384
+    }
+  },
+  "33533357039371": {
+    "_meta": {
+      "title": "Inject cached scene frame"
+    },
+    "class_type": "LTXVImgToVideoInplaceKJ",
+    "inputs": {
+      "latent": [
+        "33533357039370",
+        0
+      ],
+      "num_images": "1",
+      "num_images.image_1": [
+        "33533357039369",
+        0
+      ],
+      "num_images.index_1": 0,
+      "num_images.strength_1": 0.75,
+      "vae": [
+        "33533357039352",
+        2
+      ]
+    }
+  },
+  "33533357039372": {
+    "_meta": {
+      "title": "Enable initial-frame reference conditioning"
+    },
+    "class_type": "LTXReferenceEnable",
+    "inputs": {
+      "model": [
+        "33533357039358",
+        0
+      ],
+      "verbose": false,
+      "zero_ref_timesteps": false
+    }
+  },
+  "33533357039373": {
+    "_meta": {
+      "title": "Initial-window reference model"
+    },
+    "class_type": "LTXReferenceConditioning",
+    "inputs": {
+      "image": [
+        "33533357039369",
+        0
+      ],
+      "model": [
+        "33533357039372",
+        0
+      ],
+      "position_mode": "reference",
+      "strength": 0.75,
+      "target_latent": [
+        "33533357039371",
+        0
+      ],
+      "vae": [
+        "33533357039352",
+        2
+      ],
+      "verbose": false
+    }
+  },
+  "33533357039374": {
+    "_meta": {
+      "title": "Initial validated video-only LCM pass"
+    },
+    "class_type": "SamplerCustom",
+    "inputs": {
+      "add_noise": true,
+      "cfg": 1.0,
+      "latent_image": [
+        "33533357039371",
+        0
+      ],
+      "model": [
+        "33533357039373",
+        0
+      ],
+      "negative": [
+        "33533357039363",
+        1
+      ],
+      "noise_seed": 14005304055458111461,
+      "positive": [
+        "33533357039363",
+        0
+      ],
+      "sampler": [
+        "33533357039364",
+        0
+      ],
+      "sigmas": [
+        "33533357039365",
+        0
+      ]
+    }
+  },
+  "33533357039375": {
+    "_meta": {
+      "title": "Persist bounded current window plus causal predecessor"
+    },
+    "class_type": "LTXVSelectLatents",
+    "inputs": {
+      "end_index": -1,
+      "samples": [
+        "33533357039374",
+        1
+      ],
+      "start_index": -16
+    }
+  },
+  "33533357039376": {
+    "_meta": {
+      "title": "Durably checkpoint bounded first-pass handoff"
+    },
+    "class_type": "10MinVideoMaker_SaveChunkLatent",
+    "inputs": {
+      "artifact_kind": "stage1_handoff",
+      "attempt_number": 1,
+      "chunk_index": 0,
+      "job_id": "continuation-acceptance-20260731-065935",
+      "latent": [
+        "33533357039375",
+        0
+      ],
+      "revision": 3,
+      "scene_id": 1
+    }
+  }
+}
