@@ -4,9 +4,9 @@
   "created_at": "2026-07-31T00:00:00Z",
   "subreddits": [],
   "selection_rationale": "Non-explicit internal continuation calibration fixture.",
-  "core_concept": "A clearly adult traveler walks continuously through a stylized hotel corridor.",
+  "core_concept": "A clearly adult field researcher walks continuously through a glass conservatory in a realism-adjacent cinematic game render.",
   "character": {
-    "name": "Adult Traveler",
+    "name": "Adult Field Researcher",
     "series": "Original Calibration Character",
     "lora": {
       "name": "Disabled Calibration Anima LoRA",
@@ -20,44 +20,44 @@
   "scenes": [
     {
       "id": 1,
-      "title": "Safe lateral travel walk",
+      "title": "Safe realism-adjacent conservatory walk",
       "estimated_sec": 9,
       "position": "walking",
       "inspiration": {
         "civitai_url": "https://example.invalid/safe-calibration",
         "original_seed": 472901357,
-        "original_prompt_excerpt": "fully clothed adult traveler walking with a suitcase",
+        "original_prompt_excerpt": "fully clothed adult field researcher walking with a notebook",
         "act_loras_from_source": []
       },
       "t2i": {
-        "prompt": "masterpiece, best quality, highres, stylized 3D cel-shaded animation, crisp clean linework, polished video-game cutscene aesthetic, clearly adult 32-year-old woman, fully clothed, teal tailored travel coat buttoned to the collar, black trousers, flat black boots, short silver hair, calm mature face, carrying a red handled suitcase in her right hand, full body, upscale hotel corridor, blue and gold directional lighting, sharp detailed eyes, stable anatomy, safe for work",
-        "negative": "nsfw, nude, nudity, lingerie, cleavage, exposed chest, exposed underwear, child, teenager, young-looking, school uniform, photorealistic, live action, blurry, soft focus, deformed hands, extra fingers, missing fingers, fused limbs, text, watermark, logo",
+        "prompt": "masterpiece, best quality, highres, cinematic semi-realistic high-end game cutscene, realism-adjacent rendering, natural skin texture, individual dark auburn hair strands, sharp hazel eyes with detailed catchlights, clearly adult 35-year-old woman, fully clothed, high-neck rust-red field jacket zipped to the collar, charcoal cargo trousers, practical black boots, mature face, holding a closed brown leather field notebook in her right hand, medium full shot, glass botanical conservatory walkway, soft overcast daylight through wet glass, realistic fabric weave, physically plausible hands, stable anatomy, safe for work",
+        "negative": "nsfw, nude, nudity, lingerie, cleavage, exposed chest, exposed underwear, child, teenager, young-looking, school uniform, anime, cel shading, cartoon, illustration, plastic skin, blurry, soft focus, smeared eyes, deformed hands, extra fingers, missing fingers, fused limbs, text, watermark, logo",
         "seed": 472901357,
         "loras": []
       },
       "i2v": {
-        "prompt": "A polished stylized 3D cel-shaded video-game cutscene shows the same clearly adult 32-year-old woman, fully clothed in the same buttoned teal travel coat, black trousers, and flat boots, carrying the same red handled suitcase in her right hand while walking steadily toward screen right through the same blue-and-gold hotel corridor. The camera tracks laterally at a slow constant speed. Crisp linework, sharp facial detail, stable anatomy, consistent non-photorealistic game-render style.",
-        "negative": "nsfw, nudity, exposed body, child, teenager, young-looking, photorealistic, live action, style change, identity change, wardrobe change, motion restart, pose reset, scene cut, camera reversal, blurry face, smeared eyes, deformed hands, extra limbs, missing limbs, frozen motion, duplicate frame, ghosting, text, watermark, logo",
+        "prompt": "A cinematic realism-adjacent high-end game cutscene continues from the exact starting image. The same clearly adult 35-year-old field researcher remains fully clothed in the same zipped rust-red field jacket, charcoal cargo trousers, and black boots, holding the same closed brown leather notebook in her right hand while walking steadily toward screen right through the same glass botanical conservatory. The camera tracks laterally at a slow constant speed. Natural skin texture, individual hair strands, sharp detailed eyes, realistic fabric weave, stable anatomy, consistent semi-realistic rendering, and crisp in-focus detail remain visible throughout.",
+        "negative": "nsfw, nudity, exposed body, child, teenager, young-looking, anime, cel shading, cartoon, illustration, plastic skin, style change, identity change, wardrobe change, motion restart, pose reset, scene cut, camera reversal, blurry face, smeared eyes, loss of fine detail, deformed hands, extra limbs, missing limbs, frozen motion, duplicate frame, ghosting, text, watermark, logo",
         "seed": 472901357,
         "loras": [],
         "continuation": {
           "enabled": true,
-          "strategy": "ltx23_latent_overlap_v1",
+          "strategy": "ltx23_exact_frame_handoff_v2",
           "fps": 24,
           "base_window_transition_frames": 120,
-          "overlap_transition_frames": 24,
+          "overlap_transition_frames": 0,
           "seed_policy": "derived_v1"
         },
         "continuity": {
           "identity_anchors": [
-            "The same clearly adult 32-year-old woman keeps the same mature face and short silver hair."
+            "The same clearly adult 35-year-old woman keeps the same mature face, hazel eyes, and dark auburn hair."
           ],
           "wardrobe_anchors": [
-            "Her buttoned teal travel coat, black trousers, flat black boots, and red handled suitcase remain unchanged."
+            "Her zipped rust-red field jacket, charcoal cargo trousers, black boots, and brown leather notebook remain unchanged."
           ],
           "environment_anchors": [
-            "The same upscale hotel corridor and blue-and-gold directional lighting remain stable.",
-            "The visual style remains a polished stylized 3D cel-shaded video-game cutscene with crisp linework, never photorealistic or live action."
+            "The same glass botanical conservatory walkway and soft overcast daylight remain stable.",
+            "The visual style remains a cinematic realism-adjacent high-end game render with natural skin, hair, fabric, and sharp eye detail."
           ],
           "camera_axis": "The camera preserves the lateral action axis and slow constant tracking speed.",
           "screen_direction": "The traveler continues moving toward screen right."
@@ -66,7 +66,7 @@
           {
             "index": 0,
             "requested_duration_seconds": 5.0,
-            "positive_prompt": "The adult traveler walks steadily toward screen right with natural steps while her right hand maintains contact with the suitcase handle and the camera tracks laterally.",
+            "positive_prompt": "The adult field researcher walks steadily toward screen right with natural steps while her right hand keeps a relaxed grip on the closed notebook and the camera tracks laterally.",
             "negative_prompt_additions": [
               "motion restart",
               "scene cut"
@@ -76,7 +76,7 @@
           {
             "index": 1,
             "requested_duration_seconds": 4.0,
-            "positive_prompt": "Continuing the same uninterrupted movement, the traveler keeps walking toward screen right, gently turns her torso toward the camera without stopping, and keeps her right hand on the suitcase while the lateral tracking continues.",
+            "positive_prompt": "Continuing the same uninterrupted movement, the researcher keeps walking toward screen right, gently turns her head toward the camera without stopping, and keeps the notebook stable while the lateral tracking continues.",
             "negative_prompt_additions": [
               "motion restart",
               "pose reset",

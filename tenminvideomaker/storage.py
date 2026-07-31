@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import sqlite3
 from typing import Mapping
@@ -176,6 +177,33 @@ class StorageLayout:
             self.chunk_root(job_id, scene_id, revision, chunk_index)
             / "attempts"
             / f"{attempt_number:04d}"
+        )
+
+    def chunk_input_frame_path(
+        self,
+        job_id: str,
+        scene_id: int,
+        revision: int,
+        chunk_index: int,
+        *,
+        upstream_chunk_index: int,
+        upstream_attempt_number: int,
+        upstream_artifact_hash: str,
+    ) -> Path:
+        """Immutable exact-frame input derived from one accepted upstream chunk."""
+        if chunk_index < 1 or upstream_chunk_index != chunk_index - 1:
+            raise StorageError("Chunk input frame must reference its direct predecessor.")
+        _validate_attempt_number(upstream_attempt_number)
+        normalized_hash = str(upstream_artifact_hash).strip().casefold()
+        if not re.fullmatch(r"[0-9a-f]{64}", normalized_hash):
+            raise StorageError("upstream_artifact_hash must be a SHA-256 digest.")
+        return (
+            self.chunk_root(job_id, scene_id, revision, chunk_index)
+            / "input_frames"
+            / (
+                f"from_chunk_{upstream_chunk_index:04d}_attempt_"
+                f"{upstream_attempt_number:04d}_{normalized_hash[:16]}.png"
+            )
         )
 
     def chunk_checkpoint_path(

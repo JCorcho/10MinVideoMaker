@@ -54,6 +54,34 @@ class StorageTests(unittest.TestCase):
                 )
             )
 
+    def test_exact_handoff_frame_path_is_bound_to_upstream_artifact(self) -> None:
+        layout = StorageLayout(Path(r"D:\LTX_Supervisor_Storage"))
+        path = layout.chunk_input_frame_path(
+            "job-1",
+            4,
+            2,
+            3,
+            upstream_chunk_index=2,
+            upstream_attempt_number=5,
+            upstream_artifact_hash="a" * 64,
+        )
+        self.assertEqual(
+            path,
+            layout.chunk_root("job-1", 4, 2, 3)
+            / "input_frames"
+            / "from_chunk_0002_attempt_0005_aaaaaaaaaaaaaaaa.png",
+        )
+        with self.assertRaises(StorageError):
+            layout.chunk_input_frame_path(
+                "job-1",
+                4,
+                2,
+                3,
+                upstream_chunk_index=1,
+                upstream_attempt_number=5,
+                upstream_artifact_hash="a" * 64,
+            )
+
     def test_chunk_paths_reject_invalid_coordinates_and_artifact_kinds(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             layout = StorageLayout(Path(directory))

@@ -41,21 +41,17 @@ every required T2I frame first, unloads the image model once, then creates every
 remake batch follows the same policy—its image+video edits create frames first (grouped by Anima/Pony family when
 mixed), then every successful remake, including video-only edits, runs through one LTX video pass.
 
-Long LTX scenes can use the versioned `ltx23_latent_overlap_v1` continuation route. Its nominal model
-window is 121 frames: the initial window contributes 120 transitions, and each full continuation adds 96 new
-transitions while regenerating a 24-frame overlap. The route keeps each diffusion invocation and persisted latent
-tail bounded instead of retaining the full scene latent. The style-stable first-pass handoff is the production
-video source of truth: it is tiled-decoded at 384×672 and deterministically enlarged with
-`RealESRGAN_x2.pth` to 768×1344. The second LCM/spatial pass still runs to generate synchronized audio, but its
-diffusion-repainted video is deliberately not saved because bounded GPU comparisons showed that repaint could
-change identity and visual style. Each completed window atomically checkpoints the first-pass video handoff and
-the sampled second-pass audio; if muxing is interrupted, restart runs only the checkpoint decode/upscale/mux graph.
-For example, an exact 30-second timeline uses eight model windows, builds a
-721-frame `8n + 1` generation master, and trims the revision-facing scene clip to exactly 720 frames at 24 fps.
+Long LTX scenes use the versioned `ltx23_exact_frame_handoff_v2` route. Every model invocation is bounded to at
+most 121 frames. The first window contributes 121 samples; every later full window is another 121-frame I2V call
+whose first sample is conditioned by the previous accepted raw window's exact final pixels. Assembly retains the
+first window, drops duplicate frame zero from each continuation, and contributes up to 120 new frames per later
+window. A 30-second timeline therefore uses six 121-frame calls and emits exactly 720 frames at 24 fps.
 
-Later first-pass `LTXVExtendSampler` windows receive the planned transition count plus one endpoint pixel frame.
-This keeps their internal overlap-plus-new latent on LTX's `8n+1` temporal grid: 96 new transitions use
-`num_new_frames=97`.
+Both LCM passes remain authoritative. Stage one operates at 384×672 and checkpoints a bounded handoff latent.
+Stage two applies the LTX spatial upscaler, checkpoints its native 42×24 video latent plus audio, and tiled-decodes
+the native 768×1344 result directly. The former half-resolution decode plus `RealESRGAN_x2.pth` path is removed:
+it was the root cause of the visible blur/detail loss. Restart recovery reuses verified stage checkpoints and raw
+lossless windows without regenerating completed work.
 
 Each continuation stage uses `10MinVideoMaker_FreshCheckpoint`, an always-reexecuted project node which constructs a
 fresh LTX checkpoint wrapper before dynamic LoRAs and chunk feed-forward. This defeats ComfyUI's static loader cache
@@ -65,21 +61,19 @@ restart recovery remain on the exact base project client ID.
 `TENMIN_LTX_CONTINUATION_MODE=explicit` is the portable fail-safe default: only a scene
 longer than 121 generation frames whose `i2v.continuation.enabled` value is true uses the route. `disabled` forces
 the legacy single-generation route. `auto` fails closed at supervisor construction unless
-`<TENMIN_STORAGE_ROOT>\state\continuation-validation-v2.json` (default
-`D:\LTX_Supervisor_Storage\state\continuation-validation-v2.json`) is approved and bound to a hash covering the
+`<TENMIN_STORAGE_ROOT>\state\continuation-validation-v4.json` (default
+`D:\LTX_Supervisor_Storage\state\continuation-validation-v4.json`) is approved and bound to a hash covering the
 current continuation generation, routing, and recovery implementation plus hashes covering every node contract
-used by the representative live continuation graphs. It must record the required external-asset hashes, contain
-all four bounded-generation results, and accept every rollout decision. Scenes at or below 121 frames remain
-single-window in every mode. Existing completed legacy clips are never invalidated merely because the feature
-exists.
+used by the representative live continuation graphs. It must record the checkpoint/text-encoder/spatial-upscaler/
+DMD/JoyAI hashes, prove native 42×24 stage-two video tokens for every validation chunk, prove a pixel-exact final
+frame handoff, retain at least 70% of measured boundary detail on the first new frame, validate the exact
+768×1344/24 fps assembly, and accept every quality/runtime decision. Scenes at or below 121 frames remain
+single-window in every mode.
 
-The safe, fully clothed acceptance run `continuation-acceptance-safe-production-20260731` completed all four
-bounded methods at 768×1344/24 fps without OOM. Direct visual review found the production latent handoff preserved
-the same adult character, cel-shaded style, clothing, prop, environment, anatomy, and forward motion across the
-seam. Its exact production cut uses base frames 0–103 followed by continuation frame 8 onward; measured seam RGB
-MAE was 12.332 and latent-overlap stage-two peak VRAM was 15,860,302,852 bytes. The assembled two-window proof
-validated as 216 frames with H.264/yuv420p video and stereo 48 kHz AAC. This installation may therefore use `auto`
-when its hash-bound schema-version-2 manifest is present.
+The current production gate was approved from the fully clothed, clearly adult, three-chunk safe run
+`D:\LTX_Supervisor_Storage\acceptance\exact-frame-acceptance-20260731-140000`. Its assembled clip is
+768×1344 at 24 fps with exactly 360 frames. Both inter-chunk handoffs had pixel RGB MAE `0.0`; first-new-frame
+detail retention was `81.89%` and `92.32%`. The bounded native workflow peaked at `16,074,806,676` VRAM bytes.
 
 Continuation worker graphs contain no watermark or Discord sender. Their raw windows and the exact assembled
 revision `video.mp4` stay unwatermarked for remakes, project assembly, and later upscaling. Each raw window is first
@@ -191,11 +185,12 @@ initial/later/final continuation graphs, checkpoint-only decode, and delivery, t
 `/object_info`; the command never queues a prompt. GUI startup also checks the Save Scene Frame and both
 chunk-latent contracts, and restarts ComfyUI only when those contracts are stale and the queue is empty.
 
-For the explicit continuation beta, `python scripts\run_continuation_acceptance.py --source-job-id <id>
---source-scene-id <id> --dry-run` validates the actual four-case acceptance matrix without rendering. Remove
-`--dry-run` only when the ComfyUI queue is empty and GPU time is intentionally reserved: it stores all prompts,
-lossless raw windows, telemetry, metrics, and a human-review manifest only under
-`D:\LTX_Supervisor_Storage\acceptance`. It never starts the supervisor or enables automatic rollout.
+`python scripts\run_exact_frame_acceptance.py --source-payload-file <safe.json> --source-frame <frame.png>
+--source-scene-id 1 --duration-seconds 15 --run-id exact-frame-acceptance-YYYYMMDD-HHMMSS` exercises the production
+renderer and writes its lossless windows,
+assembled clip, native stage-two shapes, exact-handoff comparisons, and detail metrics under
+`D:\LTX_Supervisor_Storage\acceptance`. The older `run_continuation_acceptance.py` comparison matrix is retained
+only for rejected-method research. Neither script starts the supervisor.
 
 See `docs/user-guide.md` for workflow locations, Gmail environment variables, and the current beta/no-render
 boundary.

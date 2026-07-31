@@ -10,7 +10,11 @@ from typing import Any, Iterable, Mapping
 from urllib.parse import urlparse
 
 from .constants import MAX_SCENE_SECONDS, frame_count_for_seconds
-from .continuation import CONTINUATION_STRATEGY, SEED_POLICY
+from .continuation import (
+    CONTINUATION_STRATEGY,
+    LEGACY_CONTINUATION_STRATEGIES,
+    SEED_POLICY,
+)
 
 _JOB_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _MAX_SEED = 0xFFFFFFFFFFFFFFFF
@@ -216,20 +220,23 @@ def _continuation_fields(
             raise ContractValidationError(
                 f"{context}.continuation.fps must be the production value 24."
             )
-        for field, expected in (
-            ("base_window_transition_frames", 120),
-            ("overlap_transition_frames", 24),
-        ):
-            value = continuation.get(field, expected)
-            if isinstance(value, bool) or not isinstance(value, int) or value != expected:
-                raise ContractValidationError(
-                    f"{context}.continuation.{field} must be {expected}."
-                )
-        strategy = continuation.get("strategy", CONTINUATION_STRATEGY)
-        if strategy != CONTINUATION_STRATEGY:
+        base_window = continuation.get("base_window_transition_frames", 120)
+        if isinstance(base_window, bool) or not isinstance(base_window, int) or base_window != 120:
             raise ContractValidationError(
-                f"{context}.continuation.strategy must be "
-                f"{CONTINUATION_STRATEGY}."
+                f"{context}.continuation.base_window_transition_frames must be 120."
+            )
+        overlap = continuation.get("overlap_transition_frames", 0)
+        if isinstance(overlap, bool) or not isinstance(overlap, int) or overlap not in {0, 24}:
+            raise ContractValidationError(
+                f"{context}.continuation.overlap_transition_frames must be 0 "
+                "(legacy payload value 24 is accepted and upgraded locally)."
+            )
+        strategy = continuation.get("strategy", CONTINUATION_STRATEGY)
+        accepted_strategies = {CONTINUATION_STRATEGY, *LEGACY_CONTINUATION_STRATEGIES}
+        if strategy not in accepted_strategies:
+            raise ContractValidationError(
+                f"{context}.continuation.strategy must be one of "
+                f"{', '.join(sorted(accepted_strategies))}."
             )
         seed_policy = continuation.get("seed_policy", SEED_POLICY)
         if seed_policy != SEED_POLICY:

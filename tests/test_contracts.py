@@ -116,7 +116,7 @@ class ContractTests(unittest.TestCase):
             "enabled": True,
             "overlap_transition_frames": 16,
         }
-        with self.assertRaisesRegex(ContractValidationError, "must be 24"):
+        with self.assertRaisesRegex(ContractValidationError, "must be 0"):
             parse_job_payload(data)
 
         data = payload()

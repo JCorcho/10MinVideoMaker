@@ -21,7 +21,6 @@ from uuid import uuid4
 
 from .constants import PRODUCTION_FPS, PRODUCTION_HEIGHT, PRODUCTION_WIDTH
 from .continuation import (
-    CAUSAL_REFINEMENT_PREROLL_FRAMES,
     SceneFramePlan,
     refinement_raw_frame_count,
 )
@@ -65,36 +64,18 @@ class MediaProbe:
 
 
 def chunk_slices(plan: SceneFramePlan) -> tuple[ChunkSlice, ...]:
-    """Map the causal handoff timeline onto style-stable raw chunk indexes.
-
-    A later bounded handoff decodes eight sacrificial causal frames before its
-    first clean frame.  That clean frame is global ``window_start + 8``.  The
-    preceding chunk therefore owns eight more frames than the old sampled
-    refinement route, while the final chunk owns eight fewer.  Stage-two audio
-    is conditioned eight frames earlier than the direct video decode, so its
-    trim advances by a second eight-frame offset on later chunks.
-    """
+    """Map exact-last-frame handoff windows onto one duplicate-free timeline."""
     slices: list[ChunkSlice] = []
-    for position, chunk in enumerate(plan.chunks):
-        start = 0 if chunk.is_initial else CAUSAL_REFINEMENT_PREROLL_FRAMES
-        if position + 1 < len(plan.chunks):
-            next_chunk = plan.chunks[position + 1]
-            end = (
-                next_chunk.global_window_start_frame
-                - chunk.global_window_start_frame
-                + CAUSAL_REFINEMENT_PREROLL_FRAMES
-            )
-        else:
-            end = chunk.model_window_frames
+    for chunk in plan.chunks:
+        start = 0 if chunk.is_initial else 1
+        end = chunk.model_window_frames
         raw_frames = refinement_raw_frame_count(chunk)
         if not 0 <= start < end <= raw_frames:
             raise SceneChunkAssemblyError(
                 f"Chunk {chunk.index} visible range {start}:{end} exceeds "
                 f"its {raw_frames}-frame raw refinement."
             )
-        audio_start = start + (
-            0 if chunk.is_initial else CAUSAL_REFINEMENT_PREROLL_FRAMES
-        )
+        audio_start = start
         audio_end = audio_start + (end - start)
         if audio_end > raw_frames:
             raise SceneChunkAssemblyError(
@@ -295,6 +276,62 @@ class SceneChunkAssembler:
         self.ffprobe_executable = ffprobe_executable
         self._ffmpeg_runner = ffmpeg_runner
         self._ffprobe_runner = ffprobe_runner
+
+    def extract_frame(
+        self,
+        source: str | Path,
+        frame_index: int,
+        destination: str | Path,
+    ) -> Path:
+        """Losslessly extract one exact decoded frame and publish it atomically."""
+        if isinstance(frame_index, bool) or not isinstance(frame_index, int) or frame_index < 0:
+            raise SceneChunkAssemblyError("frame_index must be a non-negative integer.")
+        try:
+            video = Path(source).expanduser().resolve(strict=True)
+        except OSError as error:
+            raise SceneChunkAssemblyError(f"Frame source is missing: {source}") from error
+        target = Path(destination).expanduser().resolve(strict=False)
+        if target.suffix.casefold() != ".png":
+            raise SceneChunkAssemblyError("Extracted continuation frame must be a PNG.")
+        if target.is_file() and target.stat().st_size > 0:
+            return target
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_name(f".{target.stem}.extracting-{uuid4().hex}.png")
+        command = [
+            self.ffmpeg_executable,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-i",
+            str(video),
+            "-vf",
+            f"select=eq(n\\,{frame_index})",
+            "-frames:v",
+            "1",
+            "-compression_level",
+            "1",
+            str(temporary),
+        ]
+        try:
+            completed = self._ffmpeg_runner(
+                command,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if completed.returncode != 0:
+                raise SceneChunkAssemblyError(
+                    f"FFmpeg frame extraction failed: {completed.stderr.strip()}"
+                )
+            if not temporary.is_file() or temporary.stat().st_size == 0:
+                raise SceneChunkAssemblyError(
+                    f"FFmpeg did not extract frame {frame_index} from {video}."
+                )
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return target
 
     def assemble(
         self,

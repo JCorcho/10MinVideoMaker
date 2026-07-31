@@ -9,7 +9,6 @@ from unittest.mock import patch
 
 from tenminvideomaker.chunk_assembly import SceneChunkAssemblyError
 from tenminvideomaker.comfy_http import ComfyHttpError
-from tenminvideomaker.constants import CONTINUATION_VIDEO_UPSCALER
 from tenminvideomaker.continuation_renderer import (
     CONTINUATION_CACHE_IMPLEMENTATION_PATHS,
     CONTINUATION_CONTRACT_NODE_TYPES,
@@ -29,6 +28,15 @@ from test_contracts import payload
 class _FakeChunkAssembler:
     def __init__(self):
         self.assembly_calls = 0
+        self.extractions = []
+
+    def extract_frame(self, source, frame_index, destination):
+        destination = Path(destination)
+        if not destination.is_file():
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(b"lossless-extracted-frame")
+            self.extractions.append((Path(source), frame_index, destination))
+        return destination
 
     def validate_chunk(self, _plan, _chunk_index, path):
         if not Path(path).is_file():
@@ -316,9 +324,10 @@ class ContinuationRendererTests(unittest.TestCase):
             list(CONTINUATION_IMPLEMENTATION_PATHS),
         )
 
-    def test_runtime_contract_identity_covers_style_stable_pixel_upscaling(self) -> None:
-        self.assertIn("UpscaleModelLoader", CONTINUATION_CONTRACT_NODE_TYPES)
-        self.assertIn("ImageUpscaleWithModel", CONTINUATION_CONTRACT_NODE_TYPES)
+    def test_runtime_contract_identity_uses_native_ltx_spatial_refinement(self) -> None:
+        self.assertIn("LTXVLatentUpsamplerTiled", CONTINUATION_CONTRACT_NODE_TYPES)
+        self.assertNotIn("UpscaleModelLoader", CONTINUATION_CONTRACT_NODE_TYPES)
+        self.assertNotIn("ImageUpscaleWithModel", CONTINUATION_CONTRACT_NODE_TYPES)
 
     def test_cache_identity_covers_only_generation_affecting_code(self) -> None:
         self.assertIn(
@@ -353,7 +362,7 @@ class ContinuationRendererTests(unittest.TestCase):
         frame.write_bytes(b"frame")
         return job, scene, storage, store, frame
 
-    def test_attempt_parameters_record_deterministic_video_upscaler(self) -> None:
+    def test_attempt_parameters_do_not_record_removed_pixel_upscaler(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             job, scene, _storage, _store, frame = self._fixture(Path(directory))
             renderer = ContinuationRenderer(
@@ -377,12 +386,12 @@ class ContinuationRendererTests(unittest.TestCase):
                 "f" * 64,
             )
 
-            self.assertEqual(
-                parameters["runtime_identity"]["continuation_video_upscaler_filename"],
-                CONTINUATION_VIDEO_UPSCALER,
+            self.assertNotIn(
+                "continuation_video_upscaler_filename",
+                parameters["runtime_identity"],
             )
 
-    def test_renders_three_chunks_then_reuses_verified_lineage_and_scene(self) -> None:
+    def test_renders_exact_frame_chunks_then_reuses_verified_lineage_and_scene(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             job, scene, storage, store, frame = self._fixture(root)
@@ -454,14 +463,17 @@ class ContinuationRendererTests(unittest.TestCase):
                     deliver_to_discord=False,
                 )
 
-            self.assertEqual(first.plan.chunk_count, 3)
-            self.assertEqual(len(comfy.workflows), 6)
+            self.assertEqual(first.plan.chunk_count, 2)
+            self.assertEqual(len(comfy.workflows), 4)
+            self.assertEqual(len(assembler.extractions), 1)
+            self.assertEqual(assembler.extractions[0][1], 120)
+            self.assertIn("input_frames", str(assembler.extractions[0][2]))
             self.assertEqual(assembler.assembly_calls, 1)
             self.assertFalse(first.reused_scene_assembly)
             self.assertTrue(second.reused_scene_assembly)
             progress = store.chunk_progress(job.job_id, scene.scene_id, 1)
-            self.assertEqual(progress.total_count, 3)
-            self.assertEqual(progress.complete_count, 3)
+            self.assertEqual(progress.total_count, 2)
+            self.assertEqual(progress.complete_count, 2)
             self.assertTrue(destination.is_file())
 
     def test_server_down_preserves_active_attempt_without_spending_retry_budget(
@@ -796,13 +808,13 @@ class ContinuationRendererTests(unittest.TestCase):
                     deliver_to_discord=False,
                 )
 
-            self.assertEqual(len(comfy.workflows), 12)
+            self.assertEqual(len(comfy.workflows), 8)
             self.assertEqual(
                 [
                     chunk.accepted_attempt_number
                     for chunk in store.chunk_records(job.job_id, scene.scene_id, 1)
                 ],
-                [2, 2, 2],
+                [2, 2],
             )
 
     def test_prompt_id_is_persisted_before_wait_and_reclaimed_from_history(self) -> None:

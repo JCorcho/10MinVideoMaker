@@ -32,6 +32,51 @@ scenes in the same model family.
 
 ## Chunked LTX continuation
 
+### Production route: exact final-frame handoff v2
+
+The active strategy is `ltx23_exact_frame_handoff_v2`. Any latent-overlap, `LTXVExtendSampler`, causal-preroll,
+RealESRGAN, or 24-frame-overlap material later in this section is retained only as rejected research history and
+must not be used to implement production work.
+
+The requested presentation timeline is `round(seconds × 24)` frames. The generation master remains `8n + 1`, but
+each model call is independently bounded to at most 121 samples. The first chunk owns sample range `0..120`.
+Every later full chunk starts at the preceding chunk's final global sample, generates 121 samples, and contributes
+only local frames `1..120`; local frame zero is the intentionally duplicated handoff frame. Therefore:
+
+| Requested duration | Final frames | Generation master | Model-window samples |
+| --- | ---: | ---: | --- |
+| 5 seconds | 120 | 121 | `121` |
+| 10 seconds | 240 | 241 | `121, 121` |
+| 20 seconds | 480 | 481 | `121, 121, 121, 121` |
+| 30 seconds | 720 | 721 | `121, 121, 121, 121, 121, 121` |
+| 32 seconds | 768 | 769 | `121, 121, 121, 121, 121, 121, 49` |
+
+After a chunk is accepted, FFmpeg losslessly extracts its raw frame 120 to a deterministic, artifact-hash-bound
+PNG below the successor's `input_frames` directory. That exact PNG is the successor's I2V reference. The path,
+size, SHA-256, predecessor chunk/attempt, and predecessor artifact hash are immutable attempt inputs; a changed
+predecessor invalidates all descendants. Pixel equality—not PNG byte equality—is the seam invariant.
+
+Every chunk runs the existing two LCM passes. Stage one generates a bounded 384×672 latent. Stage two applies the
+LTX spatial upscaler and saves the separated native full-resolution video latent (`42×24` spatial tokens for
+768×1344) plus audio. Tiled VAE decode consumes that native stage-two video directly. No RealESRGAN node or
+half-resolution stage-one decode is part of generation or recovery. Raw chunks remain unwatermarked
+FFV1/yuv444p with FLAC audio; assembly drops only local frame/audio zero on later chunks, applies edge fades, and
+performs the revision's single H.264/AAC encode.
+
+`TENMIN_LTX_CONTINUATION_MODE=auto` fails closed unless
+`D:\LTX_Supervisor_Storage\state\continuation-validation-v4.json` matches the current implementation and live node
+contract hashes. The approval must prove at least two exact-frame chunks, native stage-two shape for every chunk,
+a zero-MAE pixel handoff from predecessor frame 120, exact 768×1344/24 fps/240-frame bounded assembly, at least
+70% Laplacian-detail retention on the first new frame, and explicit human/vision approval for identity, anatomy,
+motion, seam continuity, and absence of unusable blur.
+
+Production approval is backed by safe run `exact-frame-acceptance-20260731-140000`: three native stage-two
+windows assembled to 360 frames at 768×1344/24 fps, both exact handoffs measured RGB MAE `0.0`, and the two
+first-new-frame detail-retention ratios were `0.818869` and `0.923197`. The corresponding bounded native workflow
+telemetry peaked at `16,074,806,676` VRAM bytes on the 16 GB target GPU.
+
+### Archived v1 design (rejected; do not implement)
+
 The optional long-scene route is identified by feature flag `ltx_chunked_continuation_v1` and resolved strategy
 `ltx23_latent_overlap_v1`. The rollout setting `TENMIN_LTX_CONTINUATION_MODE` accepts `disabled`,
 `explicit`, or `auto`; `explicit` is the portable fail-safe default. In explicit mode, only a scene whose generation master is
@@ -370,8 +415,8 @@ later canvas field and can display CFG as the step count.
 The legacy single-window x2 spatial upscaler uses a 384×672 first-pass latent and emits the fixed 768×1344
 production clip. Every axis is divisible by 32 (`384=12×32`, `672=21×32`, `768=24×32`, `1344=42×32`), so
 `EmptyLTXVLatentVideo` does not quantize either side. Its decoded video connects directly to `VHS_VideoCombine`.
-Continuation instead applies deterministic RealESRGAN x2 to its 384×672 style-stable decode; neither route adds a
-final crop or resize after reaching 768×1344.
+Continuation persists and tiled-decodes the spatial-upscaler's native 768×1344 stage-two latent directly. Neither
+route adds a final crop, resize, or image upscaler after reaching 768×1344.
 
 Assembly profile failures are caught explicitly. The supervisor transitions the saved job to `error`, preserves
 completed clips, and stops requesting replacement jobs instead of repeating the same failing stitch every polling
@@ -394,15 +439,9 @@ interval.
   unavailable classes or mismatched routes, lays out nodes by dependency depth, checks node overlaps and group bounds,
   and writes both API and GUI forms.
 
-These checks prove graph/schema consistency and deterministic accounting only. The separate
-`scripts\run_continuation_acceptance.py` creates a unique D-drive-only test job from one existing cached frame,
-runs common-base, single-frame, decoded-17-frame-guide, and latent-overlap cases without touching the supervisor
-database state, captures ComfyUI peak-VRAM/runtime telemetry plus FFmpeg/Pillow/OpenCV seam evidence, and ends in
-human review. It cannot enable `auto` or create the approval manifest. Until GPU evidence and human visual review
-exist, `auto` remains locked. Safe bounded run `continuation-acceptance-safe-production-20260731` supplied the
-completed GPU, visual seam, identity/style, anatomy, A/V profile, runtime, and peak-VRAM evidence used by the
-schema-version-2 local approval.
-
-The diagnostic guide is frames 96–112, not the final 17 frames: live LTX testing shows that its initial refined
-latent accepts this 20-token span but rejects the later 104–120 range. This does not change the normal later-window
-25-frame production overlap, which remains frames 96–120.
+These checks prove graph/schema consistency and deterministic accounting only. The separate production-faithful
+`scripts\run_exact_frame_acceptance.py` invokes `ContinuationRenderer` against a safe cached frame, requires an empty
+ComfyUI queue, and records the native stage-two shapes, exact pixel handoffs, assembled profile, and spatial-detail
+metrics without touching supervisor database state. The older `run_continuation_acceptance.py` matrix remains a
+research tool for the rejected single-frame, decoded-guide, and latent-overlap approaches; its frame conventions
+are not production routing.

@@ -902,10 +902,10 @@ function ensureContinuationSettings(enabled = true) {
   state.working.i2v.temporal_continuation = {
     ...(current || {}),
     enabled,
-    strategy: "ltx23_latent_overlap_v1",
+    strategy: "ltx23_exact_frame_handoff_v2",
     fps: 24,
     base_window_transition_frames: 120,
-    overlap_transition_frames: 24,
+    overlap_transition_frames: 0,
     seed_policy: "derived_v1",
   };
   delete state.working.i2v.temporal_continuation.requested_duration_seconds;
@@ -936,8 +936,9 @@ function renderTemporalContinuation() {
       <div class="locked-list continuation-locks">
         <span class="locked-chip">🔒 24 fps</span>
         <span class="locked-chip">🔒 120 base transitions</span>
-        <span class="locked-chip">🔒 24-frame overlap</span>
-        <span class="locked-chip">🔒 up to 96 new transitions</span>
+        <span class="locked-chip">🔒 Exact final-frame handoff</span>
+        <span class="locked-chip">🔒 120 new frames per continuation</span>
+        <span class="locked-chip">🔒 Native 768 × 1344 stage two</span>
         <span id="continuation-final-frames" class="locked-chip">🔒 ${profile.timeline_output_frames} final output frames</span>
         <span id="continuation-master-frames" class="locked-chip">🔒 ${profile.generation_master_frames} generation-master frames</span>
       </div>

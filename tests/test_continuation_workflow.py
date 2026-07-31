@@ -69,7 +69,7 @@ class ContinuationWorkflowTests(unittest.TestCase):
             121,
         )
 
-    def test_extension_uses_official_24_frame_overlap_and_96_new_transitions(self):
+    def test_later_stage1_uses_exact_extracted_frame_as_a_fresh_121_frame_window(self):
         build = build_continuation_stage1_workflow(
             self.job,
             self.scene,
@@ -81,17 +81,13 @@ class ContinuationWorkflowTests(unittest.TestCase):
             previous_attempt_number=1,
         )
         self.assertEqual(validate_api_graph(build.api), ())
-        extension = nodes_of_type(build.api, "LTXVExtendSampler")[0]["inputs"]
-        self.assertEqual(extension["num_new_frames"], 97)
-        self.assertEqual(extension["frame_overlap"], 24)
-        self.assertEqual(extension["strength"], 0.5)
-        loader = nodes_of_type(
-            build.api,
-            "10MinVideoMaker_LoadChunkLatent",
-        )[0]["inputs"]
-        self.assertEqual((loader["chunk_index"], loader["attempt_number"]), (0, 1))
-        self.assertEqual(loader["artifact_kind"], "stage1_handoff")
-        self.assertEqual(loader["expected_temporal_tokens"], 16)
+        self.assertFalse(nodes_of_type(build.api, "LTXVExtendSampler"))
+        self.assertFalse(nodes_of_type(build.api, "10MinVideoMaker_LoadChunkLatent"))
+        self.assertEqual(len(nodes_of_type(build.api, "VHS_LoadImagePath")), 1)
+        self.assertEqual(
+            nodes_of_type(build.api, "EmptyLTXVLatentVideo")[0]["inputs"]["length"],
+            121,
+        )
         saver = nodes_of_type(
             build.api,
             "10MinVideoMaker_SaveChunkLatent",
@@ -104,7 +100,7 @@ class ContinuationWorkflowTests(unittest.TestCase):
                 (node["inputs"]["start_index"], node["inputs"]["end_index"])
                 for node in selections
             ],
-            [(-17, -1)],
+            [(-16, -1)],
         )
         self.assertFalse(nodes_of_type(build.api, "LTXVConcatAVLatent"))
 
@@ -155,8 +151,8 @@ class ContinuationWorkflowTests(unittest.TestCase):
         }
         chunk = nodes_of_type(build.api, "LTXVChunkFeedForward")[0]["inputs"]
         self.assertIn(chunk["model"][0], isolate_ids)
-        guider = nodes_of_type(build.api, "STGGuiderAdvanced")[0]["inputs"]
-        self.assertIn(guider["model"][0], isolate_ids)
+        reference = nodes_of_type(build.api, "LTXReferenceEnable")[0]["inputs"]
+        self.assertIn(reference["model"][0], isolate_ids)
         self.assertTrue(
             all("stage1" in node["inputs"]["scope"] for node in isolates)
         )
@@ -270,38 +266,30 @@ class ContinuationWorkflowTests(unittest.TestCase):
             ],
             "stage2_audio",
         )
-        handoff_id = next(
-            node_id
-            for node_id, node in build.workflow.api.items()
-            if node["class_type"] == "10MinVideoMaker_LoadChunkLatent"
-        )
-        video_saver = build.workflow.api[build.video_checkpoint_node_id]["inputs"]
-        self.assertEqual(
-            video_saver["latent"],
-            [handoff_id, 0],
-            "The durable video checkpoint must preserve the style-stable stage-one latent.",
-        )
         split_id = next(
             node_id
             for node_id, node in build.workflow.api.items()
             if node["class_type"] == "LTXVSeparateAVLatent"
         )
+        video_saver = build.workflow.api[build.video_checkpoint_node_id]["inputs"]
         audio_saver = build.workflow.api[build.audio_checkpoint_node_id]["inputs"]
+        self.assertEqual(
+            video_saver["latent"],
+            [split_id, 0],
+            "The durable video checkpoint must retain the native 768x1344 second pass.",
+        )
         self.assertEqual(audio_saver["latent"], [split_id, 1])
 
         combine = build.workflow.api[build.workflow.output_node_id]["inputs"]
         self.assertFalse(combine["save_output"])
-        image_upscaler_id = next(
+        self.assertFalse(nodes_of_type(build.workflow.api, "UpscaleModelLoader"))
+        self.assertFalse(nodes_of_type(build.workflow.api, "ImageUpscaleWithModel"))
+        decoder_id = next(
             node_id
             for node_id, node in build.workflow.api.items()
-            if node["class_type"] == "ImageUpscaleWithModel"
+            if node["class_type"] == "LTXVSpatioTemporalTiledVAEDecode"
         )
-        self.assertEqual(combine["images"], [image_upscaler_id, 0])
-        upscale_loader = nodes_of_type(build.workflow.api, "UpscaleModelLoader")
-        self.assertEqual(
-            [node["inputs"]["model_name"] for node in upscale_loader],
-            ["RealESRGAN_x2.pth"],
-        )
+        self.assertEqual(combine["images"], [decoder_id, 0])
         decoder = nodes_of_type(
             build.workflow.api,
             "LTXVSpatioTemporalTiledVAEDecode",
@@ -379,7 +367,7 @@ class ContinuationWorkflowTests(unittest.TestCase):
         self.assertEqual(sampler["negative"], [crop_id, 1])
         self.assertEqual(validate_api_graph(build.workflow.api), ())
 
-    def test_later_refinement_has_causal_preroll_and_25_frame_visible_guide(self):
+    def test_later_refinement_reinjects_only_the_exact_extracted_handoff_frame(self):
         prior = Path(
             r"D:\LTX_Supervisor_Storage\jobs\job\chunks\chunk_0000\window.mkv"
         )
@@ -399,43 +387,18 @@ class ContinuationWorkflowTests(unittest.TestCase):
             build.workflow.api,
             "LTXVEmptyLatentAudio",
         )[0]["inputs"]
-        self.assertEqual(audio["frames_number"], 129)
+        self.assertEqual(audio["frames_number"], 121)
         handoff = nodes_of_type(
             build.workflow.api,
             "10MinVideoMaker_LoadChunkLatent",
         )[0]["inputs"]
-        self.assertEqual(handoff["expected_temporal_tokens"], 17)
-        loader = nodes_of_type(build.workflow.api, "VHS_LoadVideoPath")[0]["inputs"]
-        self.assertEqual(loader["video"], str(prior))
-        self.assertEqual(loader["frame_load_cap"], 25)
-        self.assertEqual(loader["skip_first_frames"], 96)
-        guide_id = next(
-            node_id
-            for node_id, node in build.workflow.api.items()
-            if node["class_type"] == "LTXVAddGuide"
-        )
-        guide = build.workflow.api[guide_id]["inputs"]
-        self.assertEqual(guide["strength"], 1.0)
-        self.assertEqual(guide["frame_idx"], 8)
-        self.assertEqual(guide["image"][0], next(
-            node_id
-            for node_id, node in build.workflow.api.items()
-                if node["class_type"] == "VHS_LoadVideoPath"
-        ))
-        crop_id = next(
-            node_id
-            for node_id, node in build.workflow.api.items()
-            if node["class_type"] == "LTXVCropGuides"
-        )
-        crop = build.workflow.api[crop_id]["inputs"]
-        self.assertEqual(crop["positive"], [guide_id, 0])
-        self.assertEqual(crop["negative"], [guide_id, 1])
-        self.assertEqual(crop["latent"], [guide_id, 2])
-        av = nodes_of_type(build.workflow.api, "LTXVConcatAVLatent")[0]["inputs"]
-        sampler = nodes_of_type(build.workflow.api, "SamplerCustom")[0]["inputs"]
-        self.assertEqual(av["video_latent"], [crop_id, 2])
-        self.assertEqual(sampler["positive"], [crop_id, 0])
-        self.assertEqual(sampler["negative"], [crop_id, 1])
+        self.assertEqual(handoff["expected_temporal_tokens"], 16)
+        self.assertFalse(nodes_of_type(build.workflow.api, "VHS_LoadVideoPath"))
+        self.assertFalse(nodes_of_type(build.workflow.api, "LTXVAddGuide"))
+        self.assertFalse(nodes_of_type(build.workflow.api, "LTXVCropGuides"))
+        image_loader = nodes_of_type(build.workflow.api, "VHS_LoadImagePath")[0]
+        self.assertEqual(image_loader["inputs"]["image"], str(self.frame))
+        self.assertEqual(len(nodes_of_type(build.workflow.api, "LTXReferenceConditioning")), 1)
         self.assertEqual(validate_api_graph(build.workflow.api), ())
 
     def test_decode_only_resume_loads_both_checkpoints_without_diffusion(self):
@@ -460,24 +423,29 @@ class ContinuationWorkflowTests(unittest.TestCase):
         self.assertFalse(nodes_of_type(build.api, "LTXVExtendSampler"))
         self.assertFalse(nodes_of_type(build.api, "CLIPTextEncode"))
         self.assertFalse(nodes_of_type(build.api, "LoraLoaderModelOnly"))
-        image_upscalers = nodes_of_type(build.api, "ImageUpscaleWithModel")
-        self.assertEqual(len(image_upscalers), 1)
-        self.assertEqual(
-            nodes_of_type(build.api, "UpscaleModelLoader")[0]["inputs"]["model_name"],
-            "RealESRGAN_x2.pth",
-        )
+        self.assertFalse(nodes_of_type(build.api, "UpscaleModelLoader"))
+        self.assertFalse(nodes_of_type(build.api, "ImageUpscaleWithModel"))
         combine = build.api[build.output_node_id]["inputs"]
-        image_upscaler_id = next(
+        decoder_id = next(
             node_id
             for node_id, node in build.api.items()
-            if node["class_type"] == "ImageUpscaleWithModel"
+            if node["class_type"] == "LTXVSpatioTemporalTiledVAEDecode"
         )
-        self.assertEqual(combine["images"], [image_upscaler_id, 0])
+        self.assertEqual(combine["images"], [decoder_id, 0])
         self.assertEqual(combine["format"], "video/ffv1-mkv")
         self.assertEqual(combine["pix_fmt"], "yuv444p")
         self.assertFalse(combine["save_output"])
 
-    def test_short_final_extension_keeps_causal_preroll(self):
+    def test_short_final_window_is_fresh_and_has_no_causal_preroll(self):
+        short_plan = build_scene_frame_plan(
+            job_id=self.job.job_id,
+            scene_id=self.scene.scene_id,
+            revision=1,
+            requested_duration_seconds=11.0,
+            base_seed=self.scene.i2v.seed,
+            fallback_prompt=self.scene.i2v.prompt,
+            fallback_negative=self.scene.i2v.negative,
+        )
         prior = Path(
             r"D:\LTX_Supervisor_Storage\jobs\job\chunks\chunk_0001\window.mkv"
         )
@@ -485,23 +453,24 @@ class ContinuationWorkflowTests(unittest.TestCase):
             self.job,
             self.scene,
             self.frame,
-            self.plan,
-            self.plan.chunks[2],
+            short_plan,
+            short_plan.chunks[2],
             revision=1,
             attempt_number=1,
             previous_attempt_number=1,
         )
-        extension = nodes_of_type(stage1.api, "LTXVExtendSampler")[0]["inputs"]
+        self.assertFalse(nodes_of_type(stage1.api, "LTXVExtendSampler"))
+        empty = nodes_of_type(stage1.api, "EmptyLTXVLatentVideo")[0]["inputs"]
         self.assertEqual(
-            extension["num_new_frames"],
-            self.plan.chunks[2].new_transition_frames + 1,
+            empty["length"],
+            short_plan.chunks[2].new_transition_frames + 1,
         )
         build = build_continuation_stage2_workflow(
             self.job,
             self.scene,
             self.frame,
-            self.plan,
-            self.plan.chunks[2],
+            short_plan,
+            short_plan.chunks[2],
             revision=1,
             attempt_number=1,
             previous_attempt_number=1,
@@ -512,13 +481,9 @@ class ContinuationWorkflowTests(unittest.TestCase):
             build.workflow.api,
             "LTXVEmptyLatentAudio",
         )[0]["inputs"]
-        self.assertEqual(audio["frames_number"], 57)
-        loader = nodes_of_type(build.workflow.api, "VHS_LoadVideoPath")[0]["inputs"]
-        self.assertEqual(
-            loader["skip_first_frames"],
-            96,
-            "every prior direct decode exposes its 25-frame overlap at frame 96",
-        )
+        self.assertEqual(audio["frames_number"], 25)
+        self.assertFalse(nodes_of_type(build.workflow.api, "VHS_LoadVideoPath"))
+        self.assertEqual(len(nodes_of_type(build.workflow.api, "VHS_LoadImagePath")), 1)
 
     def test_assembled_delivery_watermarks_only_the_discord_branch(self):
         raw = Path(

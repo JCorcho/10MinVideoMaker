@@ -1065,6 +1065,52 @@ class StateStoreTests(unittest.TestCase):
                 [{"index": 0, "frames": 81}],
             )
 
+    def test_explicit_legacy_strategy_upgrade_preserves_snapshot_and_resets_scene(self) -> None:
+        self.store.claim_job(self.job)
+        self.store.ensure_original_scene_revision(
+            self.job.job_id,
+            1,
+            parameters={"job_id": self.job.job_id, "scene_id": 1},
+        )
+        self._plan_chunks(2)
+        self._complete_chunk(0, "legacy-artifact")
+
+        snapshot = self.store.continuation_revision_snapshot(
+            self.job.job_id,
+            1,
+            1,
+        )
+        self.assertEqual(snapshot["plan"]["document"]["strategy"], "ltx23_latent_overlap_v1")
+        self.assertEqual(len(snapshot["chunks"]), 2)
+        self.assertEqual(len(snapshot["attempts"]), 1)
+
+        self.store.reset_legacy_original_continuation(
+            self.job.job_id,
+            1,
+            expected_plan_hash="plan-sha256",
+            expected_strategy="ltx23_latent_overlap_v1",
+        )
+
+        self.assertIsNone(self.store.continuation_plan(self.job.job_id, 1, 1))
+        self.assertEqual(self.store.chunk_records(self.job.job_id, 1, 1), ())
+        scene = self.store.scene_records(self.job.job_id)[0]
+        self.assertEqual(scene.state, SceneState.PENDING)
+        self.assertEqual(scene.i2v_attempts, 0)
+        self.assertIsNone(scene.prompt_id)
+        self.assertEqual(self.store.snapshot().state, PipelineState.DOWNLOADING_ASSETS)
+
+    def test_strategy_upgrade_rejects_unexpected_plan_identity(self) -> None:
+        self.store.claim_job(self.job)
+        self._plan_chunks(1)
+
+        with self.assertRaisesRegex(StateTransitionError, "changed before upgrade"):
+            self.store.reset_legacy_original_continuation(
+                self.job.job_id,
+                1,
+                expected_plan_hash="wrong",
+                expected_strategy="ltx23_latent_overlap_v1",
+            )
+
     def test_chunk_attempt_resume_preserves_full_uint64_seed_as_text(self) -> None:
         self.store.claim_job(self.job)
         self._plan_chunks()

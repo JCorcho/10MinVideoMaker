@@ -598,7 +598,7 @@ class GuiServiceTests(unittest.TestCase):
             )
             self.assertEqual(ready["phase"], "first_pass")
             self.assertEqual(ready["current_chunk"], 1)
-            self.assertEqual(ready["total_chunks"], 3)
+            self.assertEqual(ready["total_chunks"], 2)
             self.assertFalse(ready["resumed"])
             self.assertEqual(ready["timeline_frames"], 240)
             self.assertEqual(ready["generation_master_frames"], 241)

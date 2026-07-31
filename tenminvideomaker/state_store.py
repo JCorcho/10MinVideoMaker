@@ -2243,6 +2243,170 @@ class PipelineStateStore:
             ).fetchone()
         return self._continuation_plan_record(row) if row is not None else None
 
+    def continuation_revision_snapshot(
+        self,
+        job_id: str,
+        scene_id: int,
+        revision: int,
+    ) -> Mapping[str, Any]:
+        """Return a JSON-safe audit snapshot before an explicit strategy upgrade."""
+        _positive_revision(revision)
+        self.initialize()
+        with self._connection() as connection:
+            plan = connection.execute(
+                """
+                SELECT job_id, scene_id, revision, plan_hash, plan_json, created_at
+                FROM continuation_plans
+                WHERE job_id = ? AND scene_id = ? AND revision = ?
+                """,
+                (job_id, scene_id, revision),
+            ).fetchone()
+            if plan is None:
+                raise StateTransitionError(
+                    f"No continuation plan exists for {job_id} scene {scene_id} "
+                    f"revision {revision}."
+                )
+            chunks = connection.execute(
+                """
+                SELECT * FROM scene_chunks
+                WHERE job_id = ? AND scene_id = ? AND revision = ?
+                ORDER BY chunk_index
+                """,
+                (job_id, scene_id, revision),
+            ).fetchall()
+            attempts = connection.execute(
+                """
+                SELECT * FROM chunk_attempts
+                WHERE job_id = ? AND scene_id = ? AND revision = ?
+                ORDER BY chunk_index, attempt_number
+                """,
+                (job_id, scene_id, revision),
+            ).fetchall()
+        return {
+            "job_id": job_id,
+            "scene_id": scene_id,
+            "revision": revision,
+            "plan": {
+                "plan_hash": plan["plan_hash"],
+                "document": json.loads(plan["plan_json"]),
+                "created_at": plan["created_at"],
+            },
+            "chunks": [
+                {
+                    **dict(row),
+                    "chunk": json.loads(row["chunk_json"]),
+                }
+                for row in chunks
+            ],
+            "attempts": [
+                {
+                    **dict(row),
+                    "parameters": json.loads(row["parameters_json"]),
+                    "result": json.loads(row["result_json"]),
+                }
+                for row in attempts
+            ],
+        }
+
+    def reset_legacy_original_continuation(
+        self,
+        job_id: str,
+        scene_id: int,
+        *,
+        expected_plan_hash: str,
+        expected_strategy: str,
+    ) -> None:
+        """Drop archived revision-one chunk rows so a new strategy can re-plan.
+
+        The caller must first persist ``continuation_revision_snapshot`` and verify
+        that no ComfyUI prompt is running. Artifact files are intentionally left to
+        the caller so they can be moved into D-drive history without copying them.
+        """
+        if not expected_plan_hash or not expected_strategy:
+            raise StateTransitionError("Strategy upgrade identity must be non-empty.")
+        self.initialize()
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            current = connection.execute(
+                "SELECT state, job_id FROM pipeline_state WHERE singleton = 1"
+            ).fetchone()
+            if current is None or current["job_id"] != job_id:
+                raise StateTransitionError(
+                    f"Cannot upgrade {job_id}; it is not the active saved job."
+                )
+            plan = connection.execute(
+                """
+                SELECT plan_hash, plan_json FROM continuation_plans
+                WHERE job_id = ? AND scene_id = ? AND revision = 1
+                """,
+                (job_id, scene_id),
+            ).fetchone()
+            if plan is None:
+                raise StateTransitionError(
+                    f"No legacy continuation exists for {job_id} scene {scene_id}."
+                )
+            document = json.loads(plan["plan_json"])
+            if (
+                plan["plan_hash"] != expected_plan_hash
+                or document.get("strategy") != expected_strategy
+            ):
+                raise StateTransitionError(
+                    "Continuation plan changed before upgrade; no state was modified."
+                )
+            connection.execute(
+                """
+                DELETE FROM chunk_attempts
+                WHERE job_id = ? AND scene_id = ? AND revision = 1
+                """,
+                (job_id, scene_id),
+            )
+            connection.execute(
+                """
+                DELETE FROM scene_chunks
+                WHERE job_id = ? AND scene_id = ? AND revision = 1
+                """,
+                (job_id, scene_id),
+            )
+            connection.execute(
+                """
+                DELETE FROM continuation_plans
+                WHERE job_id = ? AND scene_id = ? AND revision = 1
+                """,
+                (job_id, scene_id),
+            )
+            now = _utc_now()
+            connection.execute(
+                """
+                UPDATE scenes
+                SET state = ?, video_path = NULL, error = NULL,
+                    i2v_attempts = 0, prompt_id = NULL, prompt_stage = NULL,
+                    updated_at = ?
+                WHERE job_id = ? AND scene_id = ?
+                """,
+                (SceneState.PENDING, now, job_id, scene_id),
+            )
+            connection.execute(
+                """
+                UPDATE scene_revisions
+                SET state = ?, video_path = NULL, error = NULL, updated_at = ?
+                WHERE job_id = ? AND scene_id = ? AND revision = 1
+                """,
+                (SceneState.PENDING, now, job_id, scene_id),
+            )
+            connection.execute(
+                "UPDATE jobs SET status = ?, updated_at = ? WHERE job_id = ?",
+                (JobState.QUEUED, now, job_id),
+            )
+            connection.execute(
+                """
+                UPDATE pipeline_state
+                SET state = ?, job_id = ?, active_scene_id = NULL,
+                    error = NULL, updated_at = ?
+                WHERE singleton = 1
+                """,
+                (PipelineState.DOWNLOADING_ASSETS, job_id, now),
+            )
+
     def plan_chunks(
         self,
         job_id: str,

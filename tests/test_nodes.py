@@ -130,9 +130,9 @@ class NodeSurfaceTests(unittest.TestCase):
             layout = StorageLayout(Path(temporary))
             latent = {
                 "samples": torch.arange(
-                    128 * 3 * 2 * 2,
+                    128 * 3 * 21 * 12,
                     dtype=torch.float32,
-                ).reshape(1, 128, 3, 2, 2),
+                ).reshape(1, 128, 3, 21, 12),
                 "downscale_ratio_spacial": 32.0,
             }
             with patch("tenminvideomaker.nodes.STORAGE", layout):
@@ -190,7 +190,7 @@ class NodeSurfaceTests(unittest.TestCase):
         tests_root = Path(__file__).resolve().parent
         with tempfile.TemporaryDirectory(dir=tests_root) as temporary:
             layout = StorageLayout(Path(temporary))
-            latent = {"samples": torch.zeros((1, 128, 2, 1, 1))}
+            latent = {"samples": torch.zeros((1, 128, 2, 21, 12))}
             with patch("tenminvideomaker.nodes.STORAGE", layout):
                 saved = TenMinSaveChunkLatentNode().execute(
                     latent,

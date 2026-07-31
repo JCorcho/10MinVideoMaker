@@ -107,6 +107,38 @@ needed), followed by every batch item's I2V render, including **Video Only** rem
 
 ### Chunked LTX continuation
 
+Production now uses `ltx23_exact_frame_handoff_v2`. A long scene is split into independent 121-frame-or-shorter
+I2V calls. After each accepted raw chunk, the system losslessly extracts its exact final frame and uses that PNG as
+the next chunk's starting image. The first chunk contributes all of its frames; every later chunk drops local frame
+zero (the duplicate handoff) and contributes frames 1 onward. Thus a 30-second scene uses six 121-frame calls and
+the assembled result is exactly 720 frames at 24 fps.
+
+Both LCM passes still run. Stage two is now the visual and audio source of truth: its native 42×24 video latent is
+decoded directly to 768×1344. There is no RealESRGAN continuation upscale and no saved half-resolution stage-one
+video. This is the quality repair for the blurry continuation output. The console reports **Chunk N/M**, exact
+handoff extraction, both sampler passes, validation, and final assembly. Restart reuses only hash-verified
+checkpoints and accepted raw chunks.
+
+The current automatic-rollout approval is
+`D:\LTX_Supervisor_Storage\state\continuation-validation-v4.json`. It is invalidated by any implementation or live
+node-contract change. Approval proves a pixel-exact handoff, native full-resolution stage two, the exact assembled
+profile, bounded VRAM, at least 70% first-new-frame detail retention, and visual seam/identity/anatomy review on a
+fully clothed safe fixture.
+
+The approved safe run is `exact-frame-acceptance-20260731-140000`: three chunks produced a 360-frame
+768×1344/24 fps scene, both handoffs were pixel-exact (`RGB MAE 0.0`), and the first new frame retained `81.89%`
+and `92.32%` of boundary Laplacian detail. The bounded native workflow peaked at `16,074,806,676` VRAM bytes.
+
+The launcher setting **LTX temporal continuation** maps to `TENMIN_LTX_CONTINUATION_MODE`: `explicit` routes only
+long scenes that opt in, `disabled` forces the single-window route, and `auto` routes eligible scenes over the
+121-frame threshold unless they explicitly opt out. `auto` fails closed unless the current v4 approval matches the
+implementation and live node contracts. Scenes at or below 121 frames remain single-window in every mode.
+
+The remainder of this subsection describes the rejected v1 overlap experiments and is preserved only so future
+agents do not repeat them. It is not user or production guidance.
+
+#### Archived v1 overlap behavior (rejected)
+
 Long scenes may use `ltx23_latent_overlap_v1` instead of one oversized LTX invocation. The initial
 window contains at most 121 frames. Every full continuation regenerates a 24-frame overlap and adds 96 new
 transitions. The first-pass handoff is the visual source of truth because it preserves style and identity. It is
@@ -142,7 +174,7 @@ For LTX reliability, each internal chunk phase receives a fresh LTX checkpoint w
 run. This needs no new GUI control, keeps normal model residency available, and preserves the same resume and
 **Cancel project** behavior after a restart.
 
-The optional launcher setting
+In the rejected v1 implementation, the optional launcher setting
 **LTX temporal continuation**
 maps to `TENMIN_LTX_CONTINUATION_MODE`:
 
@@ -154,7 +186,7 @@ maps to `TENMIN_LTX_CONTINUATION_MODE`:
 Scenes at or below 121 frames use the legacy route in every mode. Existing successful legacy revisions remain valid
 and are not silently converted.
 
-`auto` requires `<TENMIN_STORAGE_ROOT>\state\continuation-validation-v2.json` (default
+The rejected v1 `auto` gate required `<TENMIN_STORAGE_ROOT>\state\continuation-validation-v2.json` (default
 `D:\LTX_Supervisor_Storage\state\continuation-validation-v2.json`). The file must be approved by a named reviewer,
 match a hash covering the current continuation generation/routing/recovery implementation plus hashes covering
 every node contract used by the representative live continuation graphs, record the approved hashes, sources, and
@@ -268,9 +300,9 @@ Do not queue the example workflows for a real render without replacing the examp
 - Pony post-process: `bbox/face_yolov8m.pt` bbox detection followed by the reference `FaceDetailer` settings
   (20 detailer steps, CFG 5, `dpmpp_2m_sde`, `karras`, denoise 0.38). Anima does not use this detailer.
 - LTX I2V: LCM on both passes, verified distinct sigma lists, x2 tiled spatial upscaler, DMD 1.0, JoyAI 0.5.
-- LTX continuation: nominal 121-frame windows, fixed 24-frame overlap, up to 96 new transitions per extension,
-  eight-frame causal refinement preroll, and a core `LTXVAddGuide` using the prior window's 25-frame
-  final-resolution visible overlap at visible frame eight.
+- LTX continuation: independent 121-frame-or-shorter calls; every later call uses the predecessor's exact final
+  frame as its starting image, drops duplicate local frame zero, and contributes up to 120 new frames. Stage two is
+  decoded natively at 768×1344.
 
 ### LoRA stage boundary
 
@@ -505,8 +537,8 @@ can download LoRAs and begin generation. Use the no-render checks below instead.
 - A transient failed stage retries up to `TENMIN_MAX_STAGE_ATTEMPTS`.
 - A continuation revision validates its immutable plan, selected attempt lineage, latent manifests and hashes,
   expected temporal-token counts, lossless FFV1/yuv444p raw-window profile, and exact frame counts before reuse.
-- A valid stage-one continuation checkpoint resumes at the sampled-audio/upscale phase. Valid video/audio
-  checkpoints rebuild a missing `window.mkv` through decode/RealESRGAN/mux only; a valid window is reused. Corrupt or mismatched artifacts
+- A valid stage-one continuation checkpoint resumes at the sampled-audio/upscale phase. Valid native stage-two
+  video/audio checkpoints rebuild a missing `window.mkv` through tiled decode/mux only; a valid window is reused. Corrupt or mismatched artifacts
   invalidate that chunk and its descendants, then recovery starts at the earliest invalid dependency.
 - `COMPLETE.json` is written last for both chunk attempts and scene assembly; an MP4 by itself is never treated as
   proof of success.
@@ -546,6 +578,7 @@ python -m unittest discover -s tests -v
 python -m compileall -q tenminvideomaker scripts __init__.py
 python scripts\setup_and_start.py --help
 python scripts\validate_continuation_workflows.py
+python scripts\run_exact_frame_acceptance.py --help
 python scripts\run_continuation_acceptance.py --source-job-id <id> --source-scene-id <id> --dry-run
 python scripts\export_workflows.py --install-approved-shared-copies
 python scripts\run_supervisor.py --help
@@ -557,16 +590,11 @@ diagnostic, checkpoint-only decode, and
 delivery, then reads only the running ComfyUI `/object_info` contracts. It never queues a prompt. The export command
 is also no-render validation; it does not load models, download assets, or generate media.
 
-The acceptance runner is intentionally separate from normal operation. Its `--dry-run` mode only validates all
-four comparison graphs. Without that flag it requires an empty ComfyUI queue, reads one completed cached frame from
-the selected D-drive job, and stores its own prompts, raw FFV1 windows, telemetry, frame metrics, and
-`awaiting_human_review` decision record under `D:\LTX_Supervisor_Storage\acceptance\<run-id>`. It does not start,
-pause, cancel, or update the saved supervisor job, and it never creates the rollout approval file or enables
-automatic continuation.
-
-The decoded-guide diagnostic uses source frames 96–112. This live-tested 17-frame span fits the initial refined
-latent; do not substitute the later 104–120 range. The normal later-window 25-frame production overlap remains
-frames 96–120.
+The production-faithful exact-frame runner requires an empty ComfyUI queue and a safe payload/frame, then exercises
+the same renderer used by normal jobs. It stores lossless windows, an assembled scene, native stage-two shapes,
+pixel-handoff comparisons, and detail measurements under `D:\LTX_Supervisor_Storage\acceptance\<run-id>` without
+starting, pausing, cancelling, or updating the saved supervisor job. The older comparison runner and its
+decoded-guide/latent-overlap frame conventions are retained only as rejected-method research.
 
 At GUI startup, the node guard checks Save Scene Frame revision support, both Save/Load Chunk Latent artifact-kind
 options, and Load Chunk Latent's expected-token input. If any are stale, it may run the path-verified ComfyUI

@@ -18,7 +18,6 @@ from .chunk_artifacts import (
 from .chunk_assembly import SceneChunkAssembler, SceneChunkAssemblyError
 from .comfy_http import ComfyHttpClient, ComfyHttpError, find_video_output
 from .constants import (
-    CONTINUATION_VIDEO_UPSCALER,
     I2V_BASE_HEIGHT,
     I2V_BASE_WIDTH,
     I2V_FIRST_PASS_SIGMAS,
@@ -58,7 +57,7 @@ from .workflow_builder import LTX_CHECKPOINT, LTX_TEXT_ENCODER
 
 LOGGER = logging.getLogger("10MinVideoMaker.continuation")
 
-CONTINUATION_ATTEMPT_SCHEMA_VERSION = 3
+CONTINUATION_ATTEMPT_SCHEMA_VERSION = 4
 CONTINUATION_DELIVERY_SCHEMA_VERSION = 1
 
 CONTINUATION_CONTRACT_NODE_TYPES = (
@@ -72,7 +71,6 @@ CONTINUATION_CONTRACT_NODE_TYPES = (
     "DiscordSendSaveVideo",
     "EmptyLTXVLatentVideo",
     "ImageScale",
-    "ImageUpscaleWithModel",
     "KSamplerSelect",
     "LTXAVTextEncoderLoader",
     "LTXReferenceConditioning",
@@ -85,7 +83,6 @@ CONTINUATION_CONTRACT_NODE_TYPES = (
     "LTXVConditioning",
     "LTXVCropGuides",
     "LTXVEmptyLatentAudio",
-    "LTXVExtendSampler",
     "LTXVImgToVideoInplaceKJ",
     "LTXVLatentUpsamplerTiled",
     "LTXVPreprocess",
@@ -96,9 +93,7 @@ CONTINUATION_CONTRACT_NODE_TYPES = (
     "LoraLoaderModelOnly",
     "ManualSigmas",
     "RandomNoise",
-    "STGGuiderAdvanced",
     "SamplerCustom",
-    "UpscaleModelLoader",
     "VHS_LoadImagePath",
     "VHS_LoadVideoPath",
     "VHS_VideoCombine",
@@ -263,10 +258,10 @@ def _write_immutable_json(path: Path, value: Mapping[str, Any]) -> None:
 class ContinuationRenderer:
     """Render, checkpoint, validate, and assemble one scene revision.
 
-    One chunk attempt owns the bounded low-resolution handoff, deterministic
-    non-diffusing x2 video upscale, and second-pass generated audio. A chunk is
-    accepted only after its checkpoints, lossless raw MKV, and final
-    COMPLETE.json have all been verified.
+    One chunk attempt owns the bounded low-resolution handoff and its native
+    full-resolution second-pass video/audio refinement. A chunk is accepted
+    only after its checkpoints, lossless raw MKV, and final COMPLETE.json have
+    all been verified.
     """
 
     def __init__(
@@ -321,13 +316,22 @@ class ContinuationRenderer:
         accepted: list[ChunkAttemptRecord] = []
         for chunk in plan.chunks:
             self._require_active(job, scene, revision)
-            selected = self._accepted_attempt(
+            chunk_frame_path = self._chunk_frame_path(
                 job,
                 scene,
                 revision,
                 plan,
                 chunk.index,
                 frame_path,
+                accepted[-1] if accepted else None,
+            )
+            selected = self._accepted_attempt(
+                job,
+                scene,
+                revision,
+                plan,
+                chunk.index,
+                chunk_frame_path,
                 resolved,
                 overrides,
                 runtime_contract_sha256,
@@ -336,7 +340,7 @@ class ContinuationRenderer:
                 selected = self._render_chunk(
                     job,
                     scene,
-                    frame_path,
+                    chunk_frame_path,
                     revision,
                     plan,
                     chunk.index,
@@ -483,6 +487,50 @@ class ContinuationRenderer:
 
     # Compatibility for callers and saved tests from the initial beta.
     _build_plan = build_plan
+
+    def _chunk_frame_path(
+        self,
+        job: JobPayload,
+        scene: SceneSpec,
+        revision: int,
+        plan: SceneFramePlan,
+        chunk_index: int,
+        original_frame_path: Path,
+        upstream: ChunkAttemptRecord | None,
+    ) -> Path:
+        """Return the immutable exact pixel frame that starts one chunk."""
+        if chunk_index == 0:
+            return original_frame_path
+        if (
+            upstream is None
+            or upstream.chunk_index != chunk_index - 1
+            or not upstream.artifact_hash
+            or not upstream.video_path
+        ):
+            raise ContinuationRenderError(
+                f"Chunk {chunk_index + 1}/{plan.chunk_count} needs one accepted "
+                "direct predecessor before its exact-frame handoff can be built."
+            )
+        destination = self.storage.chunk_input_frame_path(
+            job.job_id,
+            scene.scene_id,
+            revision,
+            chunk_index,
+            upstream_chunk_index=upstream.chunk_index,
+            upstream_attempt_number=upstream.attempt_number,
+            upstream_artifact_hash=upstream.artifact_hash,
+        )
+        try:
+            return self.assembler.extract_frame(
+                upstream.video_path,
+                plan.chunks[chunk_index - 1].model_window_frames - 1,
+                destination,
+            )
+        except SceneChunkAssemblyError as error:
+            raise ContinuationRenderError(
+                f"Could not extract the exact final frame for chunk "
+                f"{chunk_index + 1}/{plan.chunk_count}: {error}"
+            ) from error
 
     def _persist_plan(
         self,
@@ -1544,9 +1592,6 @@ class ContinuationRenderer:
                 "checkpoint_filename": LTX_CHECKPOINT,
                 "text_encoder_filename": LTX_TEXT_ENCODER,
                 "spatial_upscaler_filename": I2V_SPATIAL_UPSCALER,
-                "continuation_video_upscaler_filename": (
-                    CONTINUATION_VIDEO_UPSCALER
-                ),
                 "mandatory_loras": [
                     {"filename": filename, "weight": weight}
                     for filename, weight in MANDATORY_I2V_LORAS

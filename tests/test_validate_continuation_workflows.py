@@ -33,8 +33,10 @@ class ContinuationWorkflowValidationScriptTests(unittest.TestCase):
             for name, workflow in workflows.items()
         }
         self.assertNotIn("LTXVExtendSampler", classes["stage1_initial"])
-        self.assertIn("LTXVExtendSampler", classes["stage1_later"])
-        self.assertIn("LTXVExtendSampler", classes["stage1_final"])
+        self.assertNotIn("LTXVExtendSampler", classes["stage1_later"])
+        self.assertNotIn("LTXVExtendSampler", classes["stage1_final"])
+        self.assertIn("VHS_LoadImagePath", classes["stage1_later"])
+        self.assertIn("VHS_LoadImagePath", classes["stage1_final"])
         self.assertIn("LTXVAddGuide", classes["stage2_decoded_guide"])
         self.assertIn("LTXVCropGuides", classes["stage2_decoded_guide"])
         self.assertIn("10MinVideoMaker_LoadChunkLatent", classes["decode"])

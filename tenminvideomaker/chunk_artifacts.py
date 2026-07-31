@@ -11,6 +11,12 @@ from pathlib import Path
 from typing import Any, Mapping
 from uuid import uuid4
 
+from .constants import (
+    I2V_BASE_HEIGHT,
+    I2V_BASE_WIDTH,
+    PRODUCTION_HEIGHT,
+    PRODUCTION_WIDTH,
+)
 from .storage import StorageLayout, write_json_atomic
 
 LATENT_CHECKPOINT_SCHEMA_VERSION = 1
@@ -19,6 +25,17 @@ _ALLOWED_SCALAR_KEYS = frozenset({"downscale_ratio_spacial", "type"})
 _VIDEO_ARTIFACT_KINDS = frozenset({"stage1_handoff", "stage2_video"})
 _AUDIO_ARTIFACT_KINDS = frozenset({"stage2_audio"})
 _ARTIFACT_KINDS = _VIDEO_ARTIFACT_KINDS | _AUDIO_ARTIFACT_KINDS
+_LTX_SPATIAL_COMPRESSION = 32
+_VIDEO_SPATIAL_TOKENS = {
+    "stage1_handoff": (
+        I2V_BASE_HEIGHT // _LTX_SPATIAL_COMPRESSION,
+        I2V_BASE_WIDTH // _LTX_SPATIAL_COMPRESSION,
+    ),
+    "stage2_video": (
+        PRODUCTION_HEIGHT // _LTX_SPATIAL_COMPRESSION,
+        PRODUCTION_WIDTH // _LTX_SPATIAL_COMPRESSION,
+    ),
+}
 
 
 class ChunkArtifactError(RuntimeError):
@@ -68,6 +85,13 @@ def _validate_latent(
         if batch != 1 or channels != 128 or min(frames, height, width) < 1:
             raise ChunkArtifactError(
                 "LTX video samples must have shape [1, 128, frames, height, width]."
+            )
+        expected_height, expected_width = _VIDEO_SPATIAL_TOKENS[artifact_kind]
+        if (int(height), int(width)) != (expected_height, expected_width):
+            raise ChunkArtifactError(
+                f"{artifact_kind} spatial shape must be "
+                f"{expected_height}x{expected_width} LTX tokens; received "
+                f"{int(height)}x{int(width)}."
             )
     elif artifact_kind in _AUDIO_ARTIFACT_KINDS:
         if (

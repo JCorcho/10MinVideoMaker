@@ -6,10 +6,15 @@ from copy import deepcopy
 from dataclasses import dataclass, replace
 from typing import Any, Mapping
 
-from .continuation import ContinuationChunkPlan, SceneFramePlan, build_scene_frame_plan
+from .continuation import (
+    CONTINUATION_STRATEGY,
+    ContinuationChunkPlan,
+    SceneFramePlan,
+    build_scene_frame_plan,
+)
 from .contracts import JobPayload, parse_job_payload
 
-ACCEPTANCE_DURATION_SECONDS = 9.0
+ACCEPTANCE_DURATION_SECONDS = 10.0
 ACCEPTANCE_FIRST_BEAT_SECONDS = 5.0
 
 _FIRST_BEAT = (
@@ -57,12 +62,22 @@ def build_acceptance_job(
     *,
     source_scene_id: int,
     acceptance_job_id: str,
+    duration_seconds: float = ACCEPTANCE_DURATION_SECONDS,
 ) -> JobPayload:
     """Copy one source scene, retaining only I2V-compatible production assets."""
     if not isinstance(source_payload, Mapping):
         raise ContinuationAcceptanceError("source_payload must be an object.")
     if isinstance(source_scene_id, bool) or not isinstance(source_scene_id, int):
         raise ContinuationAcceptanceError("source_scene_id must be an integer.")
+    if (
+        isinstance(duration_seconds, bool)
+        or not isinstance(duration_seconds, (int, float))
+        or not ACCEPTANCE_FIRST_BEAT_SECONDS < float(duration_seconds) <= 32.0
+    ):
+        raise ContinuationAcceptanceError(
+            "acceptance duration must be greater than 5 and no more than 32 seconds."
+        )
+    duration_seconds = float(duration_seconds)
     raw = deepcopy(dict(source_payload))
     scenes = raw.get("scenes")
     if not isinstance(scenes, list):
@@ -85,8 +100,8 @@ def build_acceptance_job(
 
     raw["job_id"] = acceptance_job_id
     raw["scenes"] = [selected]
-    raw["total_estimated_sec"] = ACCEPTANCE_DURATION_SECONDS
-    selected["estimated_sec"] = ACCEPTANCE_DURATION_SECONDS
+    raw["total_estimated_sec"] = duration_seconds
+    selected["estimated_sec"] = duration_seconds
     i2v["prompt"] = _FIRST_BEAT
     source_continuity = i2v.get("continuity")
     preserved = source_continuity if isinstance(source_continuity, Mapping) else {}
@@ -117,7 +132,7 @@ def build_acceptance_job(
         {
             "index": 1,
             "requested_duration_seconds": (
-                ACCEPTANCE_DURATION_SECONDS - ACCEPTANCE_FIRST_BEAT_SECONDS
+                duration_seconds - ACCEPTANCE_FIRST_BEAT_SECONDS
             ),
             "positive_prompt": _SECOND_BEAT,
             "negative_prompt_additions": ["motion restart", "pose reset", "scene cut"],
@@ -126,10 +141,10 @@ def build_acceptance_job(
     ]
     i2v["continuation"] = {
         "enabled": True,
-        "strategy": "ltx23_latent_overlap_v1",
+        "strategy": CONTINUATION_STRATEGY,
         "fps": 24,
         "base_window_transition_frames": 120,
-        "overlap_transition_frames": 24,
+        "overlap_transition_frames": 0,
         "seed_policy": "derived_v1",
     }
     return parse_job_payload(raw)

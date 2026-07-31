@@ -103,7 +103,26 @@ class SceneChunkAssemblerTests(unittest.TestCase):
 
         return runner
 
-    def test_30_second_command_uses_exact_spans_preroll_and_encode(self) -> None:
+    def test_exact_frame_extraction_is_atomic_and_cached(self) -> None:
+        source = self.root / "window.mkv"
+        source.write_bytes(b"raw")
+        destination = self.root / "handoff" / "frame.png"
+        commands = []
+
+        def ffmpeg_runner(command, **_kwargs):
+            commands.append(command)
+            Path(command[-1]).write_bytes(b"png")
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        assembler = SceneChunkAssembler(ffmpeg_runner=ffmpeg_runner)
+        self.assertEqual(assembler.extract_frame(source, 120, destination), destination)
+        self.assertEqual(destination.read_bytes(), b"png")
+        self.assertIn("select=eq(n\\,120)", commands[0])
+        self.assertEqual(assembler.extract_frame(source, 120, destination), destination)
+        self.assertEqual(len(commands), 1)
+        self.assertEqual(list(destination.parent.glob(".*.extracting-*.png")), [])
+
+    def test_30_second_command_drops_only_each_duplicate_handoff_frame(self) -> None:
         plan = _plan()
         chunks = self._chunks(plan)
         destination = self.root / "scene.mp4"
@@ -122,14 +141,12 @@ class SceneChunkAssemblerTests(unittest.TestCase):
         self.assertEqual(
             [(item.start_frame, item.end_frame_exclusive) for item in chunk_slices(plan)],
             [
-                (0, 104),
-                (8, 104),
-                (8, 104),
-                (8, 104),
-                (8, 104),
-                (8, 104),
-                (8, 104),
-                (8, 49),
+                (0, 121),
+                (1, 121),
+                (1, 121),
+                (1, 121),
+                (1, 121),
+                (1, 121),
             ],
         )
         self.assertEqual(
@@ -138,25 +155,23 @@ class SceneChunkAssemblerTests(unittest.TestCase):
                 for item in chunk_slices(plan)
             ],
             [
-                (0, 104),
-                (16, 112),
-                (16, 112),
-                (16, 112),
-                (16, 112),
-                (16, 112),
-                (16, 112),
-                (16, 57),
+                (0, 121),
+                (1, 121),
+                (1, 121),
+                (1, 121),
+                (1, 121),
+                (1, 121),
             ],
         )
 
         command = commands[0]
         filters = command[command.index("-filter_complex") + 1]
-        self.assertIn("[0:v]trim=start_frame=0:end_frame=104", filters)
-        self.assertIn("[1:v]trim=start_frame=8:end_frame=104", filters)
-        self.assertIn("[7:v]trim=start_frame=8:end_frame=49", filters)
-        self.assertIn("[1:a]atrim=start=0.666666667:end=4.666666667", filters)
-        self.assertIn("[7:a]atrim=start=0.666666667:end=2.375000000", filters)
-        self.assertIn("concat=n=8:v=1:a=1[vcat][acat]", filters)
+        self.assertIn("[0:v]trim=start_frame=0:end_frame=121", filters)
+        self.assertIn("[1:v]trim=start_frame=1:end_frame=121", filters)
+        self.assertIn("[5:v]trim=start_frame=1:end_frame=121", filters)
+        self.assertIn("[1:a]atrim=start=0.041666667:end=5.041666667", filters)
+        self.assertIn("[5:a]atrim=start=0.041666667:end=5.041666667", filters)
+        self.assertIn("concat=n=6:v=1:a=1[vcat][acat]", filters)
         self.assertIn("[vcat]trim=start_frame=0:end_frame=720", filters)
         self.assertIn("[acat]atrim=duration=30.000000000", filters)
         self.assertIn("afade=t=out", filters)

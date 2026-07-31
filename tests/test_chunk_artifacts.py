@@ -36,18 +36,27 @@ class ChunkArtifactTests(unittest.TestCase):
     @staticmethod
     def latent() -> dict[str, object]:
         samples = torch.arange(
-            1 * 128 * 3 * 2 * 2,
+            1 * 128 * 3 * 21 * 12,
             dtype=torch.float32,
-        ).reshape(1, 128, 3, 2, 2)
+        ).reshape(1, 128, 3, 21, 12)
         return {
             "samples": samples,
             "noise_mask": torch.full(
-                (1, 1, 3, 2, 2),
+                (1, 1, 3, 21, 12),
                 0.25,
                 dtype=torch.float16,
             ),
             "batch_index": torch.tensor([7], dtype=torch.int64),
             "downscale_ratio_spacial": 0.5,
+        }
+
+    @staticmethod
+    def video_latent(height: int, width: int) -> dict[str, object]:
+        return {
+            "samples": torch.zeros(
+                (1, 128, 3, height, width),
+                dtype=torch.float32,
+            )
         }
 
     def checkpoint_path(self) -> Path:
@@ -81,7 +90,7 @@ class ChunkArtifactTests(unittest.TestCase):
         self.assertEqual(manifest["byte_size"], checkpoint.stat().st_size)
         self.assertEqual(
             manifest["tensors"]["samples"],
-            {"shape": [1, 128, 3, 2, 2], "dtype": "torch.float32"},
+            {"shape": [1, 128, 3, 21, 12], "dtype": "torch.float32"},
         )
         self.assertEqual(
             manifest["scalar_metadata"],
@@ -173,6 +182,44 @@ class ChunkArtifactTests(unittest.TestCase):
                 expected_temporal_tokens=4,
             )
         )
+
+    def test_stage1_handoff_requires_base_resolution_spatial_tokens(self) -> None:
+        save_latent_checkpoint(
+            self.layout,
+            self.video_latent(21, 12),
+            **self.coordinates,
+        )
+
+        with self.assertRaisesRegex(
+            ChunkArtifactError,
+            "stage1_handoff spatial shape",
+        ):
+            save_latent_checkpoint(
+                self.layout,
+                self.video_latent(42, 24),
+                **self.coordinates,
+            )
+
+    def test_stage2_video_requires_native_production_spatial_tokens(self) -> None:
+        coordinates = {
+            **self.coordinates,
+            "artifact_kind": "stage2_video",
+        }
+        save_latent_checkpoint(
+            self.layout,
+            self.video_latent(42, 24),
+            **coordinates,
+        )
+
+        with self.assertRaisesRegex(
+            ChunkArtifactError,
+            "stage2_video spatial shape",
+        ):
+            save_latent_checkpoint(
+                self.layout,
+                self.video_latent(21, 12),
+                **coordinates,
+            )
 
     def test_audio_latent_round_trip_uses_descriptor_and_hash_validation(self) -> None:
         coordinates = {
@@ -271,7 +318,7 @@ class ChunkArtifactTests(unittest.TestCase):
         descriptor_tamper["tensors"] = {
             **manifest["tensors"],
             "samples": {
-                "shape": [1, 128, 99, 2, 2],
+                "shape": [1, 128, 99, 21, 12],
                 "dtype": "torch.float32",
             },
         }
@@ -348,9 +395,9 @@ class ChunkArtifactTests(unittest.TestCase):
     def test_invalid_sample_shapes_and_dtypes_are_rejected(self) -> None:
         invalid_samples = (
             torch.zeros((1, 128, 3, 2)),
-            torch.zeros((2, 128, 3, 2, 2)),
-            torch.zeros((1, 64, 3, 2, 2)),
-            torch.zeros((1, 128, 0, 2, 2)),
+            torch.zeros((2, 128, 3, 21, 12)),
+            torch.zeros((1, 64, 3, 21, 12)),
+            torch.zeros((1, 128, 0, 21, 12)),
         )
         for samples in invalid_samples:
             with self.subTest(shape=tuple(samples.shape)):
@@ -369,7 +416,7 @@ class ChunkArtifactTests(unittest.TestCase):
                 self.layout,
                 {
                     "samples": torch.zeros(
-                        (1, 128, 3, 2, 2),
+                        (1, 128, 3, 21, 12),
                         dtype=torch.int64,
                     )
                 },
@@ -380,9 +427,9 @@ class ChunkArtifactTests(unittest.TestCase):
         invalid_noise_masks = (
             "not-a-tensor",
             torch.zeros((1, 1, 3, 2)),
-            torch.zeros((2, 1, 3, 2, 2)),
-            torch.zeros((1, 2, 3, 2, 2)),
-            torch.zeros((1, 1, 4, 2, 2)),
+            torch.zeros((2, 1, 3, 21, 12)),
+            torch.zeros((1, 2, 3, 21, 12)),
+            torch.zeros((1, 1, 4, 21, 12)),
         )
         for noise_mask in invalid_noise_masks:
             invalid = self.latent()

@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .constants import (
-    CONTINUATION_VIDEO_UPSCALER,
     I2V_SPATIAL_UPSCALER,
     MANDATORY_I2V_LORAS,
 )
@@ -16,8 +15,9 @@ from .storage import StorageLayout
 from .workflow_builder import LTX_CHECKPOINT, LTX_TEXT_ENCODER
 
 
-VALIDATION_SCHEMA_VERSION = 2
-VALIDATION_FILENAME = "continuation-validation-v2.json"
+VALIDATION_SCHEMA_VERSION = 4
+VALIDATION_FILENAME = "continuation-validation-v4.json"
+MINIMUM_DETAIL_RETENTION_RATIO = 0.70
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _REQUIRED_DECISIONS = (
     "no_oom",
@@ -27,18 +27,17 @@ _REQUIRED_DECISIONS = (
     "anatomy_stable",
     "audio_video_profile_validated",
     "runtime_acceptable",
+    "native_full_resolution_video",
+    "exact_final_frame_handoff",
+    "realism_detail_preserved",
+    "no_unusable_blur",
+    "seam_continuity_approved",
 )
-_REQUIRED_GENERATIONS = (
-    "common_base",
-    "single_frame",
-    "decoded_17_frame",
-    "latent_overlap",
-)
+_REQUIRED_GENERATIONS = ("exact_frame_handoff",)
 _REQUIRED_EXTERNAL_ASSETS = (
     LTX_CHECKPOINT,
     LTX_TEXT_ENCODER,
     I2V_SPATIAL_UPSCALER,
-    CONTINUATION_VIDEO_UPSCALER,
     *(filename for filename, _weight in MANDATORY_I2V_LORAS),
 )
 
@@ -56,6 +55,14 @@ def _require_sha256(value: object, field: str) -> str:
     if not isinstance(value, str) or _SHA256.fullmatch(value.strip().casefold()) is None:
         raise ContinuationRolloutError(f"{field} must be a lowercase SHA-256 value.")
     return value.strip().casefold()
+
+
+def _positive_number(value: object) -> bool:
+    return (
+        not isinstance(value, bool)
+        and isinstance(value, (int, float))
+        and value > 0
+    )
 
 
 def validate_auto_rollout_manifest(
@@ -112,18 +119,106 @@ def validate_auto_rollout_manifest(
 
     generations = document.get("generations")
     if not isinstance(generations, Mapping):
-        raise ContinuationRolloutError("Continuation validation needs four generation results.")
+        raise ContinuationRolloutError("Continuation validation needs generation results.")
     for name in _REQUIRED_GENERATIONS:
         result = generations.get(name)
         if not isinstance(result, Mapping) or result.get("completed") is not True:
             raise ContinuationRolloutError(
                 f"Continuation validation generation {name} is incomplete."
             )
-    latent_overlap = generations["latent_overlap"]
-    peak_vram = latent_overlap.get("peak_vram_bytes")
+    exact = generations["exact_frame_handoff"]
+    chunk_count = exact.get("chunk_count")
+    if isinstance(chunk_count, bool) or not isinstance(chunk_count, int) or chunk_count < 2:
+        raise ContinuationRolloutError(
+            "Exact-frame validation needs at least two completed chunks."
+        )
+    stage2_tokens = exact.get("stage2_video_spatial_tokens")
+    if (
+        not isinstance(stage2_tokens, list)
+        or len(stage2_tokens) != chunk_count
+        or any(tokens != [42, 24] for tokens in stage2_tokens)
+    ):
+        raise ContinuationRolloutError(
+            "Exact-frame validation must use native 42x24 stage-two video tokens "
+            "for every chunk."
+        )
+
+    peak_vram = exact.get("peak_vram_bytes")
     if isinstance(peak_vram, bool) or not isinstance(peak_vram, int) or peak_vram < 1:
         raise ContinuationRolloutError(
-            "Latent-overlap validation needs positive peak_vram_bytes."
+            "Exact-frame validation needs positive peak_vram_bytes."
+        )
+
+    profile = exact.get("assembled_profile")
+    if not isinstance(profile, Mapping):
+        raise ContinuationRolloutError(
+            "Exact-frame validation needs an assembled 768x1344 profile."
+        )
+    if profile.get("width") != 768 or profile.get("height") != 1344:
+        raise ContinuationRolloutError(
+            "Exact-frame validation output must be 768x1344."
+        )
+    if str(profile.get("fps")) not in {"24", "24/1"}:
+        raise ContinuationRolloutError("Exact-frame validation output must be 24 fps.")
+    expected_frames = chunk_count * 120
+    if profile.get("decoded_video_frames") != expected_frames:
+        raise ContinuationRolloutError(
+            "Exact-frame validation must prove 120 assembled output frames per "
+            "bounded validation chunk."
+        )
+
+    handoff = exact.get("handoff")
+    rgb_mae = handoff.get("rgb_mae") if isinstance(handoff, Mapping) else None
+    if (
+        not isinstance(handoff, Mapping)
+        or handoff.get("source_frame_index") != 120
+        or handoff.get("continuation_dropped_frame") != 0
+        or handoff.get("pixel_exact") is not True
+        or isinstance(rgb_mae, bool)
+        or not isinstance(rgb_mae, (int, float))
+        or rgb_mae != 0
+    ):
+        raise ContinuationRolloutError(
+            "Exact-frame validation needs a pixel-exact frame-120 handoff and "
+            "must drop duplicate continuation frame zero."
+        )
+
+    spatial_detail = exact.get("spatial_detail")
+    if not isinstance(spatial_detail, Mapping):
+        raise ContinuationRolloutError(
+            "Exact-frame validation needs spatial detail measurements."
+        )
+    measured: dict[str, float] = {}
+    for frame_name in ("base_boundary", "continuation_first_new"):
+        frame_detail = spatial_detail.get(frame_name)
+        laplacian = (
+            frame_detail.get("laplacian_variance")
+            if isinstance(frame_detail, Mapping)
+            else None
+        )
+        if (
+            not _positive_number(laplacian)
+        ):
+            raise ContinuationRolloutError(
+                "Exact-frame validation needs positive spatial detail "
+                f"measurement for {frame_name}."
+            )
+        measured[frame_name] = float(laplacian)
+    retention = measured["continuation_first_new"] / measured["base_boundary"]
+    reported_retention = spatial_detail.get("detail_retention_ratio")
+    if (
+        not _positive_number(reported_retention)
+        or abs(float(reported_retention) - retention) > 0.01
+        or retention < MINIMUM_DETAIL_RETENTION_RATIO
+    ):
+        raise ContinuationRolloutError(
+            "Exact-frame continuation must retain at least 70% of boundary "
+            "Laplacian detail."
+        )
+    visual_review = exact.get("visual_review")
+    if not isinstance(visual_review, str) or not visual_review.strip():
+        raise ContinuationRolloutError(
+            "Exact-frame validation needs a non-empty safe-fixture visual review."
         )
 
     decision = document.get("decision")

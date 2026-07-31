@@ -44,10 +44,10 @@
         "loras": [],
         "continuation": {
           "enabled": true,
-          "strategy": "ltx23_latent_overlap_v1",
+          "strategy": "ltx23_exact_frame_handoff_v2",
           "fps": 24,
           "base_window_transition_frames": 120,
-          "overlap_transition_frames": 24,
+          "overlap_transition_frames": 0,
           "seed_policy": "derived_v1"
         },
         "continuity": {

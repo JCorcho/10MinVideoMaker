@@ -33,7 +33,7 @@ from tenminvideomaker.continuation_workflow import (
 from tenminvideomaker.storage import StorageLayout, write_json_atomic
 from tenminvideomaker.workflow_builder import validate_against_object_info
 
-ACCEPTANCE_SCHEMA_VERSION = 4
+ACCEPTANCE_SCHEMA_VERSION = 5
 DIAGNOSTIC_GUIDE_FRAME_COUNT = 17
 LATER_VISIBLE_OVERLAP_FRAME_COUNT = 25
 BASE_FINAL_FRAME_INDEX = 120
@@ -296,6 +296,76 @@ def _image_difference(left: Path, right: Path) -> Mapping[str, float | str]:
     }
 
 
+def _image_spatial_detail(path: Path) -> Mapping[str, float]:
+    """Measure edge energy without claiming that every sharp edge is correct."""
+    try:
+        import numpy as np
+        from PIL import Image
+    except ImportError as error:  # pragma: no cover - ComfyUI supplies both.
+        raise AcceptanceRunError("Pillow and NumPy are required for detail metrics.") from error
+    with Image.open(path) as image:
+        pixels = np.asarray(image.convert("L"), dtype=np.float32)
+    if pixels.ndim != 2 or min(pixels.shape) < 3:
+        raise AcceptanceRunError(f"Detail metric frame is too small: {path}")
+    center = pixels[1:-1, 1:-1]
+    laplacian = (
+        pixels[:-2, 1:-1]
+        + pixels[2:, 1:-1]
+        + pixels[1:-1, :-2]
+        + pixels[1:-1, 2:]
+        - 4.0 * center
+    )
+    gradient_x = pixels[:, 1:] - pixels[:, :-1]
+    gradient_y = pixels[1:, :] - pixels[:-1, :]
+    return {
+        "laplacian_variance": round(float(laplacian.var()), 6),
+        "gradient_rms": round(
+            float(
+                np.sqrt(
+                    (np.mean(gradient_x * gradient_x) + np.mean(gradient_y * gradient_y))
+                    / 2.0
+                )
+            ),
+            6,
+        ),
+    }
+
+
+def _stage2_checkpoint_spatial_tokens(
+    storage: StorageLayout,
+    *,
+    job_id: str,
+    scene_id: int,
+    revision: int,
+    chunk_index: int,
+    attempt_number: int,
+) -> list[int]:
+    manifest_path = storage.chunk_checkpoint_manifest_path(
+        job_id,
+        scene_id,
+        revision,
+        chunk_index,
+        attempt_number,
+        "stage2_video",
+    )
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        shape = manifest["tensors"]["samples"]["shape"]
+    except (OSError, json.JSONDecodeError, KeyError, TypeError) as error:
+        raise AcceptanceRunError(
+            f"Stage-two checkpoint manifest is invalid: {manifest_path}"
+        ) from error
+    if not isinstance(shape, list) or len(shape) != 5:
+        raise AcceptanceRunError("Stage-two checkpoint shape is invalid.")
+    spatial = [int(shape[3]), int(shape[4])]
+    if spatial != [42, 24]:
+        raise AcceptanceRunError(
+            "Stage-two checkpoint must use native 42x24 spatial tokens; "
+            f"received {spatial[0]}x{spatial[1]}."
+        )
+    return spatial
+
+
 def _flow_discontinuity(
     previous_a: Path,
     previous_b: Path,
@@ -386,6 +456,12 @@ def _case_metrics(
             case_boundary,
             case_next,
         )
+        report["spatial_detail"] = {
+            "base_previous": _image_spatial_detail(base_previous),
+            "base_boundary": _image_spatial_detail(base_boundary),
+            "continuation_boundary": _image_spatial_detail(case_boundary),
+            "continuation_next": _image_spatial_detail(case_next),
+        }
     elif guide_start_frame_index is None and guide_frame_count is None:
         base_previous = _extract_frame(base_video, 119, metrics_root / "base_0119.png")
         base_final = _extract_frame(base_video, 120, metrics_root / "base_0120.png")
@@ -398,6 +474,12 @@ def _case_metrics(
             case_first,
             case_second,
         )
+        report["spatial_detail"] = {
+            "base_previous": _image_spatial_detail(base_previous),
+            "base_boundary": _image_spatial_detail(base_final),
+            "continuation_boundary": _image_spatial_detail(case_first),
+            "continuation_next": _image_spatial_detail(case_second),
+        }
     elif guide_start_frame_index is not None and guide_frame_count is not None:
         if (
             isinstance(guide_start_frame_index, bool)
@@ -450,6 +532,12 @@ def _case_metrics(
             case_overlap_end,
             case_first_new,
         )
+        report["spatial_detail"] = {
+            "base_previous": _image_spatial_detail(guide_previous),
+            "base_boundary": _image_spatial_detail(guide_end),
+            "continuation_boundary": _image_spatial_detail(case_overlap_end),
+            "continuation_next": _image_spatial_detail(case_first_new),
+        }
     else:
         raise AcceptanceRunError(
             "guide_start_frame_index and guide_frame_count must be set together."
@@ -674,10 +762,34 @@ def main() -> int:
                 poll_seconds=args.poll_seconds,
             ),
         }
-        _extract_frame(raw_base, BASE_FINAL_FRAME_INDEX, run_root / "frames" / "base_final.png")
+        run_document["cases"]["common_base"]["stage2"][
+            "video_checkpoint_spatial_tokens"
+        ] = _stage2_checkpoint_spatial_tokens(
+            storage,
+            job_id=job.job_id,
+            scene_id=scene.scene_id,
+            revision=1,
+            chunk_index=0,
+            attempt_number=1,
+        )
+        base_start = _extract_frame(
+            raw_base,
+            0,
+            run_root / "frames" / "base_start.png",
+        )
+        base_final = _extract_frame(
+            raw_base,
+            BASE_FINAL_FRAME_INDEX,
+            run_root / "frames" / "base_final.png",
+        )
         run_document["cases"]["common_base"]["metrics"] = {
             "video": _probe_video(raw_base),
             "manual_review": "base reference only",
+            "spatial_detail": {
+                "source_frame": _image_spatial_detail(source_frame),
+                "base_start": _image_spatial_detail(base_start),
+                "base_final": _image_spatial_detail(base_final),
+            },
         }
         write_json_atomic(run_root / "run.json", run_document)
 
@@ -688,8 +800,19 @@ def main() -> int:
             destination,
             guide_start_frame_index,
             guide_frame_count,
+            revision,
+            chunk_index,
         ) in (
-            ("single_frame", single_stage1, single_stage2, raw_single, None, None),
+            (
+                "single_frame",
+                single_stage1,
+                single_stage2,
+                raw_single,
+                None,
+                None,
+                2,
+                0,
+            ),
             (
                 "decoded_17_frame",
                 guide_stage1,
@@ -697,6 +820,8 @@ def main() -> int:
                 raw_guide,
                 BASE_DIAGNOSTIC_GUIDE_START_FRAME_INDEX,
                 DIAGNOSTIC_GUIDE_FRAME_COUNT,
+                3,
+                0,
             ),
             (
                 "latent_overlap",
@@ -705,6 +830,8 @@ def main() -> int:
                 raw_latent,
                 BASE_LATER_VISIBLE_OVERLAP_START_FRAME_INDEX,
                 LATER_VISIBLE_OVERLAP_FRAME_COUNT,
+                1,
+                1,
             ),
         ):
             run_document["cases"][name] = {
@@ -727,6 +854,16 @@ def main() -> int:
                     poll_seconds=args.poll_seconds,
                 ),
             }
+            run_document["cases"][name]["stage2"][
+                "video_checkpoint_spatial_tokens"
+            ] = _stage2_checkpoint_spatial_tokens(
+                storage,
+                job_id=job.job_id,
+                scene_id=scene.scene_id,
+                revision=revision,
+                chunk_index=chunk_index,
+                attempt_number=1,
+            )
             run_document["cases"][name]["metrics"] = _case_metrics(
                 run_root=run_root,
                 base_video=raw_base,

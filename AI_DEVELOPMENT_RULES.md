@@ -16,26 +16,26 @@
 - Before coding any node or workflow, obtain the live input/output contract from the local ComfyUI API. Do not infer third-party node inputs or output slots.
 - Production video geometry is fixed at 768×1344 and 24 fps. LTX I2V clips use the `8n + 1` frame rule, a maximum duration of 32 seconds, LCM for both sampler passes, the verified first-pass and upscale sigma schedules, and the LTX spatial upscaler.
 - Long-scene continuation uses feature flag `ltx_chunked_continuation_v1` and resolved strategy
-  `ltx23_latent_overlap_v1`. Its initial model window is at most 121 frames/120 transitions. Each full
-  extension uses the official `LTXVExtendSampler`, regenerates a fixed 24-frame overlap, and adds at most 96 new
-  transitions. The exact presentation timeline is `round(seconds × 24)` frames; generation rounds transitions up
-  to a multiple of eight, forms an `8n + 1` master, and trims only after delayed-commit assembly.
-- Continuation video uses the style-stable stage-one handoff as source of truth. Tiled-decode it at 384×672 and
-  deterministically enlarge it with `RealESRGAN_x2.pth`; never substitute the diffusion-repainted stage-two video.
-  The second LCM/spatial pass remains required for synchronized audio. Later direct video decodes contain an
-  eight-frame causal preroll. Assembly owns initial video/audio `0:104`, later non-final video `8:104` with audio
-  `16:112`, and the corresponding shortened final ranges. Do not replace this route with literal-last-frame
-  continuation, an image-model regeneration, or reinterpret a nonzero latent token as latent zero.
+  `ltx23_exact_frame_handoff_v2`. Each model call is at most 121 frames. Chunk zero contributes all local samples;
+  every later chunk uses the predecessor's losslessly extracted exact final frame as its I2V image, drops duplicate
+  local frame/audio zero, and contributes at most 120 new samples. A 30-second scene uses six 121-frame calls and
+  emits exactly 720 frames at 24 fps. `ltx23_latent_overlap_v1`, `LTXVExtendSampler`, causal-preroll slicing, and
+  multi-frame decoded guides are rejected experiment paths, not production fallbacks.
+- Both continuation LCM passes remain authoritative. Stage one generates/checkpoints the bounded 384×672 handoff
+  latent. Stage two applies the LTX spatial upscaler, persists the separated native `42×24` video latent plus
+  audio, and tiled-decodes the native 768×1344 video directly. Never decode the half-resolution stage-one handoff
+  as the final video and never place RealESRGAN in continuation generation or recovery.
 - Continuation rollout modes are `disabled`, `explicit`, and `auto`; `explicit` is the portable fail-safe default. A scene at or
   below 121 generation frames always uses the legacy route. Explicit mode requires
   `i2v.continuation.enabled=true`; auto mode permits an explicit false opt-out but must fail closed before startup
-  without `<TENMIN_STORAGE_ROOT>\state\continuation-validation-v2.json` (default
-  `D:\LTX_Supervisor_Storage\state\continuation-validation-v2.json`). That approval must match a hash covering the
+  without `<TENMIN_STORAGE_ROOT>\state\continuation-validation-v4.json` (default
+  `D:\LTX_Supervisor_Storage\state\continuation-validation-v4.json`). That approval must match a hash covering the
   current continuation generation, routing, and recovery implementation plus hashes covering every node contract
   used by the representative live continuation graphs; record valid hashes, sources, and licenses for every
-  required external asset; complete the four bounded comparison generations with positive latent-overlap peak
-  VRAM; and accept all no-OOM/guider/motion/style/anatomy/A/V-profile/runtime decisions. Never invalidate or convert a
-  completed legacy revision merely because the feature is enabled.
+  required external asset; prove at least two exact-frame chunks, native stage-two shape for every chunk, a
+  zero-MAE pixel handoff, exact 768×1344/24 fps assembly, at least 70% first-new-frame detail retention, bounded
+  VRAM, and every motion/style/anatomy/A/V/runtime decision. Never invalidate or convert a completed legacy
+  revision merely because the feature is enabled; explicit upgrade tooling must preserve its audit history.
 - T2I retains the matching reference workflow sampler: Anima uses one 30-step `er_sde`/`beta57` pass and no
   detailer; Pony uses 30-step `res_3m_ode` then 30-step `res_5s_ode`, followed by the reference
   `bbox/face_yolov8m.pt` detector and `FaceDetailer` settings.
@@ -60,8 +60,8 @@
   Remake batches must preflight selected revisions, group image+video remakes by Anima/Pony family, render all of
   those frames, then run every eligible video (including video-only remakes) as one LTX phase. Never call
   ComfyUI's free-memory endpoint between scenes in the same phase.
-- A continuation chunk attempt owns one bounded low-resolution handoff, deterministic x2 video upscale, and one
-  sampled second-pass audio latent. Persist only plain LTX video latents in safetensors with `[1, 128, frames, height, width]`
+- A continuation chunk attempt owns one bounded stage-one handoff plus native stage-two video and audio. Persist
+  only plain LTX video latents in safetensors with `[1, 128, frames, height, width]`
   floating-point samples and the explicitly supported auxiliary keys. Flush and atomically rename the tensor,
   record identity/size/descriptors/SHA-256 in its JSON manifest, write attempt `COMPLETE.json` last, then select the
   attempt in SQLite. Retain only the bounded tail required by the planned window; never retain an accumulating
@@ -81,7 +81,8 @@
   similarly, but fail closed on ambiguous queue/history and never automatically resend an uncertain side effect.
 - Continuation scene assembly must validate every raw window at 768×1344 and exact 24/1 CFR with its planned frame
   count, audio, lossless FFV1 codec, and yuv444p pixel format. Store each raw attempt as unwatermarked
-  `window.mkv`; never H.264-encode individual windows. Use the independently aligned video/audio slices above,
+  `window.mkv`; never H.264-encode individual windows. Keep chunk zero from local frame zero and each later chunk
+  from local frame/audio one,
   apply 100 ms non-overlapping audio edge fades, and perform the route's one H.264
   High/yuv420p CRF-19 scene encode with closed GOP 48 and stereo 48 kHz AAC. Validate before atomically replacing
   the clean revision-facing `video.mp4`, then write `assembly\COMPLETE.json`.
@@ -106,8 +107,8 @@
   `character.lora.recommended_weight` for the global T2I character LoRA. Scene LoRAs continue to use `weight`.
 - The legacy single-window LTX x2 spatial-upscale route uses an internal 384×672 first-pass latent and produces the
   fixed 768×1344 saved clip. Every first-pass and production axis is divisible by 32; route decoded frames directly
-  to video combine. Continuation is the documented exception: deterministic `RealESRGAN_x2.pth` enlarges its
-  style-stable first-pass decode. Do not expose or save another production size or post-upscale crop stage.
+  to video combine. Continuation likewise decodes its native LTX stage-two 768×1344 latent directly. Do not expose
+  or save another production size or add a post-upscale crop/GAN stage.
 - I2V uses `VHS_VideoCombine` temporary output. The supervisor retrieves its exact history metadata through
   `/view` and writes the project clip into the matching versioned directory below
   `D:\LTX_Supervisor_Storage\jobs`; do not scan or move shared output folders.
@@ -1411,4 +1412,44 @@
   - `python -m unittest discover -s tests -v`
   - `python -m compileall -q tenminvideomaker scripts tests`
   - `python scripts\validate_continuation_workflows.py --comfy-url http://127.0.0.1:8188`
+  - `git diff --check`
+
+### 2026-07-31 — native-detail exact-frame continuation repair
+
+- Root cause: the rejected v1 production route sampled a native 768×1344 stage-two latent but discarded its video,
+  decoded the 384×672 stage-one handoff, and enlarged it with RealESRGAN. Repeating that route across chunks caused
+  the visible blur and fine-detail loss reported in production.
+- Production decision: `ltx23_exact_frame_handoff_v2` is now authoritative. Every call is at most 121 frames.
+  Chunk zero contributes all local frames; every successor uses the predecessor raw window's losslessly extracted
+  final frame as its exact I2V image, drops duplicate local frame/audio zero, and contributes up to 120 new frames.
+  Both LCM passes remain active. Persist and tiled-decode the native stage-two `42×24` video latent plus audio;
+  RealESRGAN, `LTXVExtendSampler`, causal preroll, and 24-frame overlap are forbidden in production continuation.
+- Acceptance: the fully clothed, clearly adult safe run
+  `D:\LTX_Supervisor_Storage\acceptance\exact-frame-acceptance-20260731-140000` completed three chunks and assembled
+  exactly 360 frames at 768×1344/24 fps. Both handoffs measured RGB MAE `0.0`; first-new-frame Laplacian-detail
+  retention was `0.818869` and `0.923197`. Vision review found the same adult identity, wardrobe, environment,
+  lighting, camera direction, and continuous motion without progressive blur. The bounded native workflow evidence
+  peaked at `16,074,806,676` VRAM bytes.
+- Rollout gate: schema version 4 lives at
+  `D:\LTX_Supervisor_Storage\state\continuation-validation-v4.json` and binds the current implementation hash,
+  live structural node-contract hash, required asset provenance, native stage-two shapes, exact handoff, assembled
+  profile, detail threshold, bounded VRAM, and explicit quality decisions. Any implementation or contract change
+  invalidates automatic rollout.
+- Legacy recovery: `scripts/upgrade_legacy_continuations.py` is dry-run by default and requires `--apply`, the
+  project supervisor lock, and an empty ComfyUI queue. It archives each rejected plan/chunk/assembly/video manifest
+  below that revision's `history/continuation-upgrade-*`, deletes only its continuation rows transactionally, keeps
+  the cached T2I frame and successful unrelated scenes, and requeues the affected revision on the exact route.
+- Changed files: `tenminvideomaker/chunk_artifacts.py`, `chunk_assembly.py`, `constants.py`, `continuation.py`,
+  `continuation_acceptance.py`, `continuation_renderer.py`, `continuation_validation.py`,
+  `continuation_workflow.py`, `contracts.py`, `state_store.py`, `storage.py`, `scripts/run_continuation_acceptance.py`,
+  `scripts/run_exact_frame_acceptance.py`, `scripts/upgrade_legacy_continuations.py`, `web/app.js`, safe examples,
+  focused tests, `README.md`, `docs/architecture.md`, `docs/user-guide.md`, and this file.
+- Reproduction and verification:
+  - `python -m unittest discover -s tests -v` — 355 passed, 12 skipped.
+  - `python -m compileall -q tenminvideomaker scripts tests __init__.py`
+  - `python scripts\validate_continuation_workflows.py --comfy-url http://127.0.0.1:8188` — 9 workflows against
+    36 live node contracts; no prompt queued.
+  - `python scripts\run_exact_frame_acceptance.py --source-payload-file <safe.json> --source-frame <frame.png>
+    --source-scene-id 1 --duration-seconds 15 --run-id exact-frame-acceptance-YYYYMMDD-HHMMSS`
+  - `python scripts\upgrade_legacy_continuations.py --job-id <job-id>` before the explicit `--apply` migration.
   - `git diff --check`

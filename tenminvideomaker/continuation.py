@@ -12,11 +12,12 @@ from .constants import PRODUCTION_FPS
 
 CONTINUATION_SCHEMA_VERSION = 1
 CONTINUATION_FEATURE_FLAG = "ltx_chunked_continuation_v1"
-CONTINUATION_STRATEGY = "ltx23_latent_overlap_v1"
+CONTINUATION_STRATEGY = "ltx23_exact_frame_handoff_v2"
+LEGACY_CONTINUATION_STRATEGIES = ("ltx23_latent_overlap_v1",)
 SEED_POLICY = "derived_v1"
 
 BASE_WINDOW_TRANSITIONS = 120
-OVERLAP_PIXEL_FRAMES = 24
+OVERLAP_PIXEL_FRAMES = 1
 FULL_EXTENSION_NEW_TRANSITIONS = BASE_WINDOW_TRANSITIONS - OVERLAP_PIXEL_FRAMES
 LTX_TEMPORAL_STEP = 8
 CAUSAL_REFINEMENT_PREROLL_FRAMES = 8
@@ -141,7 +142,7 @@ def generation_transition_count(timeline_frames: int) -> int:
 
 
 def transition_contributions(total_transitions: int) -> tuple[int, ...]:
-    """Split an 8-aligned scene into one base window plus continuation increments."""
+    """Split an 8-aligned scene into independent 121-frame continuation windows."""
     if (
         isinstance(total_transitions, bool)
         or not isinstance(total_transitions, int)
@@ -157,7 +158,7 @@ def transition_contributions(total_transitions: int) -> tuple[int, ...]:
     contributions = [BASE_WINDOW_TRANSITIONS]
     remaining = total_transitions - BASE_WINDOW_TRANSITIONS
     while remaining:
-        contribution = min(FULL_EXTENSION_NEW_TRANSITIONS, remaining)
+        contribution = min(BASE_WINDOW_TRANSITIONS, remaining)
         if contribution % LTX_TEMPORAL_STEP:
             raise ContinuationPlanError(
                 "continuation contribution must remain a multiple of 8."
@@ -418,8 +419,12 @@ def build_scene_frame_plan(
             model_window_frames = contribution + 1
             new_start = 0
         else:
-            window_start = max(0, previous_transitions - OVERLAP_PIXEL_FRAMES)
-            model_window_frames = OVERLAP_PIXEL_FRAMES + contribution + 1
+            # The previous window's exact final pixel frame becomes frame zero
+            # of this fresh I2V window. It is a reference sample, not a new
+            # transition, so each later full window still contributes 120 new
+            # frames while remaining within LTX's preferred 121-frame length.
+            window_start = previous_transitions
+            model_window_frames = contribution + 1
             new_start = previous_transitions
         window_end = cumulative_transitions + 1
         prompt, negative, segment_indices, quality, seed_override, variation = (
@@ -487,34 +492,22 @@ def chunk_plan_documents(
 
 
 def assembly_spans(plan: SceneFramePlan) -> tuple[ChunkAssemblySpan, ...]:
-    """Commit fused overlaps from the later window without duplicate frames.
-
-    Every non-final window keeps only the frames before the following window
-    starts. The final window keeps its entire overlap-plus-new range. This is
-    the one-overlap delayed-commit policy: a later refined window owns the
-    visible overlap that conditioned it.
-    """
+    """Keep the base window and drop frame zero from every later window."""
     spans: list[ChunkAssemblySpan] = []
     master_cursor = 0
-    for position, chunk in enumerate(plan.chunks):
-        if position + 1 < len(plan.chunks):
-            next_chunk = plan.chunks[position + 1]
-            local_end = (
-                next_chunk.global_window_start_frame
-                - chunk.global_window_start_frame
-            )
-        else:
-            local_end = chunk.model_window_frames
-        if not 0 < local_end <= chunk.model_window_frames:
+    for chunk in plan.chunks:
+        local_start = 0 if chunk.is_initial else 1
+        local_end = chunk.model_window_frames
+        if not 0 <= local_start < local_end:
             raise ContinuationPlanError(
-                f"Chunk {chunk.index} has an invalid delayed-commit range."
+                f"Chunk {chunk.index} has an invalid exact-frame commit range."
             )
         span = ChunkAssemblySpan(
             chunk_index=chunk.index,
-            input_start_frame=0,
+            input_start_frame=local_start,
             input_end_frame_exclusive=local_end,
             master_start_frame=master_cursor,
-            master_end_frame_exclusive=master_cursor + local_end,
+            master_end_frame_exclusive=master_cursor + local_end - local_start,
         )
         spans.append(span)
         master_cursor = span.master_end_frame_exclusive
@@ -528,14 +521,12 @@ def assembly_spans(plan: SceneFramePlan) -> tuple[ChunkAssemblySpan, ...]:
 def handoff_latent_token_count(chunk: ContinuationChunkPlan) -> int:
     """Exact bounded first-pass tokens persisted for one continuation window."""
     window_tokens = ((chunk.model_window_frames - 1) // LTX_TEMPORAL_STEP) + 1
-    return window_tokens + (0 if chunk.is_initial else 1)
+    return window_tokens
 
 
 def refinement_raw_frame_count(chunk: ContinuationChunkPlan) -> int:
-    """Frames emitted before removing the causal slice preroll."""
-    return chunk.model_window_frames + (
-        0 if chunk.is_initial else CAUSAL_REFINEMENT_PREROLL_FRAMES
-    )
+    """Frames emitted by one independent full-resolution refinement window."""
+    return chunk.model_window_frames
 
 
 def continuation_is_enabled(

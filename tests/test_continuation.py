@@ -34,10 +34,10 @@ class ContinuationPlanTests(unittest.TestCase):
     def test_exact_timeline_and_generation_master_math(self) -> None:
         cases = (
             (5.0, 120, 121, (120,)),
-            (10.0, 240, 241, (120, 96, 24)),
-            (20.0, 480, 481, (120, 96, 96, 96, 72)),
-            (30.0, 720, 721, (120, 96, 96, 96, 96, 96, 96, 24)),
-            (32.0, 768, 769, (120, 96, 96, 96, 96, 96, 96, 72)),
+            (10.0, 240, 241, (120, 120)),
+            (20.0, 480, 481, (120, 120, 120, 120)),
+            (30.0, 720, 721, (120, 120, 120, 120, 120, 120)),
+            (32.0, 768, 769, (120, 120, 120, 120, 120, 120, 48)),
         )
         for seconds, timeline, master, contributions in cases:
             with self.subTest(seconds=seconds):
@@ -55,25 +55,29 @@ class ContinuationPlanTests(unittest.TestCase):
 
     def test_continuation_windows_are_121_or_short_valid_8n_plus_1(self) -> None:
         plan = self._plan(30.0)
-        self.assertEqual(plan.chunk_count, 8)
+        self.assertEqual(plan.chunk_count, 6)
         for chunk in plan.chunks:
             self.assertGreaterEqual(chunk.model_window_frames, 25)
             self.assertEqual((chunk.model_window_frames - 1) % 8, 0)
         self.assertEqual(
             [chunk.model_window_frames for chunk in plan.chunks],
-            [121, 121, 121, 121, 121, 121, 121, 49],
+            [121, 121, 121, 121, 121, 121],
         )
         self.assertEqual(
             [chunk.global_window_start_frame for chunk in plan.chunks],
-            [0, 96, 192, 288, 384, 480, 576, 672],
+            [0, 120, 240, 360, 480, 600],
         )
 
-    def test_delayed_commit_uses_later_fused_overlap_exactly_once(self) -> None:
+    def test_exact_last_frame_handoff_drops_only_duplicate_frame_zero(self) -> None:
         plan = self._plan(30.0)
         spans = assembly_spans(plan)
         self.assertEqual(
             [span.frame_count for span in spans],
-            [96, 96, 96, 96, 96, 96, 96, 49],
+            [121, 120, 120, 120, 120, 120],
+        )
+        self.assertEqual(
+            [span.input_start_frame for span in spans],
+            [0, 1, 1, 1, 1, 1],
         )
         self.assertEqual(spans[0].master_start_frame, 0)
         self.assertEqual(
@@ -86,11 +90,11 @@ class ContinuationPlanTests(unittest.TestCase):
         )
         self.assertEqual(
             [refinement_raw_frame_count(chunk) for chunk in plan.chunks],
-            [121, 129, 129, 129, 129, 129, 129, 57],
+            [121, 121, 121, 121, 121, 121],
         )
         self.assertEqual(
             [handoff_latent_token_count(chunk) for chunk in plan.chunks],
-            [16, 17, 17, 17, 17, 17, 17, 8],
+            [16, 16, 16, 16, 16, 16],
         )
 
     def test_rounding_never_under_generates_requested_timeline(self) -> None:
@@ -163,8 +167,7 @@ class ContinuationPlanTests(unittest.TestCase):
             },
         )
         self.assertEqual(plan.chunks[0].segment_indices, (0, 1))
-        self.assertEqual(plan.chunks[1].segment_indices, (0, 1))
-        self.assertEqual(plan.chunks[2].segment_indices, (1,))
+        self.assertEqual(plan.chunks[1].segment_indices, (1,))
         self.assertIn("same 28-year-old", plan.chunks[1].prompt)
         self.assertIn("Continue seamlessly", plan.chunks[1].prompt)
         self.assertIn("motion reset", plan.chunks[0].negative)
