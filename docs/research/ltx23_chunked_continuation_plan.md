@@ -6,7 +6,7 @@
 **Recommended strategy:** Rolling first-pass latent-overlap continuation using the official Lightricks `LTXVExtendSampler`, followed by overlap-aware second-pass spatial refinement and deterministic scene assembly
 
 > **Runtime correction, 2026-07-31:** Preserve production later-window 25-frame final-resolution overlap. Initial
-> refinement diagnostic uses only a 17-frame decoded guide (frames 104–120). Live LTX testing proved initial
+> refinement diagnostic uses only a 17-frame decoded guide (frames 96–112). Live LTX testing proved initial
 > refined latent has 20 guide-token positions: a 25-frame `8n+1` guide encodes 21 and is rejected; 17 frames
 > encode 20 and completed. This supersedes only initial diagnostic described below.
 

@@ -504,6 +504,10 @@ the selected D-drive job, and stores its own prompts, raw FFV1 windows, telemetr
 pause, cancel, or update the saved supervisor job, and it never creates the rollout approval file or enables
 automatic continuation.
 
+The decoded-guide diagnostic uses source frames 96–112. This live-tested 17-frame span fits the initial refined
+latent; do not substitute the later 104–120 range. The normal later-window 25-frame production overlap remains
+frames 96–120.
+
 At GUI startup, the node guard checks Save Scene Frame revision support, both Save/Load Chunk Latent artifact-kind
 options, and Load Chunk Latent's expected-token input. If any are stale, it may run the path-verified ComfyUI
 restart only while the queue is empty, then verifies all contracts again. It refuses startup rather than interrupting

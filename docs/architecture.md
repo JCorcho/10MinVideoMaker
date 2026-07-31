@@ -364,3 +364,7 @@ runs common-base, single-frame, decoded-17-frame-guide, and latent-overlap cases
 database state, captures ComfyUI peak-VRAM/runtime telemetry plus FFmpeg/Pillow/OpenCV seam evidence, and ends in
 human review. It cannot enable `auto` or create the approval manifest. Until GPU evidence and human visual review
 exist, continuation has no production-quality claim and `explicit` remains the default.
+
+The diagnostic guide is frames 96–112, not the final 17 frames: live LTX testing shows that its initial refined
+latent accepts this 20-token span but rejects the later 104–120 range. This does not change the normal later-window
+25-frame production overlap, which remains frames 96–120.

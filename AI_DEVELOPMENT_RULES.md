@@ -1036,7 +1036,7 @@
   through SQLite read-only mode and reuses only its exact D-drive cached T2I frame. It never starts the supervisor,
   edits `pipeline.sqlite3`, or changes production rollout mode.
 - Routing: all cases share one production two-pass 121-frame base. `single_frame` consumes its exact final decoded
-  frame; `decoded_17_frame` uses a diagnostic initial refinement branch which loads frames 104–120 through
+  frame; `decoded_17_frame` uses a diagnostic initial refinement branch which loads frames 96–112 through
   `LTXVAddGuide` at frame zero; `latent_overlap` uses the normal 24-frame `LTXVExtendSampler` route plus later
   full-resolution guide at causal-preroll frame eight. The diagnostic initial guide is opt-in and cannot alter
   standard production initial chunks.
@@ -1102,16 +1102,19 @@
   mismatch. A direct 17-frame guide probe completed on same graph.
 - Root cause: initial refined latent exposes only 20 guide-token positions. A
   25-frame valid `8n+1` guide encodes 21 tokens and cannot fit. Largest valid
-  `8n+1` guide that fits is 17 frames, encoding 20. Diagnostic now loads frames
-  104–120 and is named `decoded_17_frame`; metrics use exact span. Normal
-  later-window 25-frame visible-overlap route remains separate production test.
+  `8n+1` guide that fits is 17 frames, encoding 20. A current-job GPU probe
+  proved the valid span is frames 96–112; moving it to 104–120 fails with a
+  20-versus-19 mismatch. Diagnostic is named `decoded_17_frame`; metrics use
+  its exact span. Normal later-window 25-frame visible-overlap route remains
+  separate production test.
 - Reproduction: run the D-drive acceptance matrix with an empty queue. The
   failed matrix remains at
   `D:\LTX_Supervisor_Storage\acceptance\continuation-acceptance-20260731-gpu5`.
   The regression verifies that a decoded 17-frame guide has no preceding
   `LTXVImgToVideoInplaceKJ` or `LTXReferenceConditioning`, and that its guide
   latent is the direct output of `LTXVLatentUpsamplerTiled`. Acceptance output
-  schema is version 2; old incomplete runs retain their original case name.
+  schema is version 3; old incomplete runs retain their original case name and
+  original metric semantics.
 - Verification commands:
   - `python -m unittest discover -s tests -p "test_continuation_workflow.py" -v`
   - `python -m compileall -q tenminvideomaker tests`

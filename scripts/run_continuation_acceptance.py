@@ -33,12 +33,13 @@ from tenminvideomaker.continuation_workflow import (
 from tenminvideomaker.storage import StorageLayout, write_json_atomic
 from tenminvideomaker.workflow_builder import validate_against_object_info
 
-ACCEPTANCE_SCHEMA_VERSION = 2
+ACCEPTANCE_SCHEMA_VERSION = 3
 DIAGNOSTIC_GUIDE_FRAME_COUNT = 17
 LATER_VISIBLE_OVERLAP_FRAME_COUNT = 25
 BASE_FINAL_FRAME_INDEX = 120
-BASE_DIAGNOSTIC_GUIDE_START_FRAME_INDEX = (
-    BASE_FINAL_FRAME_INDEX - DIAGNOSTIC_GUIDE_FRAME_COUNT + 1
+BASE_DIAGNOSTIC_GUIDE_START_FRAME_INDEX = 96
+BASE_LATER_VISIBLE_OVERLAP_START_FRAME_INDEX = (
+    BASE_FINAL_FRAME_INDEX - LATER_VISIBLE_OVERLAP_FRAME_COUNT + 1
 )
 RAW_SUFFIXES = (".mkv",)
 
@@ -320,22 +321,12 @@ def _case_metrics(
     base_video: Path,
     case_name: str,
     case_video: Path,
+    guide_start_frame_index: int | None,
     guide_frame_count: int | None,
 ) -> Mapping[str, Any]:
     metrics_root = run_root / "metrics" / case_name
-    base_previous = _extract_frame(base_video, 119, metrics_root / "base_0119.png")
-    base_final = _extract_frame(base_video, 120, metrics_root / "base_0120.png")
-    case_first = _extract_frame(case_video, 0, metrics_root / "case_0000.png")
-    case_second = _extract_frame(case_video, 1, metrics_root / "case_0001.png")
     report: dict[str, Any] = {
         "video": _probe_video(case_video),
-        "single_boundary_difference": _image_difference(base_final, case_first),
-        "motion_restart_flow": _flow_discontinuity(
-            base_previous,
-            base_final,
-            case_first,
-            case_second,
-        ),
         "manual_review": {
             "anatomy": "pending human review",
             "hand_object_contact": "pending human review",
@@ -344,20 +335,47 @@ def _case_metrics(
             "visible_motion_restart": "pending human review",
         },
     }
-    if guide_frame_count is not None:
+    if guide_start_frame_index is None and guide_frame_count is None:
+        base_previous = _extract_frame(base_video, 119, metrics_root / "base_0119.png")
+        base_final = _extract_frame(base_video, 120, metrics_root / "base_0120.png")
+        case_first = _extract_frame(case_video, 0, metrics_root / "case_0000.png")
+        case_second = _extract_frame(case_video, 1, metrics_root / "case_0001.png")
+        report["single_boundary_difference"] = _image_difference(base_final, case_first)
+        report["motion_restart_flow"] = _flow_discontinuity(
+            base_previous,
+            base_final,
+            case_first,
+            case_second,
+        )
+    elif guide_start_frame_index is not None and guide_frame_count is not None:
         if (
-            isinstance(guide_frame_count, bool)
+            isinstance(guide_start_frame_index, bool)
+            or not isinstance(guide_start_frame_index, int)
+            or guide_start_frame_index < 0
+            or isinstance(guide_frame_count, bool)
             or not isinstance(guide_frame_count, int)
-            or guide_frame_count < 1
-            or guide_frame_count > BASE_FINAL_FRAME_INDEX + 1
+            or guide_frame_count < 2
+            or guide_start_frame_index + guide_frame_count
+            > BASE_FINAL_FRAME_INDEX + 1
         ):
             raise AcceptanceRunError("guide_frame_count is outside the base window.")
-        guide_start_frame_index = BASE_FINAL_FRAME_INDEX - guide_frame_count + 1
         guide_start = _extract_frame(
             base_video,
             guide_start_frame_index,
             metrics_root / f"base_{guide_start_frame_index:04d}.png",
         )
+        guide_end_frame_index = guide_start_frame_index + guide_frame_count - 1
+        guide_previous = _extract_frame(
+            base_video,
+            guide_end_frame_index - 1,
+            metrics_root / f"base_{guide_end_frame_index - 1:04d}.png",
+        )
+        guide_end = _extract_frame(
+            base_video,
+            guide_end_frame_index,
+            metrics_root / f"base_{guide_end_frame_index:04d}.png",
+        )
+        case_first = _extract_frame(case_video, 0, metrics_root / "case_0000.png")
         case_overlap_end = _extract_frame(
             case_video,
             guide_frame_count - 1,
@@ -368,13 +386,22 @@ def _case_metrics(
             guide_frame_count,
             metrics_root / f"case_{guide_frame_count:04d}.png",
         )
+        report["guide_span"] = {
+            "source_start_frame": guide_start_frame_index,
+            "source_end_frame": guide_end_frame_index,
+            "frame_count": guide_frame_count,
+        }
         report["overlap_start_difference"] = _image_difference(guide_start, case_first)
-        report["overlap_end_difference"] = _image_difference(base_final, case_overlap_end)
+        report["overlap_end_difference"] = _image_difference(guide_end, case_overlap_end)
         report["seam_flow"] = _flow_discontinuity(
-            base_previous,
-            base_final,
+            guide_previous,
+            guide_end,
             case_overlap_end,
             case_first_new,
+        )
+    else:
+        raise AcceptanceRunError(
+            "guide_start_frame_index and guide_frame_count must be set together."
         )
     return report
 
@@ -592,13 +619,21 @@ def main() -> int:
         }
         write_json_atomic(run_root / "run.json", run_document)
 
-        for name, stage1, stage2, destination, guide_frame_count in (
-            ("single_frame", single_stage1, single_stage2, raw_single, None),
+        for (
+            name,
+            stage1,
+            stage2,
+            destination,
+            guide_start_frame_index,
+            guide_frame_count,
+        ) in (
+            ("single_frame", single_stage1, single_stage2, raw_single, None, None),
             (
                 "decoded_17_frame",
                 guide_stage1,
                 guide_stage2,
                 raw_guide,
+                BASE_DIAGNOSTIC_GUIDE_START_FRAME_INDEX,
                 DIAGNOSTIC_GUIDE_FRAME_COUNT,
             ),
             (
@@ -606,6 +641,7 @@ def main() -> int:
                 latent_stage1,
                 latent_stage2,
                 raw_latent,
+                BASE_LATER_VISIBLE_OVERLAP_START_FRAME_INDEX,
                 LATER_VISIBLE_OVERLAP_FRAME_COUNT,
             ),
         ):
@@ -634,6 +670,7 @@ def main() -> int:
                 base_video=raw_base,
                 case_name=name,
                 case_video=destination,
+                guide_start_frame_index=guide_start_frame_index,
                 guide_frame_count=guide_frame_count,
             )
             write_json_atomic(run_root / "run.json", run_document)

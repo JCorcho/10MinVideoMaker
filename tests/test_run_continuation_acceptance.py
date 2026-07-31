@@ -25,12 +25,12 @@ class RunContinuationAcceptanceScriptTests(unittest.TestCase):
         self.assertEqual(args.timeout_seconds, 900.0)
         self.assertFalse(args.dry_run)
 
-    def test_decoded_guide_constants_select_a_17_frame_base_tail(self) -> None:
+    def test_decoded_guide_constants_select_a_17_frame_base_span(self) -> None:
         from scripts import run_continuation_acceptance as acceptance
 
-        self.assertEqual(acceptance.ACCEPTANCE_SCHEMA_VERSION, 2)
+        self.assertEqual(acceptance.ACCEPTANCE_SCHEMA_VERSION, 3)
         self.assertEqual(acceptance.DIAGNOSTIC_GUIDE_FRAME_COUNT, 17)
-        self.assertEqual(acceptance.BASE_DIAGNOSTIC_GUIDE_START_FRAME_INDEX, 104)
+        self.assertEqual(acceptance.BASE_DIAGNOSTIC_GUIDE_START_FRAME_INDEX, 96)
 
     def test_case_metrics_use_requested_guide_frame_span(self) -> None:
         from scripts import run_continuation_acceptance as acceptance
@@ -49,12 +49,13 @@ class RunContinuationAcceptanceScriptTests(unittest.TestCase):
                 base_video=Path(r"D:\base.mkv"),
                 case_name="decoded_17_frame",
                 case_video=Path(r"D:\case.mkv"),
+                guide_start_frame_index=96,
                 guide_frame_count=17,
             )
 
         self.assertEqual(
             [call.args[1] for call in extract.call_args_list],
-            [119, 120, 0, 1, 104, 16, 17],
+            [96, 111, 112, 0, 16, 17],
         )
 
 
