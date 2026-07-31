@@ -18,6 +18,13 @@ project root and never treats that temporary output as persistent project storag
 Double-click `Start 10MinVideoMaker.bat`. After the existing credential checks, the launcher opens
 `http://127.0.0.1:8765/`. Default binding is only this computer.
 
+Only one GUI/supervisor controller may run. Double-clicking the launcher while
+one already owns the pipeline does not start a duplicate: it reports the
+existing URL, opens that page in the browser, and exits successfully. With
+`--no-browser` it reports the URL without opening it. The persistent
+`supervisor.lock` file is normal and must not be deleted; Windows byte-lock
+ownership, not the file's presence, determines whether a controller is active.
+
 You do not need to start ComfyUI manually after a PC reboot. The GUI launch uses the same local health guard as the
 console launcher: if `http://127.0.0.1:8188` is down, it starts the verified Easy Install `Start ComfyUI.bat`, which
 preserves its Sage Attention startup configuration, and waits for the API before starting the supervisor.

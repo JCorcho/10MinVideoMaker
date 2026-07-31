@@ -169,6 +169,64 @@ class GuiStaticAssetTests(unittest.TestCase):
 
 @unittest.skipUnless(TestClient is not None, "FastAPI is supplied by the embedded Python")
 class GuiAppTests(unittest.TestCase):
+    def test_duplicate_gui_launch_opens_existing_instance_and_exits_cleanly(self) -> None:
+        from scripts.run_gui import main
+        from tenminvideomaker.ownership import OwnershipError
+
+        class CollidingLock:
+            def acquire(self) -> None:
+                raise OwnershipError(
+                    "Another 10MinVideoMaker controller is already running."
+                )
+
+            def __enter__(self):
+                self.acquire()
+
+            def __exit__(self, *_args):
+                return None
+
+        storage = SimpleNamespace(instance_lock_path=Path("supervisor.lock"))
+        with (
+            patch("scripts.run_gui.load_project_environment", return_value={}),
+            patch("scripts.run_gui._gui_binding", return_value=("127.0.0.1", None)),
+            patch("scripts.run_gui.StorageLayout.configured", return_value=storage),
+            patch("scripts.run_gui.SupervisorInstanceLock", return_value=CollidingLock()),
+            patch("scripts.run_gui.webbrowser.open") as open_browser,
+        ):
+            result = main([])
+
+        self.assertEqual(result, 0)
+        open_browser.assert_called_once_with("http://127.0.0.1:8765/")
+
+    def test_duplicate_gui_launch_respects_no_browser(self) -> None:
+        from scripts.run_gui import main
+        from tenminvideomaker.ownership import OwnershipError
+
+        class CollidingLock:
+            def acquire(self) -> None:
+                raise OwnershipError(
+                    "Another 10MinVideoMaker controller is already running."
+                )
+
+            def __enter__(self):
+                self.acquire()
+
+            def __exit__(self, *_args):
+                return None
+
+        storage = SimpleNamespace(instance_lock_path=Path("supervisor.lock"))
+        with (
+            patch("scripts.run_gui.load_project_environment", return_value={}),
+            patch("scripts.run_gui._gui_binding", return_value=("127.0.0.1", None)),
+            patch("scripts.run_gui.StorageLayout.configured", return_value=storage),
+            patch("scripts.run_gui.SupervisorInstanceLock", return_value=CollidingLock()),
+            patch("scripts.run_gui.webbrowser.open") as open_browser,
+        ):
+            result = main(["--no-browser"])
+
+        self.assertEqual(result, 0)
+        open_browser.assert_not_called()
+
     def test_review_only_gui_serves_acceptance_page_without_supervisor(self) -> None:
         from tenminvideomaker.gui_app import create_acceptance_review_app
 

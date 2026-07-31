@@ -262,7 +262,16 @@ def main(argv: list[str] | None = None) -> int:
     environment = load_project_environment(PROJECT_ROOT)
     host, lan_password = _gui_binding(args, environment)
     storage = StorageLayout.configured()
-    with SupervisorInstanceLock(storage.instance_lock_path):
+    instance_lock = SupervisorInstanceLock(storage.instance_lock_path)
+    try:
+        instance_lock.acquire()
+    except OwnershipError as error:
+        existing_url = f"http://127.0.0.1:{args.port}/"
+        LOGGER.warning("%s Existing GUI: %s", error, existing_url)
+        if not args.no_browser:
+            webbrowser.open(existing_url)
+        return 0
+    with instance_lock:
         migration = migrate_legacy_storage(PROJECT_ROOT, layout=storage)
         LOGGER.info(
             "Persistent storage ready at %s (legacy migration=%s).",

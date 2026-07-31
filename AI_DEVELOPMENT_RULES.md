@@ -1332,3 +1332,32 @@
   - `python -m unittest discover -s tests -v`
   - `python -m compileall -q tenminvideomaker scripts tests`
   - `git diff --check`
+
+### 2026-07-31 — duplicate GUI lock recovery
+
+- Changed files: `tenminvideomaker/ownership.py`, `scripts/run_gui.py`,
+  `tests/test_ownership.py`, focused GUI tests, `docs/user-guide.md`, and this
+  file.
+- Root cause: Windows denies reads of byte zero while another process owns the
+  `msvcrt` byte lock. `SupervisorInstanceLock.acquire()` read that byte before
+  its protected nonblocking-lock call, so a legitimate duplicate launch leaked
+  raw `PermissionError` instead of the intended `OwnershipError`.
+- Decision: determine sentinel emptiness by seeking to end and reading the file
+  position; never read the locked byte. `msvcrt.locking(..., LK_NBLCK, 1)`
+  remains the sole ownership authority. Do not delete, steal, or bypass
+  `supervisor.lock`.
+- GUI behavior: only an initial instance-lock collision is treated as an
+  already-running GUI. The duplicate process logs and optionally opens
+  `http://127.0.0.1:<port>/`, then returns zero. Later ownership failures for a
+  busy queue, legacy takeover, or stale node contracts remain fatal.
+- Reproduction: keep one GUI process running and start `scripts/run_gui.py`
+  again. Before the repair, Windows raises `PermissionError` from
+  `handle.read(1)`; afterward the second launch prints the existing URL without
+  constructing an app or supervisor.
+- Verification commands:
+  - embedded Python `test_ownership.py`
+  - embedded Python duplicate-launch tests in `test_gui_app.py`
+  - embedded Python full `test_gui_app.py`
+  - `python -m unittest discover -s tests -v`
+  - `python -m compileall -q tenminvideomaker scripts tests`
+  - `git diff --check`
