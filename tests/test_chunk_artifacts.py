@@ -107,6 +107,24 @@ class ChunkArtifactTests(unittest.TestCase):
         self.assertEqual(tuple(loaded["noise_mask"].shape), (1, 1, 3, 1, 1))
         self.assertTrue(torch.equal(loaded["noise_mask"], original["noise_mask"]))
 
+    def test_round_trip_preserves_allowed_ltx_type_marker(self) -> None:
+        """LTX second-pass video latents carry an opaque audio type marker."""
+        original = self.latent()
+        original["type"] = "audio"
+
+        _checkpoint, manifest = save_latent_checkpoint(
+            self.layout,
+            original,
+            **self.coordinates,
+        )
+        loaded, _ = load_latent_checkpoint(self.layout, **self.coordinates)
+
+        self.assertEqual(loaded["type"], "audio")
+        self.assertEqual(
+            manifest["scalar_metadata"],
+            {"downscale_ratio_spacial": 0.5, "type": "audio"},
+        )
+
     def test_same_size_checkpoint_tamper_is_rejected_by_hash(self) -> None:
         save_latent_checkpoint(
             self.layout,

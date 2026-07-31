@@ -15,7 +15,7 @@ from .storage import StorageLayout, write_json_atomic
 
 LATENT_CHECKPOINT_SCHEMA_VERSION = 1
 _ALLOWED_TENSOR_KEYS = frozenset({"samples", "noise_mask", "batch_index"})
-_ALLOWED_SCALAR_KEYS = frozenset({"downscale_ratio_spacial"})
+_ALLOWED_SCALAR_KEYS = frozenset({"downscale_ratio_spacial", "type"})
 _VIDEO_ARTIFACT_KINDS = frozenset({"stage1_handoff", "stage2_video"})
 _AUDIO_ARTIFACT_KINDS = frozenset({"stage2_audio"})
 _ARTIFACT_KINDS = _VIDEO_ARTIFACT_KINDS | _AUDIO_ARTIFACT_KINDS
@@ -120,6 +120,9 @@ def _validate_latent(
         raise ChunkArtifactError(
             "LATENT downscale_ratio_spacial must be a positive number."
         )
+    latent_type = latent.get("type")
+    if latent_type is not None and latent_type not in {"audio", "video"}:
+        raise ChunkArtifactError("LATENT type must be the LTX audio or video marker.")
 
 
 def save_latent_checkpoint(

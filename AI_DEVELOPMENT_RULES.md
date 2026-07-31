@@ -1072,12 +1072,18 @@
   one-or-channel axis, and exact temporal-token count. Each spatial axis may be
   either `1` or the matching video-latent dimension. The node preserves the
   original mask shape; it must never expand a compact mask before serializing.
-  Audio validation remains exact-shape-only.
+  Audio validation remains exact-shape-only. Second-pass split video also
+  carries the opaque LTX `type: "audio"` marker. A direct LTX tiled-video-decode
+  probe confirmed output slot zero is still the video latent despite that marker,
+  matching the live node's declared output order. The checkpoint allowlist
+  therefore preserves only the exact `audio` or `video` type markers without
+  inferring artifact kind from them.
 - Reproduction: with an empty queue, run the continuation acceptance runner
   against a cached source scene. Before this repair, its common base stage-one
   checkpoint failed with `LATENT noise_mask shape does not match video samples.`
   The focused regression uses the same `[1, 1, frames, 1, 1]` shape and
-  verifies save/load round-trip integrity.
+  verifies save/load round-trip integrity. The related type-marker regression
+  verifies the marker is preserved through the manifest and checkpoint reload.
 - Verification commands:
   - `python -m unittest discover -s tests -p "test_chunk_artifacts.py" -v`
   - `python -m compileall -q tenminvideomaker tests`
