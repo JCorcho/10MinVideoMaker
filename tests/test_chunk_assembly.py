@@ -122,22 +122,40 @@ class SceneChunkAssemblerTests(unittest.TestCase):
         self.assertEqual(
             [(item.start_frame, item.end_frame_exclusive) for item in chunk_slices(plan)],
             [
-                (0, 96),
+                (0, 104),
                 (8, 104),
                 (8, 104),
                 (8, 104),
                 (8, 104),
                 (8, 104),
                 (8, 104),
-                (8, 57),
+                (8, 49),
+            ],
+        )
+        self.assertEqual(
+            [
+                (item.audio_start_frame, item.audio_end_frame_exclusive)
+                for item in chunk_slices(plan)
+            ],
+            [
+                (0, 104),
+                (16, 112),
+                (16, 112),
+                (16, 112),
+                (16, 112),
+                (16, 112),
+                (16, 112),
+                (16, 57),
             ],
         )
 
         command = commands[0]
         filters = command[command.index("-filter_complex") + 1]
-        self.assertIn("[0:v]trim=start_frame=0:end_frame=96", filters)
+        self.assertIn("[0:v]trim=start_frame=0:end_frame=104", filters)
         self.assertIn("[1:v]trim=start_frame=8:end_frame=104", filters)
-        self.assertIn("[7:v]trim=start_frame=8:end_frame=57", filters)
+        self.assertIn("[7:v]trim=start_frame=8:end_frame=49", filters)
+        self.assertIn("[1:a]atrim=start=0.666666667:end=4.666666667", filters)
+        self.assertIn("[7:a]atrim=start=0.666666667:end=2.375000000", filters)
         self.assertIn("concat=n=8:v=1:a=1[vcat][acat]", filters)
         self.assertIn("[vcat]trim=start_frame=0:end_frame=720", filters)
         self.assertIn("[acat]atrim=duration=30.000000000", filters)

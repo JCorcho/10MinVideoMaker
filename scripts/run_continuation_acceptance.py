@@ -33,7 +33,7 @@ from tenminvideomaker.continuation_workflow import (
 from tenminvideomaker.storage import StorageLayout, write_json_atomic
 from tenminvideomaker.workflow_builder import validate_against_object_info
 
-ACCEPTANCE_SCHEMA_VERSION = 3
+ACCEPTANCE_SCHEMA_VERSION = 4
 DIAGNOSTIC_GUIDE_FRAME_COUNT = 17
 LATER_VISIBLE_OVERLAP_FRAME_COUNT = 25
 BASE_FINAL_FRAME_INDEX = 120
@@ -41,6 +41,8 @@ BASE_DIAGNOSTIC_GUIDE_START_FRAME_INDEX = 96
 BASE_LATER_VISIBLE_OVERLAP_START_FRAME_INDEX = (
     BASE_FINAL_FRAME_INDEX - LATER_VISIBLE_OVERLAP_FRAME_COUNT + 1
 )
+DIRECT_HANDOFF_BASE_SEAM_FRAME_INDEX = 103
+DIRECT_HANDOFF_CONTINUATION_SEAM_FRAME_INDEX = 8
 RAW_SUFFIXES = (".mkv",)
 
 
@@ -55,7 +57,14 @@ def argument_parser() -> argparse.ArgumentParser:
             "It does not start or modify the supervisor."
         )
     )
-    parser.add_argument("--source-job-id", required=True)
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--source-job-id")
+    source.add_argument("--source-payload-file", type=Path)
+    parser.add_argument(
+        "--source-frame",
+        type=Path,
+        help="Exact cached frame; required with --source-payload-file.",
+    )
     parser.add_argument("--source-scene-id", required=True, type=int)
     parser.add_argument("--source-revision", default=1, type=int)
     parser.add_argument("--run-id", default=None)
@@ -93,6 +102,16 @@ def _read_saved_job_payload(storage: StorageLayout, job_id: str) -> Mapping[str,
         raise AcceptanceRunError("Saved source payload is unreadable.") from error
     if not isinstance(payload, Mapping):
         raise AcceptanceRunError("Saved source payload is not an object.")
+    return payload
+
+
+def _read_payload_file(path: Path) -> Mapping[str, Any]:
+    try:
+        payload = json.loads(path.resolve().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise AcceptanceRunError(f"Source payload file is unreadable: {path}") from error
+    if not isinstance(payload, Mapping):
+        raise AcceptanceRunError("Source payload file must contain a JSON object.")
     return payload
 
 
@@ -335,7 +354,39 @@ def _case_metrics(
             "visible_motion_restart": "pending human review",
         },
     }
-    if guide_start_frame_index is None and guide_frame_count is None:
+    if case_name == "latent_overlap":
+        base_previous = _extract_frame(
+            base_video,
+            DIRECT_HANDOFF_BASE_SEAM_FRAME_INDEX - 1,
+            metrics_root / "base_0102.png",
+        )
+        base_boundary = _extract_frame(
+            base_video,
+            DIRECT_HANDOFF_BASE_SEAM_FRAME_INDEX,
+            metrics_root / "base_0103.png",
+        )
+        case_boundary = _extract_frame(
+            case_video,
+            DIRECT_HANDOFF_CONTINUATION_SEAM_FRAME_INDEX,
+            metrics_root / "case_0008.png",
+        )
+        case_next = _extract_frame(
+            case_video,
+            DIRECT_HANDOFF_CONTINUATION_SEAM_FRAME_INDEX + 1,
+            metrics_root / "case_0009.png",
+        )
+        report["production_seam"] = {
+            "base_end_frame": DIRECT_HANDOFF_BASE_SEAM_FRAME_INDEX,
+            "continuation_start_frame": DIRECT_HANDOFF_CONTINUATION_SEAM_FRAME_INDEX,
+        }
+        report["seam_difference"] = _image_difference(base_boundary, case_boundary)
+        report["seam_flow"] = _flow_discontinuity(
+            base_previous,
+            base_boundary,
+            case_boundary,
+            case_next,
+        )
+    elif guide_start_frame_index is None and guide_frame_count is None:
         base_previous = _extract_frame(base_video, 119, metrics_root / "base_0119.png")
         base_final = _extract_frame(base_video, 120, metrics_root / "base_0120.png")
         case_first = _extract_frame(case_video, 0, metrics_root / "case_0000.png")
@@ -441,12 +492,23 @@ def main() -> int:
     run_root = storage.root / "acceptance" / run_id
     if run_root.exists() or storage.job_root(run_id).exists():
         raise SystemExit(f"Acceptance run ID already exists: {run_id}")
-    source_payload = _read_saved_job_payload(storage, args.source_job_id)
-    source_frame = storage.scene_frame_path(
-        args.source_job_id,
-        args.source_scene_id,
-        args.source_revision,
-    )
+    if args.source_payload_file is not None:
+        if args.source_frame is None:
+            raise SystemExit("--source-frame is required with --source-payload-file.")
+        source_payload = _read_payload_file(args.source_payload_file)
+        source_frame = args.source_frame.resolve()
+        source_identifier = str(source_payload.get("job_id") or args.source_payload_file)
+    else:
+        if args.source_frame is not None:
+            raise SystemExit("--source-frame is only valid with --source-payload-file.")
+        assert args.source_job_id is not None
+        source_payload = _read_saved_job_payload(storage, args.source_job_id)
+        source_frame = storage.scene_frame_path(
+            args.source_job_id,
+            args.source_scene_id,
+            args.source_revision,
+        )
+        source_identifier = args.source_job_id
     if not source_frame.is_file():
         raise SystemExit(f"Exact source frame is missing: {source_frame}")
     job = build_acceptance_job(
@@ -545,7 +607,7 @@ def main() -> int:
             "run_id": run_id,
             "state": "prepared",
             "source": {
-                "job_id": args.source_job_id,
+                "job_id": source_identifier,
                 "scene_id": args.source_scene_id,
                 "revision": args.source_revision,
                 "frame_path": str(source_frame),
@@ -586,7 +648,7 @@ def main() -> int:
         "schema_version": ACCEPTANCE_SCHEMA_VERSION,
         "run_id": run_id,
         "state": "running",
-        "source_job_id": args.source_job_id,
+        "source_job_id": source_identifier,
         "source_scene_id": args.source_scene_id,
         "cases": {},
         "production_rollout": "explicit; human review required",

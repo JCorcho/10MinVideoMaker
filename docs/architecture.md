@@ -34,19 +34,20 @@ scenes in the same model family.
 
 The optional long-scene route is identified by feature flag `ltx_chunked_continuation_v1` and resolved strategy
 `ltx23_latent_overlap_v1`. The rollout setting `TENMIN_LTX_CONTINUATION_MODE` accepts `disabled`,
-`explicit`, or `auto`; `explicit` is the current default. In explicit mode, only a scene whose generation master is
+`explicit`, or `auto`; `explicit` is the portable fail-safe default. In explicit mode, only a scene whose generation master is
 longer than 121 frames and whose `i2v.continuation.enabled` value is true uses continuation. This remains the
-beta/manual opt-in route. Scenes at or below the threshold stay on the legacy path, and a previously completed
+manual opt-in route. Scenes at or below the threshold stay on the legacy path, and a previously completed
 legacy revision is never converted in place.
 
 `auto` does not merely change the routing predicate. Supervisor construction fails closed unless
-`<TENMIN_STORAGE_ROOT>\state\continuation-validation-v1.json` (default
-`D:\LTX_Supervisor_Storage\state\continuation-validation-v1.json`) has schema version 1, the current strategy,
+`<TENMIN_STORAGE_ROOT>\state\continuation-validation-v2.json` (default
+`D:\LTX_Supervisor_Storage\state\continuation-validation-v2.json`) has schema version 2, the current strategy,
 `approved` status, reviewer/timestamp, a hash covering the current continuation generation/routing/recovery
 implementation, and hashes covering every node contract used by the representative live continuation graphs. It
-must also record SHA-256/source/license evidence for the checkpoint, text encoder, spatial upscaler, DMD, and JoyAI
+must also record SHA-256/source/license evidence for the checkpoint, text encoder, spatial upscaler, deterministic
+RealESRGAN video upscaler, DMD, and JoyAI
 assets; completed `common_base`, `single_frame`, `decoded_17_frame`, and `latent_overlap` generations (including
-positive peak VRAM for latent overlap); and all six safety/quality/runtime decisions as accepted. Missing, stale,
+positive peak VRAM for latent overlap); and all seven safety/quality/runtime decisions as accepted. Missing, stale,
 malformed, or incomplete evidence blocks `auto` before work starts. The project does not read or modify shared
 model files to manufacture this evidence.
 
@@ -96,13 +97,19 @@ Its scoped input and `IS_CHANGED=NaN` prevent loader-result reuse while allowing
 runtime memory. The original base project client ID still owns every prompt, so resume and cancellation remain exact
 and never affect another ComfyUI client.
 
-The full-resolution second pass uses the existing tiled x2 spatial upscaler and second LCM schedule. The initial
-121-frame window selects 16 temporal latent tokens. A later 121-frame visible window selects 17 tokens: a nonzero
+The second LCM pass uses the existing tiled x2 spatial upscaler to generate synchronized audio, but its
+diffusion-repainted video is not a production artifact. The style-stable stage-one handoff is checkpointed as the
+video source, tiled-decoded at 384×672, and enlarged to 768×1344 with `RealESRGAN_x2.pth`. This deterministic
+pixel upscale was selected because repeated stage-two diffusion experiments changed character identity and style
+even when sigma or reference conditioning was reduced.
+
+The initial 121-frame window selects 16 temporal latent tokens. A later 121-frame visible window selects 17 tokens:
+a nonzero
 LTX temporal token cannot safely become the special first token after slicing, so the extra token acts as an
-eight-frame causal preroll. The prior raw window's 25 provisional final-resolution visible frames are loaded after
-its own preroll/commit offset and passed to core `LTXVAddGuide` at frame eight with strength 1.0. Frame eight skips
-the sacrificial causal-token preroll and aligns the guide with the first visible frame retained by assembly. This is the
-second-pass seam guide; it is not a regenerated T2I frame or a single decoded last frame. The raw continuation
+eight-frame causal preroll. The prior raw window's 25 provisional final-resolution visible frames are loaded at
+frame 96 and passed to core `LTXVAddGuide` at frame eight with strength 1.0 for the sampled AV/audio pass. Frame
+eight skips the sacrificial causal-token preroll and aligns the sampler with the first visible frame retained by
+assembly. It is not a regenerated T2I frame or a single decoded last frame. The raw continuation
 window is therefore 129 frames for a full later chunk, and assembly discards its first eight frames. Short final
 chunks retain the same accounting with a shorter visible window.
 
@@ -110,9 +117,11 @@ Every `LTXVAddGuide` output runs through `LTXVCropGuides` before `LTXVConcatAVLa
 `LTXVAddGuide` appends guide tokens for conditioning; sampling those appended tokens produces a temporal-grid shape
 mismatch on this local LTX build. The crop node returns matched positive/negative conditioning and the sampled latent.
 
-Assembly uses a one-overlap delayed-commit policy. Every non-final refined window contributes the frames before the
-following window begins—normally 96—and the final window contributes its entire overlap-plus-new range. This makes
-the later fused window own the overlap exactly once. The generation master is then trimmed to the exact presentation
+Assembly uses independently aligned video and audio slices. The initial non-final window contributes video/audio
+`0:104`. Each later non-final window contributes style-stable video `8:104` and sampled audio `16:112`. A final
+later window contributes video `8:model_window_frames` and the same number of audio frames beginning at 16.
+These offsets discard the direct decode's eight sacrificial video frames and compensate for the second-pass audio
+timeline being eight frames earlier. The generation master is then trimmed to the exact presentation
 timeline; a 30-second request therefore uses eight model invocations, assembles 721 unique generation frames, and
 emits exactly 720 frames.
 
@@ -158,8 +167,9 @@ as text to preserve all unsigned 64-bit values. A selected attempt's `COMPLETE.j
 upstream artifact hash for its successor. Selecting or invalidating a different upstream attempt marks descendants
 stale/invalidated, so a superficially similar downstream MP4 can never bypass latent lineage.
 
-Video latent checkpoints accept only `[1, 128, frames, height, width]` floating-point samples. The second pass also
-persists its non-empty batch-one LTX audio latent. Both allow only the narrow supported auxiliary fields.
+Video latent checkpoints accept only `[1, 128, frames, height, width]` floating-point samples. The durable
+`stage2_video` artifact intentionally contains the style-stable stage-one handoff; the second pass supplies only
+the non-empty batch-one LTX audio latent. Both allow only the narrow supported auxiliary fields.
 Safetensors data is moved to CPU, flushed, atomically renamed, then described by a schema-versioned JSON manifest
 containing identity, byte size, tensor descriptors, and SHA-256. The per-attempt `COMPLETE.json` is written last and
 records the plan, upstream hash, prompts, seed, expected raw and committed frame counts, all three checkpoint hashes,
@@ -167,8 +177,8 @@ raw-window hash, and workflow results. File existence alone never means that an 
 
 On restart the renderer verifies selected manifests, hashes, exact expected video temporal-token counts, latent
 descriptors, lossless raw-window geometry/codec/pixel format, frame count, audio presence, and lineage. A valid
-stage-one checkpoint resumes at stage two without repeating the first pass. Valid completed stage-two video and
-audio checkpoints can recreate a missing FFV1/yuv444p `window.mkv` through decode/mux only, without another
+stage-one checkpoint resumes at the audio/upscale phase without repeating the first pass. Valid completed video and
+audio checkpoints can recreate a missing FFV1/yuv444p `window.mkv` through decode/RealESRGAN/mux only, without another
 diffusion pass. A valid window is reused directly. If an accepted artifact fails verification, that chunk and every
 descendant are invalidated and recovery starts at the earliest bad dependency. The narrow crash window after
 writing `COMPLETE.json` but before selecting the attempt is also reconciled. A valid scene `video.mp4` plus assembly
@@ -241,7 +251,7 @@ URL was supplied for them.
 Continuation windows are never H.264-encoded individually and stream-copied together. Each worker result is a
 lossless FFV1/yuv444p `window.mkv`. FFprobe first requires that codec/pixel format, 768×1344, exact 24/1 CFR, the
 planned decoded-frame count, and an audio stream for every accepted raw window. FFmpeg then trims exact frame
-ranges, removes each later window's eight-frame causal preroll, resets timestamps, applies 100 ms quarter-sine
+ranges using the independently aligned video/audio ownership above, resets timestamps, applies 100 ms quarter-sine
 audio edge fades without overlapping samples or changing segment duration, and performs the route's one lossy scene
 encode. That encode is H.264 High profile, yuv420p, CRF 19 with the slow preset, closed GOP 48, and stereo
 48 kHz/192 kbps AAC. The temporary result must pass exact decoded-frame, codec, pixel-format, and audio-profile
@@ -357,9 +367,11 @@ GUI workflow export inserts ComfyUI's separate `fixed` seed-control widget after
 That widget is not part of the API input contract, but it is required in `widgets_values`; omitting it shifts every
 later canvas field and can display CFG as the step count.
 
-The x2 spatial upscaler uses a 384×672 first-pass latent and emits the fixed 768×1344 production clip. Every axis is
-divisible by 32 (`384=12×32`, `672=21×32`, `768=24×32`, `1344=42×32`), so `EmptyLTXVLatentVideo` does not quantize
-either side. The decoded video connects directly to `VHS_VideoCombine`; no final crop or resize exists in the route.
+The legacy single-window x2 spatial upscaler uses a 384×672 first-pass latent and emits the fixed 768×1344
+production clip. Every axis is divisible by 32 (`384=12×32`, `672=21×32`, `768=24×32`, `1344=42×32`), so
+`EmptyLTXVLatentVideo` does not quantize either side. Its decoded video connects directly to `VHS_VideoCombine`.
+Continuation instead applies deterministic RealESRGAN x2 to its 384×672 style-stable decode; neither route adds a
+final crop or resize after reaching 768×1344.
 
 Assembly profile failures are caught explicitly. The supervisor transitions the saved job to `error`, preserves
 completed clips, and stops requesting replacement jobs instead of repeating the same failing stitch every polling
@@ -387,7 +399,9 @@ These checks prove graph/schema consistency and deterministic accounting only. T
 runs common-base, single-frame, decoded-17-frame-guide, and latent-overlap cases without touching the supervisor
 database state, captures ComfyUI peak-VRAM/runtime telemetry plus FFmpeg/Pillow/OpenCV seam evidence, and ends in
 human review. It cannot enable `auto` or create the approval manifest. Until GPU evidence and human visual review
-exist, continuation has no production-quality claim and `explicit` remains the default.
+exist, `auto` remains locked. Safe bounded run `continuation-acceptance-safe-production-20260731` supplied the
+completed GPU, visual seam, identity/style, anatomy, A/V profile, runtime, and peak-VRAM evidence used by the
+schema-version-2 local approval.
 
 The diagnostic guide is frames 96–112, not the final 17 frames: live LTX testing shows that its initial refined
 latent accepts this 20-token span but rejects the later 104–120 range. This does not change the normal later-window

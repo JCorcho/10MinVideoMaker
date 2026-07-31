@@ -6,21 +6,26 @@ import re
 from pathlib import Path
 from typing import Any, Mapping
 
-from .constants import I2V_SPATIAL_UPSCALER, MANDATORY_I2V_LORAS
+from .constants import (
+    CONTINUATION_VIDEO_UPSCALER,
+    I2V_SPATIAL_UPSCALER,
+    MANDATORY_I2V_LORAS,
+)
 from .continuation import CONTINUATION_STRATEGY
 from .storage import StorageLayout
 from .workflow_builder import LTX_CHECKPOINT, LTX_TEXT_ENCODER
 
 
-VALIDATION_SCHEMA_VERSION = 1
-VALIDATION_FILENAME = "continuation-validation-v1.json"
+VALIDATION_SCHEMA_VERSION = 2
+VALIDATION_FILENAME = "continuation-validation-v2.json"
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _REQUIRED_DECISIONS = (
     "no_oom",
     "lcm_guider_validated",
-    "lower_flow_discontinuity_than_single_frame",
-    "anatomy_not_worse_than_25_frame",
-    "second_pass_seam_not_worse",
+    "production_seam_motion_continuous",
+    "style_identity_preserved",
+    "anatomy_stable",
+    "audio_video_profile_validated",
     "runtime_acceptable",
 )
 _REQUIRED_GENERATIONS = (
@@ -33,6 +38,7 @@ _REQUIRED_EXTERNAL_ASSETS = (
     LTX_CHECKPOINT,
     LTX_TEXT_ENCODER,
     I2V_SPATIAL_UPSCALER,
+    CONTINUATION_VIDEO_UPSCALER,
     *(filename for filename, _weight in MANDATORY_I2V_LORAS),
 )
 

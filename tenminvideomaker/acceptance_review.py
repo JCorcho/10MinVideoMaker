@@ -67,21 +67,22 @@ _CASE_DETAILS: dict[str, dict[str, Any]] = {
     },
     "latent_overlap": {
         "title": "Latent 25-frame overlap",
-        "summary": "Chunk 2 receives the final 25-frame latent overlap from the base window.",
-        "boundary": {"left": [119, 120], "right": [24, 25]},
+        "summary": (
+            "Chunk 2 continues the fused latent overlap; eight causal decode "
+            "frames are discarded before the production seam."
+        ),
+        "boundary": {"left": [102, 103], "right": [8, 9]},
         "assembly": {
-            "base_end_frame": 120,
-            "continuation_start_frame": 25,
-            "dropped_continuation_frames": [0, 24],
-            "summary": "Base 0–120, then continuation 25 onward.",
+            "base_end_frame": 103,
+            "continuation_start_frame": 8,
+            "dropped_continuation_frames": [0, 7],
+            "summary": "Base 0–103, then continuation 8 onward.",
         },
         "stills": (
-            ("base_0096.png", "Base overlap start 96", "base"),
-            ("base_0119.png", "Base penultimate frame 119", "base"),
-            ("base_0120.png", "Base final frame 120", "base"),
-            ("case_0000.png", "Continuation overlap start 0", "continuation"),
-            ("case_0024.png", "Continuation overlap final 24", "continuation"),
-            ("case_0025.png", "First new continuation frame 25", "continuation"),
+            ("base_0102.png", "Base frame 102", "base"),
+            ("base_0103.png", "Base production seam frame 103", "base"),
+            ("case_0008.png", "Continuation production seam frame 8", "continuation"),
+            ("case_0009.png", "Continuation frame 9", "continuation"),
         ),
     },
 }

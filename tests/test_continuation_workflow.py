@@ -270,17 +270,43 @@ class ContinuationWorkflowTests(unittest.TestCase):
             ],
             "stage2_audio",
         )
-        combine = build.workflow.api[build.workflow.output_node_id]["inputs"]
-        self.assertFalse(combine["save_output"])
-        self.assertEqual(combine["images"][0], next(
+        handoff_id = next(
             node_id
             for node_id, node in build.workflow.api.items()
-            if node["class_type"] == "LTXVSpatioTemporalTiledVAEDecode"
-        ))
+            if node["class_type"] == "10MinVideoMaker_LoadChunkLatent"
+        )
+        video_saver = build.workflow.api[build.video_checkpoint_node_id]["inputs"]
+        self.assertEqual(
+            video_saver["latent"],
+            [handoff_id, 0],
+            "The durable video checkpoint must preserve the style-stable stage-one latent.",
+        )
+        split_id = next(
+            node_id
+            for node_id, node in build.workflow.api.items()
+            if node["class_type"] == "LTXVSeparateAVLatent"
+        )
+        audio_saver = build.workflow.api[build.audio_checkpoint_node_id]["inputs"]
+        self.assertEqual(audio_saver["latent"], [split_id, 1])
+
+        combine = build.workflow.api[build.workflow.output_node_id]["inputs"]
+        self.assertFalse(combine["save_output"])
+        image_upscaler_id = next(
+            node_id
+            for node_id, node in build.workflow.api.items()
+            if node["class_type"] == "ImageUpscaleWithModel"
+        )
+        self.assertEqual(combine["images"], [image_upscaler_id, 0])
+        upscale_loader = nodes_of_type(build.workflow.api, "UpscaleModelLoader")
+        self.assertEqual(
+            [node["inputs"]["model_name"] for node in upscale_loader],
+            ["RealESRGAN_x2.pth"],
+        )
         decoder = nodes_of_type(
             build.workflow.api,
             "LTXVSpatioTemporalTiledVAEDecode",
-        )[0]["inputs"]
+        )[-1]["inputs"]
+        self.assertEqual(decoder["latents"], [build.video_checkpoint_node_id, 0])
         self.assertEqual(
             (
                 decoder["spatial_tiles"],
@@ -434,7 +460,19 @@ class ContinuationWorkflowTests(unittest.TestCase):
         self.assertFalse(nodes_of_type(build.api, "LTXVExtendSampler"))
         self.assertFalse(nodes_of_type(build.api, "CLIPTextEncode"))
         self.assertFalse(nodes_of_type(build.api, "LoraLoaderModelOnly"))
+        image_upscalers = nodes_of_type(build.api, "ImageUpscaleWithModel")
+        self.assertEqual(len(image_upscalers), 1)
+        self.assertEqual(
+            nodes_of_type(build.api, "UpscaleModelLoader")[0]["inputs"]["model_name"],
+            "RealESRGAN_x2.pth",
+        )
         combine = build.api[build.output_node_id]["inputs"]
+        image_upscaler_id = next(
+            node_id
+            for node_id, node in build.api.items()
+            if node["class_type"] == "ImageUpscaleWithModel"
+        )
+        self.assertEqual(combine["images"], [image_upscaler_id, 0])
         self.assertEqual(combine["format"], "video/ffv1-mkv")
         self.assertEqual(combine["pix_fmt"], "yuv444p")
         self.assertFalse(combine["save_output"])
@@ -478,8 +516,8 @@ class ContinuationWorkflowTests(unittest.TestCase):
         loader = nodes_of_type(build.workflow.api, "VHS_LoadVideoPath")[0]["inputs"]
         self.assertEqual(
             loader["skip_first_frames"],
-            104,
-            "later guides must include the prior raw chunk's eight-frame preroll",
+            96,
+            "every prior direct decode exposes its 25-frame overlap at frame 96",
         )
 
     def test_assembled_delivery_watermarks_only_the_discord_branch(self):

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .constants import (
+    CONTINUATION_VIDEO_UPSCALER,
     I2V_BASE_HEIGHT,
     I2V_BASE_WIDTH,
     I2V_FIRST_PASS_SIGMAS,
@@ -42,7 +43,7 @@ INITIAL_DIAGNOSTIC_GUIDE_FRAME_COUNT = 17
 
 @dataclass(frozen=True)
 class ContinuationStage2Build:
-    """A refined raw chunk plus its durable final-resolution latent outputs."""
+    """A style-stable raw chunk plus durable video and generated-audio latents."""
 
     workflow: WorkflowBuild
     video_checkpoint_node_id: str
@@ -334,7 +335,6 @@ def build_continuation_stage1_workflow(
         previous_attempt_number is None or previous_attempt_number < 1
     ):
         raise WorkflowBuildError("Continuation chunk requires its accepted upstream attempt.")
-
     first, _second, chunking, _upscaler = _pass_settings(overrides)
     graph = _continuation_graph(
         job=job,
@@ -528,7 +528,7 @@ def build_continuation_stage2_workflow(
     resolved_lora_filenames: Mapping[str, str] | None = None,
     overrides: SceneWorkflowOverrides | None = None,
 ) -> ContinuationStage2Build:
-    """Build one raw full-resolution AV refinement window without delivery."""
+    """Build one style-stable full-resolution AV window without delivery."""
     _validated_chunk(plan, chunk)
     frame_path = Path(cached_frame_path)
     if not frame_path.is_absolute():
@@ -561,7 +561,6 @@ def build_continuation_stage2_workflow(
         raise WorkflowBuildError(
             "initial_guide_skip_frames requires initial_guide_path."
         )
-
     _first, second, chunking, upscaler_settings = _pass_settings(overrides)
     graph = _continuation_graph(
         job=job,
@@ -706,19 +705,15 @@ def build_continuation_stage2_workflow(
         final_model = graph.output(sampling_model)
     else:
         previous_chunk = plan.chunks[chunk.index - 1]
-        previous_preroll = (
-            0
-            if previous_chunk.is_initial
-            else CAUSAL_REFINEMENT_PREROLL_FRAMES
-        )
         previous_commit_boundary = assembly_spans(plan)[
             previous_chunk.index
         ].input_end_frame_exclusive
         # Delayed commit leaves the prior window's final 25 visible samples
         # provisional. They are the exact global overlap owned by this later
-        # window. Account for the prior raw window's sacrificial causal
-        # preroll, then guide the current upscaled latent at visible frame eight.
-        guide_skip_frames = previous_preroll + previous_commit_boundary
+        # window. Direct handoff decode exposes that overlap at frame 96 for
+        # both initial and later raw chunks; later chunks' sacrificial frames
+        # occur before their clean frame-eight handoff, not before this overlap.
+        guide_skip_frames = previous_commit_boundary
         previous_video = graph.add(
             "VHS_LoadVideoPath",
             "Load prior 25-frame final-resolution overlap",
@@ -782,7 +777,7 @@ def build_continuation_stage2_workflow(
     )
     sampled = graph.add(
         "SamplerCustom",
-        "Refine one bounded AV continuation window",
+        "Sample bounded second-pass AV latent for synchronized audio",
         model=final_model,
         add_noise=True,
         noise_seed=chunk.seed,
@@ -800,8 +795,8 @@ def build_continuation_stage2_workflow(
     )
     saved_video = graph.add(
         "10MinVideoMaker_SaveChunkLatent",
-        "Checkpoint refined video latent",
-        latent=graph.output(split, 0),
+        "Checkpoint style-stable first-pass video latent",
+        latent=graph.output(handoff, 0),
         job_id=job.job_id,
         scene_id=scene.scene_id,
         revision=revision,
@@ -822,7 +817,7 @@ def build_continuation_stage2_workflow(
     )
     decoded_video = graph.add(
         "LTXVSpatioTemporalTiledVAEDecode",
-        "16 GB tiled decode of refined chunk",
+        "16 GB tiled decode of style-stable first-pass chunk",
         vae=graph.output(checkpoint, 2),
         latents=graph.output(saved_video, 0),
         spatial_tiles=4,
@@ -832,6 +827,17 @@ def build_continuation_stage2_workflow(
         last_frame_fix=False,
         working_device="auto",
         working_dtype="auto",
+    )
+    pixel_upscaler = graph.add(
+        "UpscaleModelLoader",
+        "Load deterministic continuation x2 upscaler",
+        model_name=CONTINUATION_VIDEO_UPSCALER,
+    )
+    upscaled_video = graph.add(
+        "ImageUpscaleWithModel",
+        "Upscale continuation without diffusion repainting",
+        upscale_model=graph.output(pixel_upscaler),
+        image=graph.output(decoded_video),
     )
     decoded_audio = graph.add(
         "LTXVAudioVAEDecode",
@@ -846,7 +852,7 @@ def build_continuation_stage2_workflow(
     combined = graph.add(
         "VHS_VideoCombine",
         "Save lossless raw unwatermarked continuation chunk",
-        images=graph.output(decoded_video),
+        images=graph.output(upscaled_video),
         audio=graph.output(decoded_audio),
         frame_rate=float(PRODUCTION_FPS),
         loop_count=0,
@@ -935,7 +941,7 @@ def build_continuation_decode_workflow(
     )
     decoded_video = graph.add(
         "LTXVSpatioTemporalTiledVAEDecode",
-        "Decode verified refined video checkpoint",
+        "Decode verified style-stable video checkpoint",
         vae=graph.output(checkpoint, 2),
         latents=graph.output(video_latent, 0),
         spatial_tiles=4,
@@ -945,6 +951,17 @@ def build_continuation_decode_workflow(
         last_frame_fix=False,
         working_device="auto",
         working_dtype="auto",
+    )
+    pixel_upscaler = graph.add(
+        "UpscaleModelLoader",
+        "Load deterministic continuation x2 upscaler",
+        model_name=CONTINUATION_VIDEO_UPSCALER,
+    )
+    upscaled_video = graph.add(
+        "ImageUpscaleWithModel",
+        "Recover continuation without diffusion repainting",
+        upscale_model=graph.output(pixel_upscaler),
+        image=graph.output(decoded_video),
     )
     decoded_audio = graph.add(
         "LTXVAudioVAEDecode",
@@ -960,7 +977,7 @@ def build_continuation_decode_workflow(
     combined = graph.add(
         "VHS_VideoCombine",
         "Recover lossless raw unwatermarked continuation chunk",
-        images=graph.output(decoded_video),
+        images=graph.output(upscaled_video),
         audio=graph.output(decoded_audio),
         frame_rate=float(PRODUCTION_FPS),
         loop_count=0,

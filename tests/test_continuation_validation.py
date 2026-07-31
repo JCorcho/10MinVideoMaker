@@ -5,7 +5,11 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from tenminvideomaker.constants import I2V_SPATIAL_UPSCALER, MANDATORY_I2V_LORAS
+from tenminvideomaker.constants import (
+    CONTINUATION_VIDEO_UPSCALER,
+    I2V_SPATIAL_UPSCALER,
+    MANDATORY_I2V_LORAS,
+)
 from tenminvideomaker.continuation import CONTINUATION_STRATEGY
 from tenminvideomaker.continuation_validation import (
     ContinuationRolloutError,
@@ -26,10 +30,11 @@ def approved_document() -> dict[str, object]:
         LTX_CHECKPOINT,
         LTX_TEXT_ENCODER,
         I2V_SPATIAL_UPSCALER,
+        CONTINUATION_VIDEO_UPSCALER,
         *(filename for filename, _weight in MANDATORY_I2V_LORAS),
     )
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "strategy": CONTINUATION_STRATEGY,
         "status": "approved",
         "implementation_sha256": IMPLEMENTATION_HASH,
@@ -56,9 +61,10 @@ def approved_document() -> dict[str, object]:
         "decision": {
             "no_oom": True,
             "lcm_guider_validated": True,
-            "lower_flow_discontinuity_than_single_frame": True,
-            "anatomy_not_worse_than_25_frame": True,
-            "second_pass_seam_not_worse": True,
+            "production_seam_motion_continuous": True,
+            "style_identity_preserved": True,
+            "anatomy_stable": True,
+            "audio_video_profile_validated": True,
             "runtime_acceptable": True,
         },
     }
@@ -85,10 +91,23 @@ class ContinuationValidationTests(unittest.TestCase):
 
     def test_missing_bounded_decision_fails_closed(self) -> None:
         document = approved_document()
-        document["decision"]["anatomy_not_worse_than_25_frame"] = False
+        document["decision"]["style_identity_preserved"] = False
         with self.assertRaisesRegex(
             ContinuationRolloutError,
-            "anatomy_not_worse",
+            "style_identity_preserved",
+        ):
+            validate_auto_rollout_manifest(
+                document,
+                implementation_sha256=IMPLEMENTATION_HASH,
+                node_contracts_sha256=CONTRACT_HASH,
+            )
+
+    def test_missing_style_stable_upscaler_hash_fails_closed(self) -> None:
+        document = approved_document()
+        del document["external_assets"][CONTINUATION_VIDEO_UPSCALER]
+        with self.assertRaisesRegex(
+            ContinuationRolloutError,
+            "missing external asset RealESRGAN_x2.pth",
         ):
             validate_auto_rollout_manifest(
                 document,
@@ -124,6 +143,14 @@ class ContinuationValidationTests(unittest.TestCase):
                     implementation_sha256=IMPLEMENTATION_HASH,
                     node_contracts_sha256=CONTRACT_HASH,
                 )
+
+    def test_validation_manifest_uses_current_schema_filename(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            storage = StorageLayout(Path(temporary))
+            self.assertEqual(
+                validation_manifest_path(storage).name,
+                "continuation-validation-v2.json",
+            )
 
 
 if __name__ == "__main__":

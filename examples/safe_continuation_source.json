@@ -1,0 +1,91 @@
+{
+  "job_id": "safe-continuation-source",
+  "schema_version": "2",
+  "created_at": "2026-07-31T00:00:00Z",
+  "subreddits": [],
+  "selection_rationale": "Non-explicit internal continuation calibration fixture.",
+  "core_concept": "A clearly adult traveler walks continuously through a stylized hotel corridor.",
+  "character": {
+    "name": "Adult Traveler",
+    "series": "Original Calibration Character",
+    "lora": {
+      "name": "Disabled Calibration Anima LoRA",
+      "base": "Anima",
+      "download_url": "https://example.invalid/disabled-calibration-anima.safetensors",
+      "recommended_weight": 0.0
+    }
+  },
+  "ltxv_character_lora": null,
+  "total_estimated_sec": 9,
+  "scenes": [
+    {
+      "id": 1,
+      "title": "Safe lateral travel walk",
+      "estimated_sec": 9,
+      "position": "walking",
+      "inspiration": {
+        "civitai_url": "https://example.invalid/safe-calibration",
+        "original_seed": 472901357,
+        "original_prompt_excerpt": "fully clothed adult traveler walking with a suitcase",
+        "act_loras_from_source": []
+      },
+      "t2i": {
+        "prompt": "masterpiece, best quality, highres, stylized 3D cel-shaded animation, crisp clean linework, polished video-game cutscene aesthetic, clearly adult 32-year-old woman, fully clothed, teal tailored travel coat buttoned to the collar, black trousers, flat black boots, short silver hair, calm mature face, carrying a red handled suitcase in her right hand, full body, upscale hotel corridor, blue and gold directional lighting, sharp detailed eyes, stable anatomy, safe for work",
+        "negative": "nsfw, nude, nudity, lingerie, cleavage, exposed chest, exposed underwear, child, teenager, young-looking, school uniform, photorealistic, live action, blurry, soft focus, deformed hands, extra fingers, missing fingers, fused limbs, text, watermark, logo",
+        "seed": 472901357,
+        "loras": []
+      },
+      "i2v": {
+        "prompt": "A polished stylized 3D cel-shaded video-game cutscene shows the same clearly adult 32-year-old woman, fully clothed in the same buttoned teal travel coat, black trousers, and flat boots, carrying the same red handled suitcase in her right hand while walking steadily toward screen right through the same blue-and-gold hotel corridor. The camera tracks laterally at a slow constant speed. Crisp linework, sharp facial detail, stable anatomy, consistent non-photorealistic game-render style.",
+        "negative": "nsfw, nudity, exposed body, child, teenager, young-looking, photorealistic, live action, style change, identity change, wardrobe change, motion restart, pose reset, scene cut, camera reversal, blurry face, smeared eyes, deformed hands, extra limbs, missing limbs, frozen motion, duplicate frame, ghosting, text, watermark, logo",
+        "seed": 472901357,
+        "loras": [],
+        "continuation": {
+          "enabled": true,
+          "strategy": "ltx23_latent_overlap_v1",
+          "fps": 24,
+          "base_window_transition_frames": 120,
+          "overlap_transition_frames": 24,
+          "seed_policy": "derived_v1"
+        },
+        "continuity": {
+          "identity_anchors": [
+            "The same clearly adult 32-year-old woman keeps the same mature face and short silver hair."
+          ],
+          "wardrobe_anchors": [
+            "Her buttoned teal travel coat, black trousers, flat black boots, and red handled suitcase remain unchanged."
+          ],
+          "environment_anchors": [
+            "The same upscale hotel corridor and blue-and-gold directional lighting remain stable.",
+            "The visual style remains a polished stylized 3D cel-shaded video-game cutscene with crisp linework, never photorealistic or live action."
+          ],
+          "camera_axis": "The camera preserves the lateral action axis and slow constant tracking speed.",
+          "screen_direction": "The traveler continues moving toward screen right."
+        },
+        "segments": [
+          {
+            "index": 0,
+            "requested_duration_seconds": 5.0,
+            "positive_prompt": "The adult traveler walks steadily toward screen right with natural steps while her right hand maintains contact with the suitcase handle and the camera tracks laterally.",
+            "negative_prompt_additions": [
+              "motion restart",
+              "scene cut"
+            ],
+            "variation_index": 0
+          },
+          {
+            "index": 1,
+            "requested_duration_seconds": 4.0,
+            "positive_prompt": "Continuing the same uninterrupted movement, the traveler keeps walking toward screen right, gently turns her torso toward the camera without stopping, and keeps her right hand on the suitcase while the lateral tracking continues.",
+            "negative_prompt_additions": [
+              "motion restart",
+              "pose reset",
+              "scene cut"
+            ],
+            "variation_index": 0
+          }
+        ]
+      }
+    }
+  ]
+}

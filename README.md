@@ -44,13 +44,13 @@ mixed), then every successful remake, including video-only edits, runs through o
 Long LTX scenes can use the versioned `ltx23_latent_overlap_v1` continuation route. Its nominal model
 window is 121 frames: the initial window contributes 120 transitions, and each full continuation adds 96 new
 transitions while regenerating a 24-frame overlap. The route keeps each diffusion invocation and persisted latent
-tail bounded instead of retaining the full scene latent. Later second passes use core `LTXVAddGuide` with the prior
-window's 25-frame final-resolution visible overlap at frame eight, after the sacrificial causal preroll, then
-`LTXVCropGuides` before AV concatenation and sampling; the latent
-loader also verifies the exact expected
-  temporal-token count before reuse. Each refined window atomically checkpoints both its video and audio latent;
-  if encoding is interrupted after diffusion, restart runs only a checkpoint decode/mux graph. For example, an
-  exact 30-second timeline uses eight model windows, builds a
+tail bounded instead of retaining the full scene latent. The style-stable first-pass handoff is the production
+video source of truth: it is tiled-decoded at 384×672 and deterministically enlarged with
+`RealESRGAN_x2.pth` to 768×1344. The second LCM/spatial pass still runs to generate synchronized audio, but its
+diffusion-repainted video is deliberately not saved because bounded GPU comparisons showed that repaint could
+change identity and visual style. Each completed window atomically checkpoints the first-pass video handoff and
+the sampled second-pass audio; if muxing is interrupted, restart runs only the checkpoint decode/upscale/mux graph.
+For example, an exact 30-second timeline uses eight model windows, builds a
 721-frame `8n + 1` generation master, and trims the revision-facing scene clip to exactly 720 frames at 24 fps.
 
 Later first-pass `LTXVExtendSampler` windows receive the planned transition count plus one endpoint pixel frame.
@@ -62,20 +62,24 @@ fresh LTX checkpoint wrapper before dynamic LoRAs and chunk feed-forward. This d
 after mutable LTX work while ComfyUI may retain model weights in runtime memory. Prompt ownership, cancellation, and
 restart recovery remain on the exact base project client ID.
 
-Continuation remains a beta/manual opt-in. `TENMIN_LTX_CONTINUATION_MODE=explicit` is the default: only a scene
+`TENMIN_LTX_CONTINUATION_MODE=explicit` is the portable fail-safe default: only a scene
 longer than 121 generation frames whose `i2v.continuation.enabled` value is true uses the route. `disabled` forces
 the legacy single-generation route. `auto` fails closed at supervisor construction unless
-`<TENMIN_STORAGE_ROOT>\state\continuation-validation-v1.json` (default
-`D:\LTX_Supervisor_Storage\state\continuation-validation-v1.json`) is approved and bound to a hash covering the
+`<TENMIN_STORAGE_ROOT>\state\continuation-validation-v2.json` (default
+`D:\LTX_Supervisor_Storage\state\continuation-validation-v2.json`) is approved and bound to a hash covering the
 current continuation generation, routing, and recovery implementation plus hashes covering every node contract
 used by the representative live continuation graphs. It must record the required external-asset hashes, contain
 all four bounded-generation results, and accept every rollout decision. Scenes at or below 121 frames remain
 single-window in every mode. Existing completed legacy clips are never invalidated merely because the feature
 exists.
 
-The continuation unit suite and live no-render contract validator do not establish visual quality, seam quality,
-runtime, or 16 GB VRAM acceptance. The required GPU runs and human visual comparisons have not yet been performed,
-so this repository makes no production-quality claim for continuation and must remain in `explicit` mode.
+The safe, fully clothed acceptance run `continuation-acceptance-safe-production-20260731` completed all four
+bounded methods at 768×1344/24 fps without OOM. Direct visual review found the production latent handoff preserved
+the same adult character, cel-shaded style, clothing, prop, environment, anatomy, and forward motion across the
+seam. Its exact production cut uses base frames 0–103 followed by continuation frame 8 onward; measured seam RGB
+MAE was 12.332 and latent-overlap stage-two peak VRAM was 15,860,302,852 bytes. The assembled two-window proof
+validated as 216 frames with H.264/yuv420p video and stereo 48 kHz AAC. This installation may therefore use `auto`
+when its hash-bound schema-version-2 manifest is present.
 
 Continuation worker graphs contain no watermark or Discord sender. Their raw windows and the exact assembled
 revision `video.mp4` stay unwatermarked for remakes, project assembly, and later upscaling. Each raw window is first

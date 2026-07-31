@@ -30,6 +30,17 @@ class ContinuationAcceptanceError(ValueError):
     """Raised when a supplied production source cannot form the bounded matrix."""
 
 
+def _preserved_anchors(value: object, addition: str) -> list[str]:
+    anchors = (
+        [item.strip() for item in value if isinstance(item, str) and item.strip()]
+        if isinstance(value, (list, tuple))
+        else []
+    )
+    if addition not in anchors:
+        anchors.append(addition)
+    return anchors
+
+
 @dataclass(frozen=True)
 class AcceptancePlans:
     """Shared base plus comparable continuation-window inputs."""
@@ -77,10 +88,21 @@ def build_acceptance_job(
     raw["total_estimated_sec"] = ACCEPTANCE_DURATION_SECONDS
     selected["estimated_sec"] = ACCEPTANCE_DURATION_SECONDS
     i2v["prompt"] = _FIRST_BEAT
+    source_continuity = i2v.get("continuity")
+    preserved = source_continuity if isinstance(source_continuity, Mapping) else {}
     i2v["continuity"] = {
-        "identity_anchors": ["The same clearly adult person remains consistent."],
-        "wardrobe_anchors": ["The same fully clothed wardrobe remains unchanged."],
-        "environment_anchors": ["The interior and directional lighting remain stable."],
+        "identity_anchors": _preserved_anchors(
+            preserved.get("identity_anchors"),
+            "The same clearly adult person remains consistent.",
+        ),
+        "wardrobe_anchors": _preserved_anchors(
+            preserved.get("wardrobe_anchors"),
+            "The same fully clothed wardrobe remains unchanged.",
+        ),
+        "environment_anchors": _preserved_anchors(
+            preserved.get("environment_anchors"),
+            "The interior and directional lighting remain stable.",
+        ),
         "camera_axis": "Preserve the lateral tracking axis.",
         "screen_direction": "Movement continues toward screen right.",
     }

@@ -18,6 +18,7 @@ from .chunk_artifacts import (
 from .chunk_assembly import SceneChunkAssembler, SceneChunkAssemblyError
 from .comfy_http import ComfyHttpClient, ComfyHttpError, find_video_output
 from .constants import (
+    CONTINUATION_VIDEO_UPSCALER,
     I2V_BASE_HEIGHT,
     I2V_BASE_WIDTH,
     I2V_FIRST_PASS_SIGMAS,
@@ -71,6 +72,7 @@ CONTINUATION_CONTRACT_NODE_TYPES = (
     "DiscordSendSaveVideo",
     "EmptyLTXVLatentVideo",
     "ImageScale",
+    "ImageUpscaleWithModel",
     "KSamplerSelect",
     "LTXAVTextEncoderLoader",
     "LTXReferenceConditioning",
@@ -96,6 +98,7 @@ CONTINUATION_CONTRACT_NODE_TYPES = (
     "RandomNoise",
     "STGGuiderAdvanced",
     "SamplerCustom",
+    "UpscaleModelLoader",
     "VHS_LoadImagePath",
     "VHS_LoadVideoPath",
     "VHS_VideoCombine",
@@ -260,9 +263,10 @@ def _write_immutable_json(path: Path, value: Mapping[str, Any]) -> None:
 class ContinuationRenderer:
     """Render, checkpoint, validate, and assemble one scene revision.
 
-    One chunk attempt owns both the bounded low-resolution handoff and
-    its bounded full-resolution AV refinement. A chunk is accepted only after
-    its checkpoints, lossless raw MKV, and final COMPLETE.json have all been verified.
+    One chunk attempt owns the bounded low-resolution handoff, deterministic
+    non-diffusing x2 video upscale, and second-pass generated audio. A chunk is
+    accepted only after its checkpoints, lossless raw MKV, and final
+    COMPLETE.json have all been verified.
     """
 
     def __init__(
@@ -1540,6 +1544,9 @@ class ContinuationRenderer:
                 "checkpoint_filename": LTX_CHECKPOINT,
                 "text_encoder_filename": LTX_TEXT_ENCODER,
                 "spatial_upscaler_filename": I2V_SPATIAL_UPSCALER,
+                "continuation_video_upscaler_filename": (
+                    CONTINUATION_VIDEO_UPSCALER
+                ),
                 "mandatory_loras": [
                     {"filename": filename, "weight": weight}
                     for filename, weight in MANDATORY_I2V_LORAS

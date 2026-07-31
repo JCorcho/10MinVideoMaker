@@ -75,12 +75,10 @@ class AcceptanceReviewServiceTests(unittest.TestCase):
                 "case_0017.png",
             ],
             "latent_overlap": [
-                "base_0096.png",
-                "base_0119.png",
-                "base_0120.png",
-                "case_0000.png",
-                "case_0024.png",
-                "case_0025.png",
+                "base_0102.png",
+                "base_0103.png",
+                "case_0008.png",
+                "case_0009.png",
             ],
         }
         for case_name, filenames in stills.items():
@@ -104,7 +102,7 @@ class AcceptanceReviewServiceTests(unittest.TestCase):
         )
         self.assertEqual(
             document["cases"]["latent_overlap"]["boundary"],
-            {"left": [119, 120], "right": [24, 25]},
+            {"left": [102, 103], "right": [8, 9]},
         )
         self.assertIn("/api/acceptance-runs/", document["base"]["video_url"])
         self.assertNotIn(str(self.storage.root), json.dumps(document))
@@ -166,10 +164,10 @@ class AcceptanceReviewServiceTests(unittest.TestCase):
         self.assertEqual(
             document["cases"]["latent_overlap"]["assembly"],
             {
-                "base_end_frame": 120,
-                "continuation_start_frame": 25,
-                "dropped_continuation_frames": [0, 24],
-                "summary": "Base 0–120, then continuation 25 onward.",
+                "base_end_frame": 103,
+                "continuation_start_frame": 8,
+                "dropped_continuation_frames": [0, 7],
+                "summary": "Base 0–103, then continuation 8 onward.",
             },
         )
 

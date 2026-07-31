@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from tenminvideomaker.chunk_assembly import SceneChunkAssemblyError
 from tenminvideomaker.comfy_http import ComfyHttpError
+from tenminvideomaker.constants import CONTINUATION_VIDEO_UPSCALER
 from tenminvideomaker.continuation_renderer import (
     CONTINUATION_CACHE_IMPLEMENTATION_PATHS,
     CONTINUATION_CONTRACT_NODE_TYPES,
@@ -315,6 +316,10 @@ class ContinuationRendererTests(unittest.TestCase):
             list(CONTINUATION_IMPLEMENTATION_PATHS),
         )
 
+    def test_runtime_contract_identity_covers_style_stable_pixel_upscaling(self) -> None:
+        self.assertIn("UpscaleModelLoader", CONTINUATION_CONTRACT_NODE_TYPES)
+        self.assertIn("ImageUpscaleWithModel", CONTINUATION_CONTRACT_NODE_TYPES)
+
     def test_cache_identity_covers_only_generation_affecting_code(self) -> None:
         self.assertIn(
             "tenminvideomaker/continuation_workflow.py",
@@ -347,6 +352,35 @@ class ContinuationRendererTests(unittest.TestCase):
         frame.parent.mkdir(parents=True, exist_ok=True)
         frame.write_bytes(b"frame")
         return job, scene, storage, store, frame
+
+    def test_attempt_parameters_record_deterministic_video_upscaler(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            job, scene, _storage, _store, frame = self._fixture(Path(directory))
+            renderer = ContinuationRenderer(
+                store=_store,
+                storage=_storage,
+                comfy=_FakeComfy(set()),
+                assembler=_FakeChunkAssembler(),
+                timeout_seconds=10,
+                max_attempts=2,
+            )
+            plan = renderer._build_plan(job, scene, 1, None)
+
+            parameters = renderer._attempt_parameters(
+                job,
+                scene,
+                frame,
+                plan,
+                0,
+                {},
+                None,
+                "f" * 64,
+            )
+
+            self.assertEqual(
+                parameters["runtime_identity"]["continuation_video_upscaler_filename"],
+                CONTINUATION_VIDEO_UPSCALER,
+            )
 
     def test_renders_three_chunks_then_reuses_verified_lineage_and_scene(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

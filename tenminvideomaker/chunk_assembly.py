@@ -23,7 +23,6 @@ from .constants import PRODUCTION_FPS, PRODUCTION_HEIGHT, PRODUCTION_WIDTH
 from .continuation import (
     CAUSAL_REFINEMENT_PREROLL_FRAMES,
     SceneFramePlan,
-    assembly_spans,
     refinement_raw_frame_count,
 )
 
@@ -34,11 +33,13 @@ class SceneChunkAssemblyError(RuntimeError):
 
 @dataclass(frozen=True)
 class ChunkSlice:
-    """One raw input's visible frame range after causal-preroll accounting."""
+    """One raw input's independently aligned video and audio ranges."""
 
     chunk_index: int
     start_frame: int
     end_frame_exclusive: int
+    audio_start_frame: int
+    audio_end_frame_exclusive: int
 
     @property
     def frame_count(self) -> int:
@@ -64,24 +65,49 @@ class MediaProbe:
 
 
 def chunk_slices(plan: SceneFramePlan) -> tuple[ChunkSlice, ...]:
-    """Map delayed-commit ranges onto the raw stage-two chunk frame indexes."""
+    """Map the causal handoff timeline onto style-stable raw chunk indexes.
+
+    A later bounded handoff decodes eight sacrificial causal frames before its
+    first clean frame.  That clean frame is global ``window_start + 8``.  The
+    preceding chunk therefore owns eight more frames than the old sampled
+    refinement route, while the final chunk owns eight fewer.  Stage-two audio
+    is conditioned eight frames earlier than the direct video decode, so its
+    trim advances by a second eight-frame offset on later chunks.
+    """
     slices: list[ChunkSlice] = []
-    for span in assembly_spans(plan):
-        chunk = plan.chunks[span.chunk_index]
-        preroll = 0 if chunk.is_initial else CAUSAL_REFINEMENT_PREROLL_FRAMES
-        start = preroll + span.input_start_frame
-        end = preroll + span.input_end_frame_exclusive
+    for position, chunk in enumerate(plan.chunks):
+        start = 0 if chunk.is_initial else CAUSAL_REFINEMENT_PREROLL_FRAMES
+        if position + 1 < len(plan.chunks):
+            next_chunk = plan.chunks[position + 1]
+            end = (
+                next_chunk.global_window_start_frame
+                - chunk.global_window_start_frame
+                + CAUSAL_REFINEMENT_PREROLL_FRAMES
+            )
+        else:
+            end = chunk.model_window_frames
         raw_frames = refinement_raw_frame_count(chunk)
         if not 0 <= start < end <= raw_frames:
             raise SceneChunkAssemblyError(
                 f"Chunk {chunk.index} visible range {start}:{end} exceeds "
                 f"its {raw_frames}-frame raw refinement."
             )
+        audio_start = start + (
+            0 if chunk.is_initial else CAUSAL_REFINEMENT_PREROLL_FRAMES
+        )
+        audio_end = audio_start + (end - start)
+        if audio_end > raw_frames:
+            raise SceneChunkAssemblyError(
+                f"Chunk {chunk.index} audio range {audio_start}:{audio_end} "
+                f"exceeds its {raw_frames}-frame raw refinement."
+            )
         slices.append(
             ChunkSlice(
                 chunk_index=chunk.index,
                 start_frame=start,
                 end_frame_exclusive=end,
+                audio_start_frame=audio_start,
+                audio_end_frame_exclusive=audio_end,
             )
         )
     if sum(item.frame_count for item in slices) != plan.generation_master_frames:
@@ -445,8 +471,8 @@ class SceneChunkAssembler:
         last_index = len(slices) - 1
         for index, visible in enumerate(slices):
             duration = visible.frame_count / PRODUCTION_FPS
-            audio_start = visible.start_frame / PRODUCTION_FPS
-            audio_end = visible.end_frame_exclusive / PRODUCTION_FPS
+            audio_start = visible.audio_start_frame / PRODUCTION_FPS
+            audio_end = visible.audio_end_frame_exclusive / PRODUCTION_FPS
             filters.append(
                 f"[{index}:v]trim=start_frame={visible.start_frame}:"
                 f"end_frame={visible.end_frame_exclusive},"

@@ -41,6 +41,43 @@ class ContinuationAcceptanceTests(unittest.TestCase):
         self.assertEqual(plans.diagnostic.prompt, plans.latent_overlap.prompt)
         self.assertEqual(plans.diagnostic.negative, plans.latent_overlap.negative)
 
+    def test_safe_acceptance_preserves_source_continuity_and_style_anchors(self) -> None:
+        raw = payload()
+        raw["scenes"][0]["i2v"]["continuity"] = {
+            "identity_anchors": ["same silver-haired adult traveler"],
+            "wardrobe_anchors": ["same buttoned teal coat"],
+            "environment_anchors": [
+                "same blue-and-gold corridor",
+                "cel-shaded game-render style, never photorealistic",
+            ],
+            "camera_axis": "source camera axis",
+            "screen_direction": "source screen direction",
+        }
+
+        job = build_acceptance_job(
+            raw,
+            source_scene_id=1,
+            acceptance_job_id="continuation-acceptance-style-test",
+        )
+        continuity = job.scenes[0].i2v.continuity
+
+        self.assertIsNotNone(continuity)
+        assert continuity is not None
+        self.assertIn(
+            "same silver-haired adult traveler",
+            continuity["identity_anchors"],
+        )
+        self.assertIn("same buttoned teal coat", continuity["wardrobe_anchors"])
+        self.assertIn(
+            "cel-shaded game-render style, never photorealistic",
+            continuity["environment_anchors"],
+        )
+        self.assertEqual(continuity["camera_axis"], "Preserve the lateral tracking axis.")
+        self.assertEqual(
+            continuity["screen_direction"],
+            "Movement continues toward screen right.",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -109,11 +109,10 @@ needed), followed by every batch item's I2V render, including **Video Only** rem
 
 Long scenes may use `ltx23_latent_overlap_v1` instead of one oversized LTX invocation. The initial
 window contains at most 121 frames. Every full continuation regenerates a 24-frame overlap and adds 96 new
-transitions. Later full-resolution passes use core `LTXVAddGuide` with the prior window's 25-frame visible overlap
-at frame eight, immediately after the sacrificial causal-token preroll. Its outputs are cropped with
-`LTXVCropGuides` before AV sampling. This bounds the active model window and
-checkpoint tail; it does not yet prove acceptable seams,
-anatomy, runtime, or peak VRAM on this machine.
+transitions. The first-pass handoff is the visual source of truth because it preserves style and identity. It is
+tiled-decoded at 384×672 and enlarged with deterministic `RealESRGAN_x2.pth` to 768×1344. The existing second
+LCM/spatial pass still executes to create synchronized audio; its sampled video is not used. This avoids the
+identity/style repaint observed when the second diffusion pass supplied the final pictures.
 
 Internally, each later first-pass continuation gives LTX one endpoint frame in addition to its planned new
 transitions: 96 transitions are submitted as 97 pixel frames. This preserves `8n+1` temporal geometry without
@@ -136,18 +135,18 @@ The five-second row is the continuation planner's boundary reference. Normal rol
 scene on the legacy single-window route, so it does not rewrite an already valid short-scene duration policy.
 
 The console and GUI may report progress such as **Chunk 3 of 8**, followed by the safe phase: first pass,
-full-resolution refinement, validation, or assembly. Chunks run sequentially inside the existing LTX phase; the
+second-pass audio/upscale, validation, or assembly. Chunks run sequentially inside the existing LTX phase; the
 supervisor does not release and reload the LTX model between them.
 
 For LTX reliability, each internal chunk phase receives a fresh LTX checkpoint wrapper before its LoRAs and sampler
 run. This needs no new GUI control, keeps normal model residency available, and preserves the same resume and
 **Cancel project** behavior after a restart.
 
-Continuation is a beta/manual opt-in during its initial rollout. The optional launcher setting
+The optional launcher setting
 **LTX temporal continuation**
 maps to `TENMIN_LTX_CONTINUATION_MODE`:
 
-- `explicit` (current default): only a long scene with `i2v.continuation.enabled=true` uses continuation.
+- `explicit` (portable fail-safe default): only a long scene with `i2v.continuation.enabled=true` uses continuation.
 - `disabled`: all scenes use the legacy single-generation route.
 - `auto`: requests continuation for every new scene over 121 generation frames unless its payload explicitly
   disables it, but startup fails closed unless the D-drive approval described below matches the current runtime.
@@ -155,25 +154,31 @@ maps to `TENMIN_LTX_CONTINUATION_MODE`:
 Scenes at or below 121 frames use the legacy route in every mode. Existing successful legacy revisions remain valid
 and are not silently converted.
 
-`auto` requires `<TENMIN_STORAGE_ROOT>\state\continuation-validation-v1.json` (default
-`D:\LTX_Supervisor_Storage\state\continuation-validation-v1.json`). The file must be approved by a named reviewer,
+`auto` requires `<TENMIN_STORAGE_ROOT>\state\continuation-validation-v2.json` (default
+`D:\LTX_Supervisor_Storage\state\continuation-validation-v2.json`). The file must be approved by a named reviewer,
 match a hash covering the current continuation generation/routing/recovery implementation plus hashes covering
 every node contract used by the representative live continuation graphs, record the approved hashes, sources, and
-licenses for the checkpoint/text encoder/spatial upscaler/DMD/JoyAI assets, and contain completed results for
+licenses for the checkpoint/text encoder/spatial upscaler/RealESRGAN/DMD/JoyAI assets, and contain completed results for
 `common_base`, `single_frame`, `decoded_17_frame`, and `latent_overlap`. It must include positive latent-overlap
-peak VRAM and accept all no-OOM, LCM-guider, flow discontinuity, anatomy, second-pass seam, and runtime decisions.
+peak VRAM and accept the no-OOM, LCM-guider, production-seam motion, style/identity, anatomy, A/V profile, and
+runtime decisions.
 Missing or stale evidence prevents the supervisor from starting in `auto`. The normal launcher still opens the
 read-only **Continuation review** page at `http://127.0.0.1:8765/acceptance-review.html`, so the required review
 evidence remains available. In that fallback it does not start ComfyUI, Gmail polling, or any render work.
 
-The four GPU generations completed mechanically for acceptance run
-`continuation-acceptance-20260731-065935`. Human review approved no method:
+The earlier GPU run `continuation-acceptance-20260731-065935` remains a rejected diagnostic: its sampled
+second-pass video changed style or lost detail. That evidence led to the production repair rather than being
+discarded. The safe acceptance run `continuation-acceptance-safe-production-20260731` then completed all four
+bounded methods at 768×1344/24 fps without OOM. Direct visual review approved the style-stable latent handoff:
+the same adult character, cel-shaded style, teal wardrobe, red suitcase, environment, anatomy, and walking motion
+continue across the exact production seam. Its seam is base frame 103 to continuation frame 8, with RGB MAE
+12.332; latent-overlap stage-two peak VRAM was 15,860,302,852 bytes. The exact two-window assembly validated as
+216 frames with H.264/yuv420p and stereo 48 kHz AAC.
+
+For historical comparison, the rejected first run showed that
 `single_frame` retained style but introduced unacceptable blur/detail loss,
 `decoded_17_frame` changed the scene to photoreal live action, and
-`latent_overlap` changed it to semi-realistic 3D with robotic motion. Unit tests
-and live no-render schema validation are not substitutes. Keep `explicit`
-selected and opt in only scenes you are prepared to inspect; there is currently
-no production-quality or 16 GB VRAM acceptance claim.
+the old sampled `latent_overlap` changed it to semi-realistic 3D with robotic motion.
 
 ### Continuation acceptance review
 
@@ -186,14 +191,15 @@ frames as alternatives to pick.
 Use **Show exact seam** to pause both videos at the labeled boundary, then inspect the sequence of stills beneath
 them. The screen states exactly which frames are being compared: base 119/120 against continuation 0/1 for the
 single-frame case; base 111/112 against continuation 16/17 for the decoded guide; and base 119/120 against
-continuation 24/25 for the latent overlap. Review identity, anatomy and hand/object contact, camera direction and
+continuation 24/25 for legacy schema runs. Current schema-version-4 latent runs show the production cut at base
+102/103 against continuation 8/9. Review identity, anatomy and hand/object contact, camera direction and
 velocity, freeze/jump/reverse motion, ghosting, and whether the first new continuation frame appears to be the next
 moment rather than a new shot.
 
 Below the side-by-side comparison, **True assembled result** plays the actual
 cut that would be retained: base 0–120 plus continuation 1 onward for
 single-frame; base 0–112 plus continuation 17 onward for decoded-guide; and base
-0–120 plus continuation 25 onward for latent-overlap. This removes the
+0–103 plus continuation 8 onward for current latent-overlap runs. This removes the
 conditioning/overlap frames so the seam can be judged in one uninterrupted
 video. Selecting another method updates all three videos and the assembly label.
 
@@ -214,15 +220,17 @@ There is intentionally no “remake only this chunk” control. A later chunk de
 artifact hash of its predecessor, so changing an earlier attempt invalidates every descendant. Older attempts remain
 in history for audit but are not mixed into a new dependency chain.
 
-Each accepted chunk has hash-verified first-pass video plus second-pass video/audio latent checkpoints, its raw
+Each accepted chunk has a hash-verified first-pass handoff, a style-stable video checkpoint copied from that
+handoff, and a sampled second-pass audio checkpoint, plus its raw
 unwatermarked lossless FFV1/yuv444p `window.mkv`, and a `COMPLETE.json` written last. Video checkpoint loads verify
 the exact planned temporal-token count; audio and video loads both verify identity, hash, descriptors, dtype, and
-bounded shape. On restart, a valid first-pass checkpoint resumes at refinement without rerunning the first pass.
-If both completed second-pass latent checkpoints exist but the raw window does not, a decode/mux-only graph rebuilds
+bounded shape. On restart, a valid first-pass checkpoint resumes at the audio/upscale phase without rerunning the
+first pass.
+If both completed video/audio checkpoints exist but the raw window does not, a decode/upscale/mux-only graph rebuilds
 the window without diffusion. A valid raw window is reused directly. Missing, corrupt, wrong-profile,
 wrong-token-count, or lineage-mismatched artifacts cause recovery to restart from the earliest invalid chunk.
-Assembly trims the lossless windows and performs one H.264 scene encode; a verified assembled scene and its assembly
-manifest are reused without another encode.
+Assembly trims independently aligned video/audio ranges from the lossless windows and performs one H.264 scene
+encode; a verified assembled scene and its assembly manifest are reused without another encode.
 
 Each stage prompt ID and workflow hash are stored before waiting. After supervisor or controlled ComfyUI restart,
 the worker reclaims completed history or waits for the same still-queued project prompt instead of duplicating GPU
@@ -497,8 +505,8 @@ can download LoRAs and begin generation. Use the no-render checks below instead.
 - A transient failed stage retries up to `TENMIN_MAX_STAGE_ATTEMPTS`.
 - A continuation revision validates its immutable plan, selected attempt lineage, latent manifests and hashes,
   expected temporal-token counts, lossless FFV1/yuv444p raw-window profile, and exact frame counts before reuse.
-- A valid stage-one continuation checkpoint resumes at stage two. Valid stage-two video/audio checkpoints rebuild
-  a missing `window.mkv` through decode/mux only; a valid window is reused. Corrupt or mismatched artifacts
+- A valid stage-one continuation checkpoint resumes at the sampled-audio/upscale phase. Valid video/audio
+  checkpoints rebuild a missing `window.mkv` through decode/RealESRGAN/mux only; a valid window is reused. Corrupt or mismatched artifacts
   invalidate that chunk and its descendants, then recovery starts at the earliest invalid dependency.
 - `COMPLETE.json` is written last for both chunk attempts and scene assembly; an MP4 by itself is never treated as
   proof of success.
