@@ -157,9 +157,30 @@ licenses for the checkpoint/text encoder/spatial upscaler/DMD/JoyAI assets, and 
 peak VRAM and accept all no-OOM, LCM-guider, flow discontinuity, anatomy, second-pass seam, and runtime decisions.
 Missing or stale evidence prevents the supervisor from starting in `auto`.
 
-Those four GPU generations and human visual decisions have **not** been run yet. Unit tests and live no-render
+The four GPU generations completed mechanically for acceptance run
+`continuation-acceptance-20260731-065935`; human visual decisions remain pending. Unit tests and live no-render
 schema validation are not substitutes. Keep `explicit` selected and opt in only scenes you are prepared to inspect;
 there is currently no production-quality or 16 GB VRAM acceptance claim.
+
+### Continuation acceptance review
+
+For a completed acceptance matrix, open the normal GUI and choose **Continuation review**. The review page lists
+available acceptance runs and presents the shared base window beside one selected continuation method:
+**Single final frame**, **Decoded 17-frame guide**, or **Latent 25-frame overlap**. It never presents individual
+frames as alternatives to pick.
+
+Use **Show exact seam** to pause both videos at the labeled boundary, then inspect the sequence of stills beneath
+them. The screen states exactly which frames are being compared: base 119/120 against continuation 0/1 for the
+single-frame case; base 111/112 against continuation 16/17 for the decoded guide; and base 119/120 against
+continuation 24/25 for the latent overlap. Review identity, anatomy and hand/object contact, camera direction and
+velocity, freeze/jump/reverse motion, ghosting, and whether the first new continuation frame appears to be the next
+moment rather than a new shot.
+
+The first video request creates a review-only, unwatermarked H.264/AAC MP4 proxy under
+`D:\LTX_Supervisor_Storage\acceptance\<run-id>\review\`. Original FFV1/FLAC windows under
+`D:\LTX_Supervisor_Storage\jobs\<run-id>` are read as the proxy source but never changed, watermarked, or deleted.
+This review page only reads acceptance artifacts: it cannot queue ComfyUI, control the supervisor, change job state,
+or approve automatic continuation rollout.
 
 Both remake choices remain scene-level:
 

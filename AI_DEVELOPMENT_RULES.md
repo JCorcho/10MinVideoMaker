@@ -1251,3 +1251,27 @@
   - `python scripts\validate_continuation_workflows.py`
   - `python scripts\run_continuation_acceptance.py --source-job-id 20260730-0217 --source-scene-id 1 --dry-run`
   - `git diff --check`
+
+### 2026-07-31 — continuation acceptance review UI
+
+- Changed files: `tenminvideomaker/acceptance_review.py`, `tenminvideomaker/gui_app.py`,
+  `web/acceptance-review.html`, `web/acceptance-review.js`, `web/acceptance-review.css`, normal-GUI review link,
+  focused review/GUI tests, and `docs/user-guide.md`.
+- Decision: acceptance review is a read-only FastAPI surface. It accepts only a completed
+  `continuation-acceptance-YYYYMMDD-HHMMSS` run document in `awaiting_human_review`; every raw source and still
+  must resolve under project-owned D-drive storage. Browser sees semantic case names, exact boundary labels, and
+  API URLs only, never raw filesystem paths or raw JSON.
+- Media routing: review proxies are unwatermarked H.264/AAC MP4 files below the run's
+  `acceptance/<run-id>/review/` directory. FFmpeg writes a same-directory temporary file, checks it is non-empty,
+  then atomically replaces the proxy. Existing non-empty proxies are reused. Raw FFV1/FLAC windows remain untouched.
+  Proxy failure returns HTTP 503; invalid/missing artifacts return 404. LAN Basic authentication applies globally.
+- Review semantics: `common_base` is reference only. `single_frame` compares base 119/120 with case 0/1;
+  `decoded_17_frame` compares base 111/112 with case 16/17; `latent_overlap` compares base 119/120 with case
+  24/25. The mobile page stacks media while desktop keeps side-by-side native HTML5 videos.
+- Verification commands:
+  - `python -m unittest discover -s tests -p "test_acceptance_review.py" -v`
+  - embedded Python `test_gui_app.py` suite (FastAPI supplied by ComfyUI environment)
+  - `python -m unittest discover -s tests -v`
+  - `python -m compileall -q tenminvideomaker scripts tests`
+  - `python scripts\validate_continuation_workflows.py`
+  - `git diff --check`
