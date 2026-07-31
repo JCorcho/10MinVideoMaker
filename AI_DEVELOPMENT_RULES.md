@@ -1275,3 +1275,25 @@
   - `python -m compileall -q tenminvideomaker scripts tests`
   - `python scripts\validate_continuation_workflows.py`
   - `git diff --check`
+
+### 2026-07-31 — locked-auto continuation review fallback
+
+- Changed files: `scripts/run_gui.py`, `tenminvideomaker/gui_app.py`, `tests/test_gui_app.py`,
+  `docs/user-guide.md`, and this file.
+- Root cause: `TENMIN_LTX_CONTINUATION_MODE=auto` correctly raises `ContinuationRolloutError` before the normal
+  launcher creates its FastAPI application. This made the evidence-review route unreachable at the precise point
+  it was needed to complete human acceptance.
+- Decision: retain the fail-closed supervisor gate, but serve a separate review-only FastAPI application on the
+  normal GUI port. It has only acceptance-review routes and static assets; it does not construct a controller,
+  start Gmail polling, start ComfyUI, submit prompts, modify job state, or approve rollout. LAN Basic authentication
+  applies unchanged. The regular GUI still starts only after `auto` approval succeeds.
+- Reproduction: set continuation mode to `auto` with a missing or stale
+  `D:\LTX_Supervisor_Storage\state\continuation-validation-v1.json`, then run the normal launcher. It must serve
+  `GET /api/acceptance-runs` with HTTP 200 and redirect `/` to `/acceptance-review.html`, while `/api/status`
+  returns HTTP 404.
+- Verification commands:
+  - embedded Python focused `GuiAppTests.test_review_only_gui_serves_acceptance_page_without_supervisor`
+  - embedded Python focused `GuiAppTests.test_launcher_uses_review_only_application_when_auto_rollout_is_locked`
+  - embedded Python `test_gui_app.py` suite
+  - `python -m compileall -q tenminvideomaker scripts tests`
+  - `git diff --check`

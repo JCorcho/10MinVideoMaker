@@ -13,7 +13,7 @@ import secrets
 from typing import Any, Mapping
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from .acceptance_review import (
@@ -192,6 +192,86 @@ def _materialize_original_revisions(
                 )
 
 
+def _configure_lan_auth(app: FastAPI, lan_password: str | None) -> None:
+    if not lan_password:
+        return
+
+    @app.middleware("http")
+    async def require_lan_password(request: Request, call_next: Any) -> Response:
+        if not _lan_request_authorized(request, lan_password):
+            return Response(
+                status_code=401,
+                headers={"WWW-Authenticate": 'Basic realm="10MinVideoMaker LAN"'},
+            )
+        return await call_next(request)
+
+
+def _register_acceptance_review_routes(
+    app: FastAPI,
+    acceptance_review: AcceptanceReviewService,
+) -> None:
+    @app.get("/api/acceptance-runs")
+    def acceptance_runs() -> list[dict[str, object]]:
+        return acceptance_review.list_runs()
+
+    @app.get("/api/acceptance-runs/{run_id}")
+    def acceptance_run(run_id: str) -> dict[str, object]:
+        try:
+            return acceptance_review.review_document(run_id)
+        except AcceptanceReviewError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+
+    @app.get("/api/acceptance-runs/{run_id}/media/{role}")
+    def acceptance_media(run_id: str, role: str) -> FileResponse:
+        try:
+            path = acceptance_review.review_proxy_path(run_id, role)
+        except AcceptanceReviewProxyError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        except AcceptanceReviewError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        return FileResponse(path, media_type="video/mp4", filename=path.name)
+
+    @app.get("/api/acceptance-runs/{run_id}/stills/{case_name}/{asset_name}")
+    def acceptance_still(
+        run_id: str,
+        case_name: str,
+        asset_name: str,
+    ) -> FileResponse:
+        try:
+            path = acceptance_review.still_path(run_id, case_name, asset_name)
+        except AcceptanceReviewError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        return FileResponse(path, media_type="image/png", filename=path.name)
+
+
+def create_acceptance_review_app(
+    storage: StorageLayout,
+    project_root: str | Path,
+    *,
+    lan_password: str | None = None,
+) -> FastAPI:
+    """Serve bounded continuation review without starting pipeline control."""
+    project_root = Path(project_root)
+    app = FastAPI(
+        title="10MinVideoMaker Continuation Review",
+        docs_url=None,
+        redoc_url=None,
+    )
+    _configure_lan_auth(app, lan_password)
+    _register_acceptance_review_routes(app, AcceptanceReviewService(storage))
+
+    @app.get("/", include_in_schema=False)
+    def review_root() -> RedirectResponse:
+        return RedirectResponse("/acceptance-review.html")
+
+    app.mount(
+        "/",
+        StaticFiles(directory=project_root / "web", html=True),
+        name="acceptance-review-web",
+    )
+    return app
+
+
 def create_gui_app(
     controller: SupervisorController,
     storage: StorageLayout,
@@ -209,15 +289,7 @@ def create_gui_app(
     )
     acceptance_review = AcceptanceReviewService(storage)
 
-    if lan_password:
-        @app.middleware("http")
-        async def require_lan_password(request: Request, call_next: Any) -> Response:
-            if not _lan_request_authorized(request, lan_password):
-                return Response(
-                    status_code=401,
-                    headers={"WWW-Authenticate": 'Basic realm="10MinVideoMaker LAN"'},
-                )
-            return await call_next(request)
+    _configure_lan_auth(app, lan_password)
 
     @app.get("/api/status")
     async def status() -> dict[str, Any]:
@@ -455,39 +527,6 @@ def create_gui_app(
             ),
         }
 
-    @app.get("/api/acceptance-runs")
-    def acceptance_runs() -> list[dict[str, object]]:
-        return acceptance_review.list_runs()
-
-    @app.get("/api/acceptance-runs/{run_id}")
-    def acceptance_run(run_id: str) -> dict[str, object]:
-        try:
-            return acceptance_review.review_document(run_id)
-        except AcceptanceReviewError as error:
-            raise HTTPException(status_code=404, detail=str(error)) from error
-
-    @app.get("/api/acceptance-runs/{run_id}/media/{role}")
-    def acceptance_media(run_id: str, role: str) -> FileResponse:
-        try:
-            path = acceptance_review.review_proxy_path(run_id, role)
-        except AcceptanceReviewProxyError as error:
-            raise HTTPException(status_code=503, detail=str(error)) from error
-        except AcceptanceReviewError as error:
-            raise HTTPException(status_code=404, detail=str(error)) from error
-        return FileResponse(path, media_type="video/mp4", filename=path.name)
-
-    @app.get("/api/acceptance-runs/{run_id}/stills/{case_name}/{asset_name}")
-    def acceptance_still(
-        run_id: str,
-        case_name: str,
-        asset_name: str,
-    ) -> FileResponse:
-        try:
-            path = acceptance_review.still_path(run_id, case_name, asset_name)
-        except AcceptanceReviewError as error:
-            raise HTTPException(status_code=404, detail=str(error)) from error
-        return FileResponse(path, media_type="image/png", filename=path.name)
-
     @app.get("/api/media/{job_id}/{scene_id}/{revision}/{kind}")
     async def scene_media(
         job_id: str,
@@ -532,5 +571,6 @@ def create_gui_app(
 
         return StreamingResponse(stream(), media_type="text/event-stream")
 
+    _register_acceptance_review_routes(app, acceptance_review)
     app.mount("/", StaticFiles(directory=web_root, html=True), name="web")
     return app

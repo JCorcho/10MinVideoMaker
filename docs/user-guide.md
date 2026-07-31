@@ -155,7 +155,9 @@ every node contract used by the representative live continuation graphs, record 
 licenses for the checkpoint/text encoder/spatial upscaler/DMD/JoyAI assets, and contain completed results for
 `common_base`, `single_frame`, `decoded_17_frame`, and `latent_overlap`. It must include positive latent-overlap
 peak VRAM and accept all no-OOM, LCM-guider, flow discontinuity, anatomy, second-pass seam, and runtime decisions.
-Missing or stale evidence prevents the supervisor from starting in `auto`.
+Missing or stale evidence prevents the supervisor from starting in `auto`. The normal launcher still opens the
+read-only **Continuation review** page at `http://127.0.0.1:8765/acceptance-review.html`, so the required review
+evidence remains available. In that fallback it does not start ComfyUI, Gmail polling, or any render work.
 
 The four GPU generations completed mechanically for acceptance run
 `continuation-acceptance-20260731-065935`; human visual decisions remain pending. Unit tests and live no-render
@@ -164,7 +166,8 @@ there is currently no production-quality or 16 GB VRAM acceptance claim.
 
 ### Continuation acceptance review
 
-For a completed acceptance matrix, open the normal GUI and choose **Continuation review**. The review page lists
+For a completed acceptance matrix, open the normal GUI and choose **Continuation review**. If `auto` is locked,
+the normal launcher opens this same review-only page directly. The review page lists
 available acceptance runs and presents the shared base window beside one selected continuation method:
 **Single final frame**, **Decoded 17-frame guide**, or **Latent 25-frame overlap**. It never presents individual
 frames as alternatives to pick.

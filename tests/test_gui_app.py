@@ -162,6 +162,72 @@ class GuiStaticAssetTests(unittest.TestCase):
 
 @unittest.skipUnless(TestClient is not None, "FastAPI is supplied by the embedded Python")
 class GuiAppTests(unittest.TestCase):
+    def test_review_only_gui_serves_acceptance_page_without_supervisor(self) -> None:
+        from tenminvideomaker.gui_app import create_acceptance_review_app
+
+        run_id = "continuation-acceptance-20260731-065935"
+        with tempfile.TemporaryDirectory() as directory:
+            storage = StorageLayout(Path(directory) / "storage")
+            storage.ensure()
+            run_root = storage.root / "acceptance" / run_id
+            run_root.mkdir(parents=True)
+            (run_root / "run.json").write_text(
+                json.dumps(
+                    {
+                        "run_id": run_id,
+                        "state": "awaiting_human_review",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            client = TestClient(
+                create_acceptance_review_app(storage, Path(__file__).parents[1])
+            )
+            root = client.get("/", follow_redirects=False)
+
+            self.assertEqual(root.status_code, 307)
+            self.assertEqual(root.headers["location"], "/acceptance-review.html")
+            self.assertEqual(
+                client.get("/api/acceptance-runs").json(),
+                [{"run_id": run_id, "source_job_id": None, "source_scene_id": None}],
+            )
+            self.assertEqual(client.get("/api/status").status_code, 404)
+
+    def test_launcher_uses_review_only_application_when_auto_rollout_is_locked(self) -> None:
+        from scripts.run_gui import _build_gui_application
+        from tenminvideomaker.continuation_validation import ContinuationRolloutError
+
+        storage = Mock()
+        review_only_app = object()
+        with (
+            patch(
+                "scripts.run_gui.build_supervisor",
+                side_effect=ContinuationRolloutError("approval required"),
+            ),
+            patch(
+                "scripts.run_gui.create_acceptance_review_app",
+                return_value=review_only_app,
+            ) as create_review_app,
+            patch("scripts.run_gui.create_gui_app") as create_gui,
+        ):
+            app, controller, auto_lock_error = _build_gui_application(
+                storage,
+                Path(__file__).parents[1],
+                lan_password=None,
+                require_human_review=False,
+            )
+
+        self.assertIs(app, review_only_app)
+        self.assertIsNone(controller)
+        self.assertEqual(auto_lock_error, "approval required")
+        create_review_app.assert_called_once_with(
+            storage,
+            Path(__file__).parents[1],
+            lan_password=None,
+        )
+        create_gui.assert_not_called()
+
     def test_gui_review_hold_flag_is_opt_in(self) -> None:
         from scripts.run_gui import _gui_binding, argument_parser
 

@@ -19,7 +19,8 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from tenminvideomaker.comfy_http import ComfyHttpClient, ComfyHttpError
 from tenminvideomaker.configuration import load_project_environment
-from tenminvideomaker.gui_app import create_gui_app
+from tenminvideomaker.continuation_validation import ContinuationRolloutError
+from tenminvideomaker.gui_app import create_acceptance_review_app, create_gui_app
 from tenminvideomaker.gui_service import SupervisorController
 from tenminvideomaker.ownership import (
     OwnershipError,
@@ -188,6 +189,37 @@ def _take_over_idle_legacy_supervisor(process_ids: tuple[int, ...]) -> None:
     raise OwnershipError("The idle legacy supervisor did not stop within ten seconds.")
 
 
+def _build_gui_application(
+    storage: StorageLayout,
+    project_root: Path,
+    *,
+    lan_password: str | None,
+    require_human_review: bool,
+) -> tuple[object, SupervisorController | None, str | None]:
+    """Keep auto rollout fail-closed while letting its review evidence stay reachable."""
+    try:
+        supervisor = build_supervisor(
+            allow_restart=True,
+            require_human_review=require_human_review,
+        )
+    except ContinuationRolloutError as error:
+        return (
+            create_acceptance_review_app(
+                storage,
+                project_root,
+                lan_password=lan_password,
+            ),
+            None,
+            str(error),
+        )
+    controller = SupervisorController(supervisor, storage)
+    return (
+        create_gui_app(controller, storage, project_root, lan_password=lan_password),
+        controller,
+        None,
+    )
+
+
 def argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default=None)
@@ -229,15 +261,6 @@ def main(argv: list[str] | None = None) -> int:
     )
     environment = load_project_environment(PROJECT_ROOT)
     host, lan_password = _gui_binding(args, environment)
-    ensure_comfyui(environment)
-    other_processes = legacy_supervisor_process_ids()
-    if other_processes:
-        if args.no_take_over:
-            raise OwnershipError(
-                "The legacy supervisor is still running. Close it before opening the GUI."
-            )
-        _take_over_idle_legacy_supervisor(other_processes)
-
     storage = StorageLayout.configured()
     with SupervisorInstanceLock(storage.instance_lock_path):
         migration = migrate_legacy_storage(PROJECT_ROOT, layout=storage)
@@ -246,30 +269,49 @@ def main(argv: list[str] | None = None) -> int:
             storage.root,
             not migration["already_migrated"],
         )
-        _ensure_current_node_contract(ComfyHttpClient())
-        supervisor = build_supervisor(
-            allow_restart=True,
+        app, controller, auto_lock_error = _build_gui_application(
+            storage,
+            PROJECT_ROOT,
+            lan_password=lan_password,
             require_human_review=args.hold_new_jobs_for_review,
         )
-        LOGGER.info(
-            "New Gmail jobs will %s.",
-            "wait for manual review" if args.hold_new_jobs_for_review else "start automatically",
-        )
-        controller = SupervisorController(supervisor, storage)
-        app = create_gui_app(controller, storage, PROJECT_ROOT, lan_password=lan_password)
-        controller.start()
+        browser_path = "/"
+        if auto_lock_error:
+            browser_path = "/acceptance-review.html"
+            LOGGER.warning(
+                "Automatic continuation remains locked: %s Review-only GUI started; "
+                "the supervisor, Gmail polling, and ComfyUI work remain stopped.",
+                auto_lock_error,
+            )
+        else:
+            ensure_comfyui(environment)
+            other_processes = legacy_supervisor_process_ids()
+            if other_processes:
+                if args.no_take_over:
+                    raise OwnershipError(
+                        "The legacy supervisor is still running. Close it before opening the GUI."
+                    )
+                _take_over_idle_legacy_supervisor(other_processes)
+            _ensure_current_node_contract(ComfyHttpClient())
+            LOGGER.info(
+                "New Gmail jobs will %s.",
+                "wait for manual review" if args.hold_new_jobs_for_review else "start automatically",
+            )
+            controller.start()
         if lan_password:
             addresses = _private_ipv4_addresses()
-            address_text = ", ".join(f"http://{address}:{args.port}/" for address in addresses)
+            address_text = ", ".join(
+                f"http://{address}:{args.port}{browser_path}" for address in addresses
+            )
             LOGGER.warning(
                 "LAN GUI active. Sign in as %s with the configured LAN password. Phone URL: %s",
                 LAN_USERNAME,
-                address_text or f"http://<this-PC-LAN-IP>:{args.port}/",
+                address_text or f"http://<this-PC-LAN-IP>:{args.port}{browser_path}",
             )
         if not args.no_browser:
             threading.Timer(
                 1.0,
-                lambda: webbrowser.open(f"http://127.0.0.1:{args.port}/"),
+                lambda: webbrowser.open(f"http://127.0.0.1:{args.port}{browser_path}"),
             ).start()
         try:
             import uvicorn
@@ -282,7 +324,8 @@ def main(argv: list[str] | None = None) -> int:
                 access_log=False,
             )
         finally:
-            controller.stop()
+            if controller is not None:
+                controller.stop()
     return 0
 
 
