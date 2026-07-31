@@ -47,7 +47,7 @@ def approved_document() -> dict[str, object]:
         "generations": {
             "common_base": {"completed": True},
             "single_frame": {"completed": True},
-            "decoded_25_frame": {"completed": True},
+            "decoded_17_frame": {"completed": True},
             "latent_overlap": {
                 "completed": True,
                 "peak_vram_bytes": 15_000_000_000,

@@ -144,7 +144,7 @@ and are not silently converted.
 match a hash covering the current continuation generation/routing/recovery implementation plus hashes covering
 every node contract used by the representative live continuation graphs, record the approved hashes, sources, and
 licenses for the checkpoint/text encoder/spatial upscaler/DMD/JoyAI assets, and contain completed results for
-`common_base`, `single_frame`, `decoded_25_frame`, and `latent_overlap`. It must include positive latent-overlap
+`common_base`, `single_frame`, `decoded_17_frame`, and `latent_overlap`. It must include positive latent-overlap
 peak VRAM and accept all no-OOM, LCM-guider, flow discontinuity, anatomy, second-pass seam, and runtime decisions.
 Missing or stale evidence prevents the supervisor from starting in `auto`.
 
@@ -492,7 +492,7 @@ python scripts\run_supervisor.py --help
 git diff --check
 ```
 
-The continuation validator builds representative initial/later/final two-pass graphs, the decoded-25-frame guide
+The continuation validator builds representative initial/later/final two-pass graphs, the decoded-17-frame guide
 diagnostic, checkpoint-only decode, and
 delivery, then reads only the running ComfyUI `/object_info` contracts. It never queues a prompt. The export command
 is also no-render validation; it does not load models, download assets, or generate media.

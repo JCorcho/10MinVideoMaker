@@ -33,10 +33,13 @@ from tenminvideomaker.continuation_workflow import (
 from tenminvideomaker.storage import StorageLayout, write_json_atomic
 from tenminvideomaker.workflow_builder import validate_against_object_info
 
-ACCEPTANCE_SCHEMA_VERSION = 1
-GUIDE_FRAME_COUNT = 25
+ACCEPTANCE_SCHEMA_VERSION = 2
+DIAGNOSTIC_GUIDE_FRAME_COUNT = 17
+LATER_VISIBLE_OVERLAP_FRAME_COUNT = 25
 BASE_FINAL_FRAME_INDEX = 120
-BASE_GUIDE_START_FRAME_INDEX = BASE_FINAL_FRAME_INDEX - GUIDE_FRAME_COUNT + 1
+BASE_DIAGNOSTIC_GUIDE_START_FRAME_INDEX = (
+    BASE_FINAL_FRAME_INDEX - DIAGNOSTIC_GUIDE_FRAME_COUNT + 1
+)
 RAW_SUFFIXES = (".mkv",)
 
 
@@ -317,7 +320,7 @@ def _case_metrics(
     base_video: Path,
     case_name: str,
     case_video: Path,
-    overlap: bool,
+    guide_frame_count: int | None,
 ) -> Mapping[str, Any]:
     metrics_root = run_root / "metrics" / case_name
     base_previous = _extract_frame(base_video, 119, metrics_root / "base_0119.png")
@@ -341,14 +344,30 @@ def _case_metrics(
             "visible_motion_restart": "pending human review",
         },
     }
-    if overlap:
+    if guide_frame_count is not None:
+        if (
+            isinstance(guide_frame_count, bool)
+            or not isinstance(guide_frame_count, int)
+            or guide_frame_count < 1
+            or guide_frame_count > BASE_FINAL_FRAME_INDEX + 1
+        ):
+            raise AcceptanceRunError("guide_frame_count is outside the base window.")
+        guide_start_frame_index = BASE_FINAL_FRAME_INDEX - guide_frame_count + 1
         guide_start = _extract_frame(
             base_video,
-            BASE_GUIDE_START_FRAME_INDEX,
-            metrics_root / "base_0096.png",
+            guide_start_frame_index,
+            metrics_root / f"base_{guide_start_frame_index:04d}.png",
         )
-        case_overlap_end = _extract_frame(case_video, 24, metrics_root / "case_0024.png")
-        case_first_new = _extract_frame(case_video, 25, metrics_root / "case_0025.png")
+        case_overlap_end = _extract_frame(
+            case_video,
+            guide_frame_count - 1,
+            metrics_root / f"case_{guide_frame_count - 1:04d}.png",
+        )
+        case_first_new = _extract_frame(
+            case_video,
+            guide_frame_count,
+            metrics_root / f"case_{guide_frame_count:04d}.png",
+        )
         report["overlap_start_difference"] = _image_difference(guide_start, case_first)
         report["overlap_end_difference"] = _image_difference(base_final, case_overlap_end)
         report["seam_flow"] = _flow_discontinuity(
@@ -457,7 +476,7 @@ def main() -> int:
         revision=3,
         attempt_number=1,
         initial_guide_path=raw_base,
-        initial_guide_skip_frames=BASE_GUIDE_START_FRAME_INDEX,
+        initial_guide_skip_frames=BASE_DIAGNOSTIC_GUIDE_START_FRAME_INDEX,
     )
     latent_stage1 = build_continuation_stage1_workflow(
         job,
@@ -485,8 +504,8 @@ def main() -> int:
         "common_base_stage2": base_stage2.workflow.api,
         "single_frame_stage1": single_stage1.api,
         "single_frame_stage2": single_stage2.workflow.api,
-        "decoded_25_frame_stage1": guide_stage1.api,
-        "decoded_25_frame_stage2": guide_stage2.workflow.api,
+        "decoded_17_frame_stage1": guide_stage1.api,
+        "decoded_17_frame_stage2": guide_stage2.workflow.api,
         "latent_overlap_stage1": latent_stage1.api,
         "latent_overlap_stage2": latent_stage2.workflow.api,
     }
@@ -509,7 +528,7 @@ def main() -> int:
             "case_order": [
                 "common_base",
                 "single_frame",
-                "decoded_25_frame",
+                "decoded_17_frame",
                 "latent_overlap",
             ],
             "production_rollout": "explicit; never changed by acceptance runner",
@@ -573,10 +592,22 @@ def main() -> int:
         }
         write_json_atomic(run_root / "run.json", run_document)
 
-        for name, stage1, stage2, destination in (
-            ("single_frame", single_stage1, single_stage2, raw_single),
-            ("decoded_25_frame", guide_stage1, guide_stage2, raw_guide),
-            ("latent_overlap", latent_stage1, latent_stage2, raw_latent),
+        for name, stage1, stage2, destination, guide_frame_count in (
+            ("single_frame", single_stage1, single_stage2, raw_single, None),
+            (
+                "decoded_17_frame",
+                guide_stage1,
+                guide_stage2,
+                raw_guide,
+                DIAGNOSTIC_GUIDE_FRAME_COUNT,
+            ),
+            (
+                "latent_overlap",
+                latent_stage1,
+                latent_stage2,
+                raw_latent,
+                LATER_VISIBLE_OVERLAP_FRAME_COUNT,
+            ),
         ):
             run_document["cases"][name] = {
                 "stage1": _run_graph(
@@ -603,7 +634,7 @@ def main() -> int:
                 base_video=raw_base,
                 case_name=name,
                 case_video=destination,
-                overlap=name != "single_frame",
+                guide_frame_count=guide_frame_count,
             )
             write_json_atomic(run_root / "run.json", run_document)
     except (AcceptanceRunError, ComfyHttpError, OSError, subprocess.SubprocessError) as error:

@@ -1036,7 +1036,7 @@
   through SQLite read-only mode and reuses only its exact D-drive cached T2I frame. It never starts the supervisor,
   edits `pipeline.sqlite3`, or changes production rollout mode.
 - Routing: all cases share one production two-pass 121-frame base. `single_frame` consumes its exact final decoded
-  frame; `decoded_25_frame` uses a diagnostic initial refinement branch which loads frames 96–120 through
+  frame; `decoded_17_frame` uses a diagnostic initial refinement branch which loads frames 104–120 through
   `LTXVAddGuide` at frame zero; `latent_overlap` uses the normal 24-frame `LTXVExtendSampler` route plus later
   full-resolution guide at causal-preroll frame eight. The diagnostic initial guide is opt-in and cannot alter
   standard production initial chunks.
@@ -1094,25 +1094,24 @@
 
 - Changed files: `tenminvideomaker/continuation_workflow.py`,
   `tests/test_continuation_workflow.py`, and this file.
-- Evidence: the first corrected GPU matrix completed the common base and
+- Evidence: the first corrected GPU matrix completed common base and
   single-frame cases, then `decoded_25_frame` failed inside `SamplerCustom`
   with a 21,168-by-128 guide tensor targeting 20,160-by-128 latent positions.
-  Reducing the load cap to 24 changed both values by exactly one token and
-  retained the mismatch. The live `LTXVAddGuide` contract requires the guide
-  to be `8n+1` frames, so the original 25-frame guide is correct.
-- Root cause: the diagnostic initial-refinement graph first used
-  `LTXVImgToVideoInplaceKJ` to reserve a single frame and then added the
-  25-frame decoded guide. The two guide routes competed for one temporal
-  position. For this diagnostic-only branch, `LTXVAddGuide` now consumes the
-  full-resolution upscaled latent directly. It owns all 25 guide frames and
-  supplies the sampler conditioning itself. Normal initial refinement and all
-  later production overlap routing are unchanged.
+  Directly routing the guide into the upscaled latent removed its competing
+  single-frame route, but a second GPU run retained exact 21-versus-20 token
+  mismatch. A direct 17-frame guide probe completed on same graph.
+- Root cause: initial refined latent exposes only 20 guide-token positions. A
+  25-frame valid `8n+1` guide encodes 21 tokens and cannot fit. Largest valid
+  `8n+1` guide that fits is 17 frames, encoding 20. Diagnostic now loads frames
+  104–120 and is named `decoded_17_frame`; metrics use exact span. Normal
+  later-window 25-frame visible-overlap route remains separate production test.
 - Reproduction: run the D-drive acceptance matrix with an empty queue. The
   failed matrix remains at
   `D:\LTX_Supervisor_Storage\acceptance\continuation-acceptance-20260731-gpu5`.
-  The regression verifies that a decoded 25-frame guide has no preceding
+  The regression verifies that a decoded 17-frame guide has no preceding
   `LTXVImgToVideoInplaceKJ` or `LTXReferenceConditioning`, and that its guide
-  latent is the direct output of `LTXVLatentUpsamplerTiled`.
+  latent is the direct output of `LTXVLatentUpsamplerTiled`. Acceptance output
+  schema is version 2; old incomplete runs retain their original case name.
 - Verification commands:
   - `python -m unittest discover -s tests -p "test_continuation_workflow.py" -v`
   - `python -m compileall -q tenminvideomaker tests`

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 
 class RunContinuationAcceptanceScriptTests(unittest.TestCase):
@@ -22,6 +24,38 @@ class RunContinuationAcceptanceScriptTests(unittest.TestCase):
         self.assertEqual(args.source_scene_id, 7)
         self.assertEqual(args.timeout_seconds, 900.0)
         self.assertFalse(args.dry_run)
+
+    def test_decoded_guide_constants_select_a_17_frame_base_tail(self) -> None:
+        from scripts import run_continuation_acceptance as acceptance
+
+        self.assertEqual(acceptance.ACCEPTANCE_SCHEMA_VERSION, 2)
+        self.assertEqual(acceptance.DIAGNOSTIC_GUIDE_FRAME_COUNT, 17)
+        self.assertEqual(acceptance.BASE_DIAGNOSTIC_GUIDE_START_FRAME_INDEX, 104)
+
+    def test_case_metrics_use_requested_guide_frame_span(self) -> None:
+        from scripts import run_continuation_acceptance as acceptance
+
+        def extracted(_video: Path, _frame: int, destination: Path) -> Path:
+            return destination
+
+        with (
+            patch.object(acceptance, "_extract_frame", side_effect=extracted) as extract,
+            patch.object(acceptance, "_probe_video", return_value={}),
+            patch.object(acceptance, "_image_difference", return_value={}),
+            patch.object(acceptance, "_flow_discontinuity", return_value={}),
+        ):
+            acceptance._case_metrics(
+                run_root=Path(r"D:\LTX_Supervisor_Storage\acceptance\run"),
+                base_video=Path(r"D:\base.mkv"),
+                case_name="decoded_17_frame",
+                case_video=Path(r"D:\case.mkv"),
+                guide_frame_count=17,
+            )
+
+        self.assertEqual(
+            [call.args[1] for call in extract.call_args_list],
+            [119, 120, 0, 1, 104, 16, 17],
+        )
 
 
 if __name__ == "__main__":

@@ -36,6 +36,8 @@ from .workflow_builder import (
     _sigma_string,
 )
 
+INITIAL_DIAGNOSTIC_GUIDE_FRAME_COUNT = 17
+
 
 @dataclass(frozen=True)
 class ContinuationStage2Build:
@@ -534,23 +536,23 @@ def build_continuation_stage2_workflow(
 
     if chunk.is_initial and initial_guide is not None:
         # LTXVAddGuide owns its temporal guide tokens. Do not first inject the
-        # cached still at frame zero: that reserves one token and makes the
-        # exact 25-frame (8n+1) decoded guide one token too long.
+        # cached still at frame zero: that reserves one token and makes a
+        # decoded guide exceed this initial refined latent's token capacity.
         previous_video = graph.add(
             "VHS_LoadVideoPath",
-            "Load decoded 25-frame diagnostic guide",
+            "Load decoded 17-frame diagnostic guide",
             video=str(initial_guide),
             force_rate=float(PRODUCTION_FPS),
             custom_width=0,
             custom_height=0,
-            frame_load_cap=25,
+            frame_load_cap=INITIAL_DIAGNOSTIC_GUIDE_FRAME_COUNT,
             skip_first_frames=initial_guide_skip_frames,
             select_every_nth=1,
             format="None",
         )
         initial_guide_node = graph.add(
             "LTXVAddGuide",
-            "Guide initial refinement with decoded 25-frame overlap",
+            "Guide initial refinement with decoded 17-frame span",
             positive=positive,
             negative=negative,
             vae=graph.output(checkpoint, 2),

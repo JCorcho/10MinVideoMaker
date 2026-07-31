@@ -167,7 +167,7 @@ class ContinuationWorkflowTests(unittest.TestCase):
             (4, 1, 16, 1),
         )
 
-    def test_initial_refinement_can_use_a_decoded_25_frame_diagnostic_guide(self):
+    def test_initial_refinement_can_use_a_decoded_17_frame_diagnostic_guide(self):
         guide_path = Path(
             r"D:\LTX_Supervisor_Storage\acceptance\base\window.mkv"
         )
@@ -180,18 +180,18 @@ class ContinuationWorkflowTests(unittest.TestCase):
             revision=1,
             attempt_number=1,
             initial_guide_path=guide_path,
-            initial_guide_skip_frames=96,
+            initial_guide_skip_frames=104,
         )
         loader = nodes_of_type(build.workflow.api, "VHS_LoadVideoPath")[0]["inputs"]
         self.assertEqual(loader["video"], str(guide_path))
-        self.assertEqual(loader["frame_load_cap"], 25)
-        self.assertEqual(loader["skip_first_frames"], 96)
+        self.assertEqual(loader["frame_load_cap"], 17)
+        self.assertEqual(loader["skip_first_frames"], 104)
         guide = nodes_of_type(build.workflow.api, "LTXVAddGuide")[0]["inputs"]
         self.assertEqual(guide["frame_idx"], 0)
         self.assertEqual(guide["strength"], 1.0)
         self.assertFalse(
             nodes_of_type(build.workflow.api, "LTXVImgToVideoInplaceKJ"),
-            "A 25-frame guide must replace, not follow, the initial single-frame guide.",
+            "A decoded guide must replace, not follow, the initial single-frame guide.",
         )
         self.assertFalse(nodes_of_type(build.workflow.api, "LTXReferenceConditioning"))
         upscaled = next(

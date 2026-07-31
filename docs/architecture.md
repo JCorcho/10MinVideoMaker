@@ -45,7 +45,7 @@ legacy revision is never converted in place.
 `approved` status, reviewer/timestamp, a hash covering the current continuation generation/routing/recovery
 implementation, and hashes covering every node contract used by the representative live continuation graphs. It
 must also record SHA-256/source/license evidence for the checkpoint, text encoder, spatial upscaler, DMD, and JoyAI
-assets; completed `common_base`, `single_frame`, `decoded_25_frame`, and `latent_overlap` generations (including
+assets; completed `common_base`, `single_frame`, `decoded_17_frame`, and `latent_overlap` generations (including
 positive peak VRAM for latent overlap); and all six safety/quality/runtime decisions as accepted. Missing, stale,
 malformed, or incomplete evidence blocks `auto` before work starts. The project does not read or modify shared
 model files to manufacture this evidence.
@@ -360,7 +360,7 @@ interval.
 
 These checks prove graph/schema consistency and deterministic accounting only. The separate
 `scripts\run_continuation_acceptance.py` creates a unique D-drive-only test job from one existing cached frame,
-runs common-base, single-frame, decoded-25-frame-guide, and latent-overlap cases without touching the supervisor
+runs common-base, single-frame, decoded-17-frame-guide, and latent-overlap cases without touching the supervisor
 database state, captures ComfyUI peak-VRAM/runtime telemetry plus FFmpeg/Pillow/OpenCV seam evidence, and ends in
 human review. It cannot enable `auto` or create the approval manifest. Until GPU evidence and human visual review
 exist, continuation has no production-quality claim and `explicit` remains the default.

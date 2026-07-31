@@ -26,7 +26,7 @@ _REQUIRED_DECISIONS = (
 _REQUIRED_GENERATIONS = (
     "common_base",
     "single_frame",
-    "decoded_25_frame",
+    "decoded_17_frame",
     "latent_overlap",
 )
 _REQUIRED_EXTERNAL_ASSETS = (
