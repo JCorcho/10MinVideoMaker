@@ -78,8 +78,11 @@ Explicit beat segments are mapped to the model windows they overlap; old payload
 deterministic “continue seamlessly” instruction without rewriting the source JSON.
 
 Continuation worker node IDs are deterministically scoped by job, scene, revision, chunk, attempt, and phase.
-LTX conditioning nodes can mutate their cached outputs; separate numeric node-ID ranges prevent ComfyUI from
-reusing one stage's mutable conditioning in another stage or chunk.
+The graph also places an always-reexecuted `10MinVideoMaker_IsolateConditioning` node between every
+`CLIPTextEncode` and `LTXVConditioning` node. It clones prompt tensors and metadata before LTX guide state can be
+attached. This is required because ComfyUI may reuse static prompt-node outputs after a failed prompt, even when a
+later continuation graph has a separately scoped node-ID range. The barrier changes no prompt, sampler, sigma, or
+model setting; it only supplies a fresh conditioning object for each prompt.
 
 The full-resolution second pass uses the existing tiled x2 spatial upscaler and second LCM schedule. The initial
 121-frame window selects 16 temporal latent tokens. A later 121-frame visible window selects 17 tokens: a nonzero

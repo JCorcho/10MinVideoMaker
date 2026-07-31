@@ -187,6 +187,8 @@ def _conditioning(
     graph: _Graph,
     text_encoder: str,
     chunk: ContinuationChunkPlan,
+    *,
+    scope: str,
 ) -> tuple[list[Any], list[Any]]:
     positive = graph.add(
         "CLIPTextEncode",
@@ -200,11 +202,23 @@ def _conditioning(
         text=chunk.negative,
         clip=graph.output(text_encoder),
     )
+    isolated_positive = graph.add(
+        "10MinVideoMaker_IsolateConditioning",
+        "Isolate positive conditioning from prior continuation caches",
+        conditioning=graph.output(positive),
+        scope=f"{scope}:positive",
+    )
+    isolated_negative = graph.add(
+        "10MinVideoMaker_IsolateConditioning",
+        "Isolate negative conditioning from prior continuation caches",
+        conditioning=graph.output(negative),
+        scope=f"{scope}:negative",
+    )
     conditioned = graph.add(
         "LTXVConditioning",
         "24 fps chunk conditioning",
-        positive=graph.output(positive),
-        negative=graph.output(negative),
+        positive=graph.output(isolated_positive),
+        negative=graph.output(isolated_negative),
         frame_rate=float(PRODUCTION_FPS),
     )
     return graph.output(conditioned, 0), graph.output(conditioned, 1)
@@ -324,7 +338,12 @@ def build_continuation_stage1_workflow(
         chunking,
         needs_audio_vae=False,
     )
-    positive, negative = _conditioning(graph, text_encoder, chunk)
+    positive, negative = _conditioning(
+        graph,
+        text_encoder,
+        chunk,
+        scope=f"stage1:{job.job_id}:{scene.scene_id}:{revision}:{attempt_number}:{chunk.index}",
+    )
     sampler = graph.add(
         "KSamplerSelect",
         "First-pass LCM sampler",
@@ -546,7 +565,12 @@ def build_continuation_stage2_workflow(
         needs_audio_vae=True,
     )
     assert audio_vae is not None
-    positive, negative = _conditioning(graph, text_encoder, chunk)
+    positive, negative = _conditioning(
+        graph,
+        text_encoder,
+        chunk,
+        scope=f"stage2:{job.job_id}:{scene.scene_id}:{revision}:{attempt_number}:{chunk.index}",
+    )
     handoff = graph.add(
         "10MinVideoMaker_LoadChunkLatent",
         "Load accepted bounded first-pass handoff",

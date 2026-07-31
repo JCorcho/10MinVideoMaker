@@ -117,11 +117,16 @@ def _current_node_contract_loaded(comfy: ComfyHttpClient) -> bool:
     save_frame = _required_inputs(comfy, "10MinVideoMaker_SaveSceneFrame")
     save_chunk = _required_inputs(comfy, "10MinVideoMaker_SaveChunkLatent")
     load_chunk = _required_inputs(comfy, "10MinVideoMaker_LoadChunkLatent")
+    isolate_conditioning = _required_inputs(
+        comfy,
+        "10MinVideoMaker_IsolateConditioning",
+    )
     return (
         "revision" in save_frame
         and _artifact_kind_options(save_chunk) == expected_artifacts
         and _artifact_kind_options(load_chunk) == expected_artifacts
         and "expected_temporal_tokens" in load_chunk
+        and {"conditioning", "scope"}.issubset(isolate_conditioning)
     )
 
 

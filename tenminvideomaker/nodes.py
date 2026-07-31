@@ -7,6 +7,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+import torch
+
 from .assembly import AssemblyError, FfmpegAssembler, probe_video, validate_video_profile
 from .artifacts import ArtifactError, save_scene_frame
 from .assets import LocalLoraRequirement, LoraAssetManager
@@ -497,6 +499,46 @@ class TenMinLoadChunkLatentNode:
         return (latent, str(checkpoint), str(manifest["sha256"]))
 
 
+def _clone_conditioning_value(value: Any) -> Any:
+    """Clone CONDITIONING containers and tensors without changing their meaning."""
+    if isinstance(value, torch.Tensor):
+        return value.clone()
+    if isinstance(value, list):
+        return [_clone_conditioning_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_clone_conditioning_value(item) for item in value)
+    if isinstance(value, dict):
+        return {key: _clone_conditioning_value(item) for key, item in value.items()}
+    return value
+
+
+class TenMinIsolateConditioningNode(_AlwaysRun):
+    """Create a fresh copy before an LTX node may attach mutable guide state."""
+
+    CATEGORY = "10MinVideoMaker/Continuation"
+    DESCRIPTION = (
+        "Clones text conditioning immediately before LTX conditioning so cached "
+        "guide metadata cannot leak into another continuation prompt."
+    )
+    FUNCTION = "execute"
+    RETURN_TYPES = ("CONDITIONING",)
+    RETURN_NAMES = ("conditioning",)
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "conditioning": ("CONDITIONING",),
+                "scope": ("STRING", {"default": "continuation"}),
+            }
+        }
+
+    def execute(self, conditioning, scope: str):
+        if not scope.strip():
+            raise RuntimeError("scope must not be blank.")
+        return (_clone_conditioning_value(conditioning),)
+
+
 class TenMinStitchClipsNode(_AlwaysRun):
     CATEGORY = "10MinVideoMaker/Assembly"
     DESCRIPTION = (
@@ -543,6 +585,7 @@ NODE_CLASS_MAPPINGS = {
     "10MinVideoMaker_SaveSceneFrame": TenMinSaveSceneFrameNode,
     "10MinVideoMaker_SaveChunkLatent": TenMinSaveChunkLatentNode,
     "10MinVideoMaker_LoadChunkLatent": TenMinLoadChunkLatentNode,
+    "10MinVideoMaker_IsolateConditioning": TenMinIsolateConditioningNode,
     "10MinVideoMaker_StitchClips": TenMinStitchClipsNode,
 }
 
@@ -556,5 +599,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "10MinVideoMaker_SaveSceneFrame": "10Min Video Maker: Save Scene Frame",
     "10MinVideoMaker_SaveChunkLatent": "10Min Video Maker: Save Chunk Latent",
     "10MinVideoMaker_LoadChunkLatent": "10Min Video Maker: Load Chunk Latent",
+    "10MinVideoMaker_IsolateConditioning": "10Min Video Maker: Isolate Conditioning",
     "10MinVideoMaker_StitchClips": "10Min Video Maker: Stitch Clips",
 }

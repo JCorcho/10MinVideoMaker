@@ -108,6 +108,32 @@ class ContinuationWorkflowTests(unittest.TestCase):
         )
         self.assertFalse(nodes_of_type(build.api, "LTXVConcatAVLatent"))
 
+    def test_stage1_isolates_both_text_conditionings_before_ltx_conditioning(self):
+        build = build_continuation_stage1_workflow(
+            self.job,
+            self.scene,
+            self.frame,
+            self.plan,
+            self.plan.chunks[1],
+            revision=1,
+            attempt_number=1,
+            previous_attempt_number=1,
+        )
+
+        isolates = nodes_of_type(build.api, "10MinVideoMaker_IsolateConditioning")
+        self.assertEqual(len(isolates), 2)
+        ltx = nodes_of_type(build.api, "LTXVConditioning")[0]["inputs"]
+        isolate_ids = {
+            node_id
+            for node_id, node in build.api.items()
+            if node["class_type"] == "10MinVideoMaker_IsolateConditioning"
+        }
+        self.assertIn(ltx["positive"][0], isolate_ids)
+        self.assertIn(ltx["negative"][0], isolate_ids)
+        self.assertTrue(
+            all("stage1" in node["inputs"]["scope"] for node in isolates)
+        )
+
     def test_continuation_graph_ids_are_scoped_per_stage_and_chunk(self):
         initial = build_continuation_stage1_workflow(
             self.job,

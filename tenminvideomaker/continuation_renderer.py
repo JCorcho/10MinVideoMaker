@@ -63,6 +63,7 @@ CONTINUATION_DELIVERY_SCHEMA_VERSION = 1
 CONTINUATION_CONTRACT_NODE_TYPES = (
     "10MinVideoMaker_LoadChunkLatent",
     "10MinVideoMaker_SaveChunkLatent",
+    "10MinVideoMaker_IsolateConditioning",
     "CLIPTextEncode",
     "CheckpointLoaderSimple",
     "DaSiWa_Watermark",

@@ -168,6 +168,8 @@ class GuiAppTests(unittest.TestCase):
                             {"default": "stage1_handoff"},
                         ],
                         "expected_temporal_tokens": ["INT"],
+                        "conditioning": ["CONDITIONING"],
+                        "scope": ["STRING"],
                     }
                 }
             }
@@ -182,6 +184,7 @@ class GuiAppTests(unittest.TestCase):
                 "10MinVideoMaker_SaveSceneFrame",
                 "10MinVideoMaker_SaveChunkLatent",
                 "10MinVideoMaker_LoadChunkLatent",
+                "10MinVideoMaker_IsolateConditioning",
             ],
         )
         current.queue_counts.assert_not_called()
@@ -227,7 +230,12 @@ class GuiAppTests(unittest.TestCase):
                                 "stage2_audio",
                             ]
                         ]
-                    )
+                        )
+                }
+            elif node_type == "10MinVideoMaker_IsolateConditioning":
+                required = {
+                    "conditioning": ["CONDITIONING"],
+                    "scope": ["STRING"],
                 }
             else:
                 required = {

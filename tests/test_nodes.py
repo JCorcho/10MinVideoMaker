@@ -39,6 +39,7 @@ class NodeSurfaceTests(unittest.TestCase):
                 "10MinVideoMaker_SaveSceneFrame",
                 "10MinVideoMaker_SaveChunkLatent",
                 "10MinVideoMaker_LoadChunkLatent",
+                "10MinVideoMaker_IsolateConditioning",
                 "10MinVideoMaker_StitchClips",
             },
         )
@@ -58,6 +59,28 @@ class NodeSurfaceTests(unittest.TestCase):
         self.assertNotEqual(
             TenMinPipelineStatusNode.IS_CHANGED(),
             TenMinPipelineStatusNode.IS_CHANGED(),
+        )
+
+    def test_conditioning_isolator_clones_tensors_and_never_reuses_cache(self) -> None:
+        node_type = NODE_CLASS_MAPPINGS["10MinVideoMaker_IsolateConditioning"]
+        source = [
+            (
+                torch.ones((1, 2)),
+                {"pooled_output": torch.ones((1,)), "nested": {"value": 1}},
+            )
+        ]
+
+        result = node_type().execute(source, "test scope")[0]
+
+        self.assertIsNot(result, source)
+        self.assertIsNot(result[0][0], source[0][0])
+        self.assertIsNot(result[0][1], source[0][1])
+        self.assertIsNot(result[0][1]["pooled_output"], source[0][1]["pooled_output"])
+        result[0][0].zero_()
+        self.assertTrue(torch.equal(source[0][0], torch.ones((1, 2))))
+        self.assertNotEqual(
+            node_type.IS_CHANGED(source, "test scope"),
+            node_type.IS_CHANGED(source, "test scope"),
         )
 
     def test_chunk_latent_nodes_round_trip_by_coordinates_and_hash(self) -> None:

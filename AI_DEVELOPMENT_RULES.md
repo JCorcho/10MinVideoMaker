@@ -1049,6 +1049,33 @@
   - `python scripts\validate_continuation_workflows.py`
   - `git diff --check`
 
+### 2026-07-31 — mutable conditioning cache barrier
+
+- Changed files: `tenminvideomaker/nodes.py`,
+  `tenminvideomaker/continuation_workflow.py`,
+  `tenminvideomaker/continuation_renderer.py`, `scripts/run_gui.py`,
+  `tests/test_nodes.py`, `tests/test_continuation_workflow.py`,
+  `tests/test_gui_app.py`, `docs/architecture.md`, and this file.
+- Root cause: acceptance prompt `d135b4e5-005f-4525-82b3-42dabdd8130c` reused the static checkpoint,
+  text-encoding, and `LTXVConditioning` chain, then `LTXVExtendSampler` failed with a 5,040-versus-4,788 token
+  shape mismatch. Its exact graph, with only all node IDs shifted, completed as
+  `cc15cee3-5dc9-465c-adf2-33827eb5e334` with no cached nodes. The issue is mutable LTX conditioning reuse, not
+  the official 24-frame overlap: live `/object_info/LTXVExtendSampler` requires an overlap of at least 16 frames in
+  steps of 8.
+- Decision: preserve the documented 24-frame overlap and 97-frame full extension. Before `LTXVConditioning`, clone
+  each positive/negative `CONDITIONING` value through `10MinVideoMaker_IsolateConditioning`; that node always
+  reexecutes, so the downstream LTX conditioning chain receives fresh tensors and metadata on every prompt.
+- Reproduction: with an empty ComfyUI queue, reuse a failed later-stage graph. The unmodified graph may cache its
+  static conditioning chain and fail. Renumbering every node must succeed. The production graph must instead expose
+  two `10MinVideoMaker_IsolateConditioning` nodes feeding `LTXVConditioning` and retain `frame_overlap=24`.
+- Verification commands:
+  - `python -m unittest discover -s tests -p "test_nodes.py" -v`
+  - `python -m unittest discover -s tests -p "test_continuation_workflow.py" -v`
+  - `python -m unittest discover -s tests`
+  - `python -m compileall -q tenminvideomaker scripts tests`
+  - `python scripts\validate_continuation_workflows.py`
+  - `git diff --check`
+
 ### 2026-07-31 — `LTXVExtendSampler` endpoint-frame repair
 
 - Changed files: `tenminvideomaker/continuation_workflow.py`,
