@@ -86,6 +86,10 @@ second-pass seam guide; it is not a regenerated T2I frame or a single decoded la
 window is therefore 129 frames for a full later chunk, and assembly discards its first eight frames. Short final
 chunks retain the same accounting with a shorter visible window.
 
+Every `LTXVAddGuide` output runs through `LTXVCropGuides` before `LTXVConcatAVLatent` and `SamplerCustom`.
+`LTXVAddGuide` appends guide tokens for conditioning; sampling those appended tokens produces a temporal-grid shape
+mismatch on this local LTX build. The crop node returns matched positive/negative conditioning and the sampled latent.
+
 Assembly uses a one-overlap delayed-commit policy. Every non-final refined window contributes the frames before the
 following window begins—normally 96—and the final window contributes its entire overlap-plus-new range. This makes
 the later fused window own the overlap exactly once. The generation master is then trimmed to the exact presentation

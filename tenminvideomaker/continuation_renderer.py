@@ -79,6 +79,7 @@ CONTINUATION_CONTRACT_NODE_TYPES = (
     "LTXVChunkFeedForward",
     "LTXVConcatAVLatent",
     "LTXVConditioning",
+    "LTXVCropGuides",
     "LTXVEmptyLatentAudio",
     "LTXVExtendSampler",
     "LTXVImgToVideoInplaceKJ",

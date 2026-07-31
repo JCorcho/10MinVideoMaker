@@ -1107,6 +1107,11 @@
   20-versus-19 mismatch. Diagnostic is named `decoded_17_frame`; metrics use
   its exact span. Normal later-window 25-frame visible-overlap route remains
   separate production test.
+- Routing repair: every `LTXVAddGuide` must feed `LTXVCropGuides` before
+  `LTXVConcatAVLatent` and `SamplerCustom`; wire crop positive, negative, and
+  latent outputs as the new sampling inputs. A same-graph GPU probe completed
+  only after this crop. Without it, the guide's appended token positions cause
+  `SamplerCustom` to fail with a 20-guide-token versus 19-target-slot mismatch.
 - Reproduction: run the D-drive acceptance matrix with an empty queue. The
   failed matrix remains at
   `D:\LTX_Supervisor_Storage\acceptance\continuation-acceptance-20260731-gpu5`.

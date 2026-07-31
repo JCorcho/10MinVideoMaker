@@ -561,9 +561,16 @@ def build_continuation_stage2_workflow(
             frame_idx=0,
             strength=1.0,
         )
-        sampling_positive = graph.output(initial_guide_node, 0)
-        sampling_negative = graph.output(initial_guide_node, 1)
-        video_latent = graph.output(initial_guide_node, 2)
+        cropped_guides = graph.add(
+            "LTXVCropGuides",
+            "Crop initial decoded guide tokens before sampling",
+            positive=graph.output(initial_guide_node, 0),
+            negative=graph.output(initial_guide_node, 1),
+            latent=graph.output(initial_guide_node, 2),
+        )
+        sampling_positive = graph.output(cropped_guides, 0)
+        sampling_negative = graph.output(cropped_guides, 1)
+        video_latent = graph.output(cropped_guides, 2)
         final_model = model
     elif chunk.is_initial:
         _scaled, preprocessed = _source_image(
@@ -648,9 +655,16 @@ def build_continuation_stage2_workflow(
             frame_idx=CAUSAL_REFINEMENT_PREROLL_FRAMES,
             strength=1.0,
         )
-        sampling_positive = graph.output(guided_video, 0)
-        sampling_negative = graph.output(guided_video, 1)
-        video_latent = graph.output(guided_video, 2)
+        cropped_guides = graph.add(
+            "LTXVCropGuides",
+            "Crop prior overlap guide tokens before sampling",
+            positive=graph.output(guided_video, 0),
+            negative=graph.output(guided_video, 1),
+            latent=graph.output(guided_video, 2),
+        )
+        sampling_positive = graph.output(cropped_guides, 0)
+        sampling_negative = graph.output(cropped_guides, 1)
+        video_latent = graph.output(cropped_guides, 2)
         final_model = model
 
     empty_audio = graph.add(

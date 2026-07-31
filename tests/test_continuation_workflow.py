@@ -180,13 +180,18 @@ class ContinuationWorkflowTests(unittest.TestCase):
             revision=1,
             attempt_number=1,
             initial_guide_path=guide_path,
-            initial_guide_skip_frames=104,
+            initial_guide_skip_frames=96,
         )
         loader = nodes_of_type(build.workflow.api, "VHS_LoadVideoPath")[0]["inputs"]
         self.assertEqual(loader["video"], str(guide_path))
         self.assertEqual(loader["frame_load_cap"], 17)
-        self.assertEqual(loader["skip_first_frames"], 104)
-        guide = nodes_of_type(build.workflow.api, "LTXVAddGuide")[0]["inputs"]
+        self.assertEqual(loader["skip_first_frames"], 96)
+        guide_id = next(
+            node_id
+            for node_id, node in build.workflow.api.items()
+            if node["class_type"] == "LTXVAddGuide"
+        )
+        guide = build.workflow.api[guide_id]["inputs"]
         self.assertEqual(guide["frame_idx"], 0)
         self.assertEqual(guide["strength"], 1.0)
         self.assertFalse(
@@ -208,6 +213,20 @@ class ContinuationWorkflowTests(unittest.TestCase):
                 if node["class_type"] == "VHS_LoadVideoPath"
             ),
         )
+        crop_id = next(
+            node_id
+            for node_id, node in build.workflow.api.items()
+            if node["class_type"] == "LTXVCropGuides"
+        )
+        crop = build.workflow.api[crop_id]["inputs"]
+        self.assertEqual(crop["positive"], [guide_id, 0])
+        self.assertEqual(crop["negative"], [guide_id, 1])
+        self.assertEqual(crop["latent"], [guide_id, 2])
+        av = nodes_of_type(build.workflow.api, "LTXVConcatAVLatent")[0]["inputs"]
+        sampler = nodes_of_type(build.workflow.api, "SamplerCustom")[0]["inputs"]
+        self.assertEqual(av["video_latent"], [crop_id, 2])
+        self.assertEqual(sampler["positive"], [crop_id, 0])
+        self.assertEqual(sampler["negative"], [crop_id, 1])
         self.assertEqual(validate_api_graph(build.workflow.api), ())
 
     def test_later_refinement_has_causal_preroll_and_25_frame_visible_guide(self):
@@ -240,17 +259,33 @@ class ContinuationWorkflowTests(unittest.TestCase):
         self.assertEqual(loader["video"], str(prior))
         self.assertEqual(loader["frame_load_cap"], 25)
         self.assertEqual(loader["skip_first_frames"], 96)
-        guide = nodes_of_type(
-            build.workflow.api,
-            "LTXVAddGuide",
-        )[0]["inputs"]
+        guide_id = next(
+            node_id
+            for node_id, node in build.workflow.api.items()
+            if node["class_type"] == "LTXVAddGuide"
+        )
+        guide = build.workflow.api[guide_id]["inputs"]
         self.assertEqual(guide["strength"], 1.0)
         self.assertEqual(guide["frame_idx"], 8)
         self.assertEqual(guide["image"][0], next(
             node_id
             for node_id, node in build.workflow.api.items()
-            if node["class_type"] == "VHS_LoadVideoPath"
+                if node["class_type"] == "VHS_LoadVideoPath"
         ))
+        crop_id = next(
+            node_id
+            for node_id, node in build.workflow.api.items()
+            if node["class_type"] == "LTXVCropGuides"
+        )
+        crop = build.workflow.api[crop_id]["inputs"]
+        self.assertEqual(crop["positive"], [guide_id, 0])
+        self.assertEqual(crop["negative"], [guide_id, 1])
+        self.assertEqual(crop["latent"], [guide_id, 2])
+        av = nodes_of_type(build.workflow.api, "LTXVConcatAVLatent")[0]["inputs"]
+        sampler = nodes_of_type(build.workflow.api, "SamplerCustom")[0]["inputs"]
+        self.assertEqual(av["video_latent"], [crop_id, 2])
+        self.assertEqual(sampler["positive"], [crop_id, 0])
+        self.assertEqual(sampler["negative"], [crop_id, 1])
         self.assertEqual(validate_api_graph(build.workflow.api), ())
 
     def test_decode_only_resume_loads_both_checkpoints_without_diffusion(self):

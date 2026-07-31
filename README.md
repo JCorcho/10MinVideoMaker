@@ -45,7 +45,8 @@ Long LTX scenes can use the versioned `ltx23_latent_overlap_v1` continuation rou
 window is 121 frames: the initial window contributes 120 transitions, and each full continuation adds 96 new
 transitions while regenerating a 24-frame overlap. The route keeps each diffusion invocation and persisted latent
 tail bounded instead of retaining the full scene latent. Later second passes use core `LTXVAddGuide` with the prior
-window's 25-frame final-resolution visible overlap at frame eight, after the sacrificial causal preroll; the latent
+window's 25-frame final-resolution visible overlap at frame eight, after the sacrificial causal preroll, then
+`LTXVCropGuides` before AV concatenation and sampling; the latent
 loader also verifies the exact expected
   temporal-token count before reuse. Each refined window atomically checkpoints both its video and audio latent;
   if encoding is interrupted after diffusion, restart runs only a checkpoint decode/mux graph. For example, an

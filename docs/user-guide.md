@@ -103,7 +103,8 @@ needed), followed by every batch item's I2V render, including **Video Only** rem
 Long scenes may use `ltx23_latent_overlap_v1` instead of one oversized LTX invocation. The initial
 window contains at most 121 frames. Every full continuation regenerates a 24-frame overlap and adds 96 new
 transitions. Later full-resolution passes use core `LTXVAddGuide` with the prior window's 25-frame visible overlap
-at frame eight, immediately after the sacrificial causal-token preroll. This bounds the active model window and
+at frame eight, immediately after the sacrificial causal-token preroll. Its outputs are cropped with
+`LTXVCropGuides` before AV sampling. This bounds the active model window and
 checkpoint tail; it does not yet prove acceptable seams,
 anatomy, runtime, or peak VRAM on this machine.
 

@@ -36,6 +36,7 @@ class ContinuationWorkflowValidationScriptTests(unittest.TestCase):
         self.assertIn("LTXVExtendSampler", classes["stage1_later"])
         self.assertIn("LTXVExtendSampler", classes["stage1_final"])
         self.assertIn("LTXVAddGuide", classes["stage2_decoded_guide"])
+        self.assertIn("LTXVCropGuides", classes["stage2_decoded_guide"])
         self.assertIn("10MinVideoMaker_LoadChunkLatent", classes["decode"])
         self.assertNotIn("SamplerCustom", classes["decode"])
         self.assertIn("DiscordSendSaveVideo", classes["delivery"])
