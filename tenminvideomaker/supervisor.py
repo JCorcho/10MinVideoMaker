@@ -37,6 +37,7 @@ from .contracts import (
 )
 from .delivery import DiscordDeliverySettings
 from .mail import GmailClient, GmailPollingService
+from .qc_repair import RepairGenerationError
 from .review import SceneWorkflowOverrides, scene_review_document, validate_scene_edit
 from .state_store import (
     JobState,
@@ -573,29 +574,53 @@ class PipelineSupervisor:
         if not candidates:
             return
         if not self.comfy.alive():
-            raise FatalPipelineError(
-                "ComfyUI is unavailable at the QC repair generation boundary."
+            raise RepairGenerationError(
+                candidates[0][0].candidate_id,
+                "ComfyUI is unavailable at the QC repair generation boundary.",
+                retryable=True,
             )
         scene_ids = {candidate.scene_id for candidate, _ in candidates}
         preparation = self._resolve_assets(job, scene_ids=scene_ids)
         if preparation.failures:
-            raise ComfyHttpError(
+            raise RepairGenerationError(
+                candidates[0][0].candidate_id,
                 "QC repair asset resolution failed: "
                 + "; ".join(
                     error
                     for errors in preparation.failures.values()
                     for error in errors
-                )
+                ),
+                retryable=False,
             )
         for candidate, document in candidates:
             revision = next(
-                item
-                for item in self.store.scene_revisions(job.job_id, candidate.scene_id)
-                if item.revision == candidate.revision
+                (
+                    item
+                    for item in self.store.scene_revisions(job.job_id, candidate.scene_id)
+                    if item.revision == candidate.revision
+                ),
+                None,
             )
+            if revision is None:
+                raise RepairGenerationError(
+                    candidate.candidate_id,
+                    "QC repair lost its persisted scene revision.",
+                    retryable=False,
+                )
             if not revision.frame_path or not Path(revision.frame_path).is_file():
-                raise ComfyHttpError("QC repair lost its immutable starting frame.")
-            validated = validate_scene_edit(job, candidate.scene_id, document)
+                raise RepairGenerationError(
+                    candidate.candidate_id,
+                    "QC repair lost its immutable starting frame.",
+                    retryable=False,
+                )
+            try:
+                validated = validate_scene_edit(job, candidate.scene_id, document)
+            except Exception as error:
+                raise RepairGenerationError(
+                    candidate.candidate_id,
+                    "QC repair revision document is invalid: " + str(error),
+                    retryable=False,
+                ) from error
             use_continuation = self._uses_continuation(
                 validated.scene, validated.workflow
             )
@@ -626,32 +651,41 @@ class PipelineSupervisor:
                 ),
                 route=route,
             )
-            rendered = self.render_i2v_scene(
-                job=validated.job,
-                scene=validated.scene,
-                frame_path=revision.frame_path,
-                destination=destination,
-                resolved_lora_filenames=preparation.resolved_filenames,
-                revision=candidate.revision,
-                overrides=validated.workflow,
-                prompt_id_callback=lambda prompt_id, candidate_id=candidate.candidate_id,
-                    route=route, use_continuation=use_continuation: (
-                    self.store.set_qc_generation_owner(
-                        candidate_id,
-                        prompt_id=prompt_id,
-                        prompt_stage=(
-                            "i2v_continuation" if use_continuation else "i2v_legacy"
-                        ),
-                        route=route,
-                    )
-                ),
-                existing_prompt_id=(
-                    candidate.generation_prompt_id if not use_continuation else None
-                ),
-                deliver_to_discord=False,
-                continuation_route=use_continuation,
-            )
-            self._video_probe(rendered)
+            try:
+                rendered = self.render_i2v_scene(
+                    job=validated.job,
+                    scene=validated.scene,
+                    frame_path=revision.frame_path,
+                    destination=destination,
+                    resolved_lora_filenames=preparation.resolved_filenames,
+                    revision=candidate.revision,
+                    overrides=validated.workflow,
+                    prompt_id_callback=lambda prompt_id, candidate_id=candidate.candidate_id,
+                        route=route, use_continuation=use_continuation: (
+                        self.store.set_qc_generation_owner(
+                            candidate_id,
+                            prompt_id=prompt_id,
+                            prompt_stage=(
+                                "i2v_continuation" if use_continuation else "i2v_legacy"
+                            ),
+                            route=route,
+                        )
+                    ),
+                    existing_prompt_id=(
+                        candidate.generation_prompt_id if not use_continuation else None
+                    ),
+                    deliver_to_discord=False,
+                    continuation_route=use_continuation,
+                )
+                self._video_probe(rendered)
+            except RepairGenerationError:
+                raise
+            except Exception as error:
+                raise RepairGenerationError(
+                    candidate.candidate_id,
+                    "QC repair render failed: " + str(error),
+                    retryable=True,
+                ) from error
             self.store.complete_qc_candidate_generation(
                 candidate.candidate_id,
                 source_video_path=str(rendered),

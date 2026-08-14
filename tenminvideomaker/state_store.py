@@ -2715,6 +2715,85 @@ class PipelineStateStore:
             ).fetchone()
         return self._qc_candidate_record(updated)
 
+    def record_qc_generation_failure(
+        self,
+        candidate_id: str,
+        failure: Mapping[str, Any],
+        *,
+        retryable: bool,
+        maximum_failures: int = 2,
+    ) -> QcCandidateRecord:
+        """Charge the durable repair-render budget and fail closed when exhausted."""
+        if maximum_failures != 2:
+            raise StateTransitionError(
+                "Phase 1 permits one repair-generation retry (two attempts total)."
+            )
+        failure_document = dict(failure)
+        failure_document["phase"] = "repair_generation"
+        failure_document["retryable"] = bool(retryable)
+        self.initialize()
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM qc_candidates WHERE candidate_id = ?",
+                (candidate_id,),
+            ).fetchone()
+            if row is None:
+                raise StateTransitionError(f"Unknown QC candidate {candidate_id}.")
+            current_state = QcCandidateState(row["state"])
+            if current_state == QcCandidateState.HOLD_FOR_REVIEW:
+                return self._qc_candidate_record(row)
+            if current_state not in {
+                QcCandidateState.PENDING_GENERATION,
+                QcCandidateState.GENERATING,
+            }:
+                raise StateTransitionError(
+                    "Only an unfinished repair candidate may record a generation failure."
+                )
+            prior_count = int(row["infrastructure_failure_count"])
+            count = min(prior_count + 1, maximum_failures)
+            should_hold = not retryable or count >= maximum_failures
+            state = (
+                QcCandidateState.HOLD_FOR_REVIEW
+                if should_hold
+                else QcCandidateState.PENDING_GENERATION
+            )
+            next_action = (
+                "hold_for_review" if should_hold else "retry_repair_generation"
+            )
+            failure_document["attempt_count"] = count
+            failure_json = _canonical_json(failure_document)
+            now = _utc_now()
+            connection.execute(
+                """
+                UPDATE qc_candidates
+                SET infrastructure_failure_count = ?, last_failure_json = ?,
+                    state = ?, next_action = ?, updated_at = ?
+                WHERE candidate_id = ?
+                """,
+                (count, failure_json, state.value, next_action, now, candidate_id),
+            )
+            connection.execute(
+                """
+                UPDATE scene_revisions
+                SET state = ?, error = ?, updated_at = ?
+                WHERE job_id = ? AND scene_id = ? AND revision = ?
+                """,
+                (
+                    SceneState.FAILED.value,
+                    failure_document.get("message") or failure_document.get("reason"),
+                    now,
+                    row["job_id"],
+                    row["scene_id"],
+                    row["revision"],
+                ),
+            )
+            updated = connection.execute(
+                "SELECT * FROM qc_candidates WHERE candidate_id = ?",
+                (candidate_id,),
+            ).fetchone()
+        return self._qc_candidate_record(updated)
+
     @staticmethod
     def _qc_evaluation_record(row: sqlite3.Row) -> QcEvaluationRecord:
         identity_keys = (

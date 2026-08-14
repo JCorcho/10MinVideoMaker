@@ -21,6 +21,7 @@ from tenminvideomaker.continuation_renderer import (
 )
 from tenminvideomaker.contracts import parse_job_payload
 from tenminvideomaker.qc_contracts import QcCandidateState, QcTier
+from tenminvideomaker.qc_repair import RepairGenerationError
 from tenminvideomaker.delivery import DiscordDeliverySettings
 from tenminvideomaker.state_store import (
     ManualFinalSceneSelection,
@@ -730,12 +731,13 @@ class SupervisorTests(unittest.TestCase):
                 settings=SupervisorSettings(1, 10, 10, 2),
             )
 
-            with self.assertRaisesRegex(FatalPipelineError, "unavailable"):
+            with self.assertRaisesRegex(RepairGenerationError, "unavailable") as raised:
                 supervisor.render_qc_candidates(
-                    job, ((SimpleNamespace(), {}),)
+                    job, ((SimpleNamespace(candidate_id="candidate-a1-test"), {}),)
                 )
 
             self.assertEqual(comfy.workflows, [])
+            self.assertTrue(raised.exception.retryable)
 
     def test_fatal_restart_restores_qc_epoch_without_replaying_originals(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

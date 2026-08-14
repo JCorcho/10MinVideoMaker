@@ -25,6 +25,16 @@ class B1PatchValidationError(ValueError):
     """Raised when a planner response exceeds the Phase-1 mutation contract."""
 
 
+class RepairGenerationError(RuntimeError):
+    """Classify a repair-render failure before its durable budget is charged."""
+
+    def __init__(self, candidate_id: str, reason: str, *, retryable: bool) -> None:
+        super().__init__(reason)
+        self.candidate_id = candidate_id
+        self.reason = reason
+        self.retryable = retryable
+
+
 @dataclass(frozen=True)
 class ValidatedRepairPatch:
     prompt: str

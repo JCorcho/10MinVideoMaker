@@ -27,6 +27,7 @@ from tenminvideomaker.qc_contracts import (
 )
 from tenminvideomaker.qc_video import SampledFrame, SampledVideo, VideoMetadata
 from tenminvideomaker.qc_controller import Phase1QcController, QcControllerError
+from tenminvideomaker.qc_repair import RepairGenerationError
 from tenminvideomaker.review import scene_review_document
 from tenminvideomaker.state_store import (
     JobState,
@@ -836,6 +837,87 @@ class Phase1QcControllerRoutingTests(unittest.TestCase):
         self.assertFalse(result.ready_for_finalization)
         self.assertEqual(persisted.infrastructure_failure_count, 2)
         self.assertEqual(persisted.state, QcCandidateState.HOLD_FOR_REVIEW)
+
+    def test_deterministic_repair_generation_failure_holds_without_replay(self) -> None:
+        original = self._candidate()
+        self._evaluation(original.candidate_id, QcDecision.FAIL)
+        a1 = self.controller().route_completed_evaluation(
+            self.job, original.candidate_id
+        )
+        calls = 0
+
+        class Supervisor:
+            comfy = object()
+
+            def render_qc_candidates(_self, _job, candidates):
+                nonlocal calls
+                calls += 1
+                raise RepairGenerationError(
+                    candidates[0][0].candidate_id,
+                    "missing_immutable_starting_frame",
+                    retryable=False,
+                )
+
+            def release_memory(_self):
+                pass
+
+        first = self.controller().run_epoch(self.job, Supervisor())
+        restarted = self.controller().run_epoch(self.job, Supervisor())
+        persisted = self.store.qc_candidate(a1.candidate_id)
+
+        self.assertEqual(calls, 1)
+        self.assertFalse(first.ready_for_finalization)
+        self.assertFalse(restarted.ready_for_finalization)
+        self.assertEqual(persisted.state, QcCandidateState.HOLD_FOR_REVIEW)
+        self.assertEqual(persisted.infrastructure_failure_count, 1)
+        self.assertEqual(persisted.last_failure["phase"], "repair_generation")
+        self.assertFalse(persisted.last_failure["retryable"])
+        self.assertEqual(
+            len(self.store.qc_candidates(self.job.job_id)),
+            2,
+        )
+
+    def test_transient_repair_generation_retries_once_across_restart_then_holds(self) -> None:
+        original = self._candidate()
+        self._evaluation(original.candidate_id, QcDecision.FAIL)
+        a1 = self.controller().route_completed_evaluation(
+            self.job, original.candidate_id
+        )
+        calls = 0
+
+        class Supervisor:
+            comfy = object()
+
+            def render_qc_candidates(_self, _job, candidates):
+                nonlocal calls
+                calls += 1
+                raise RepairGenerationError(
+                    candidates[0][0].candidate_id,
+                    "transient_comfy_transport",
+                    retryable=True,
+                )
+
+            def release_memory(_self):
+                pass
+
+        first_controller = self.controller()
+        first = first_controller.run_epoch(self.job, Supervisor())
+        after_first = self.store.qc_candidate(a1.candidate_id)
+        self.assertFalse(first.ready_for_finalization)
+        self.assertEqual(after_first.state, QcCandidateState.PENDING_GENERATION)
+        self.assertEqual(after_first.infrastructure_failure_count, 1)
+
+        self.controller().run_epoch(self.job, Supervisor())
+        self.controller().run_epoch(self.job, Supervisor())
+        persisted = self.store.qc_candidate(a1.candidate_id)
+
+        self.assertEqual(calls, 2)
+        self.assertEqual(persisted.state, QcCandidateState.HOLD_FOR_REVIEW)
+        self.assertEqual(persisted.infrastructure_failure_count, 2)
+        self.assertEqual(
+            len(self.store.qc_candidates(self.job.job_id)),
+            2,
+        )
 
     def test_failed_prior_backend_cleanup_blocks_repair_generation(self) -> None:
         original = self._candidate()

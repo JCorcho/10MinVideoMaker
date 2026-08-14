@@ -30,7 +30,7 @@ from .qc_contracts import (
     canonical_json,
     evaluation_idempotency_key,
 )
-from .qc_repair import schedule_a1_retry, schedule_b1_retry
+from .qc_repair import RepairGenerationError, schedule_a1_retry, schedule_b1_retry
 from .qc_video import sample_video_frames
 from .review import scene_review_document
 from .state_store import (
@@ -773,15 +773,56 @@ class Phase1QcController:
                         "The dedicated QC port is owned by an unverified process; "
                         "repair generation is blocked until it exits."
                     )
-                supervisor.render_qc_candidates(
-                    job,
-                    tuple(
-                        (candidate, self._revision_document(self.store, candidate))
-                        for candidate in generation
-                    ),
-                )
-                generated += len(generation)
+                retry_scheduled = False
+                for candidate in generation:
+                    try:
+                        document = self._revision_document(self.store, candidate)
+                        supervisor.render_qc_candidates(
+                            job,
+                            ((candidate, document),),
+                        )
+                        generated += 1
+                    except RepairGenerationError as error:
+                        persisted = self.store.record_qc_generation_failure(
+                            candidate.candidate_id,
+                            {
+                                "kind": type(error).__name__,
+                                "reason": error.reason,
+                                "message": str(error),
+                            },
+                            retryable=error.retryable,
+                        )
+                        retry_scheduled = retry_scheduled or (
+                            persisted.state == QcCandidateState.PENDING_GENERATION
+                        )
+                    except StateTransitionError as error:
+                        self.store.record_qc_generation_failure(
+                            candidate.candidate_id,
+                            {
+                                "kind": type(error).__name__,
+                                "message": str(error),
+                            },
+                            retryable=False,
+                        )
+                    except Exception as error:
+                        LOGGER.exception(
+                            "Transient QC repair generation failed for %s.",
+                            candidate.candidate_id,
+                        )
+                        persisted = self.store.record_qc_generation_failure(
+                            candidate.candidate_id,
+                            {
+                                "kind": type(error).__name__,
+                                "message": str(error),
+                            },
+                            retryable=True,
+                        )
+                        retry_scheduled = retry_scheduled or (
+                            persisted.state == QcCandidateState.PENDING_GENERATION
+                        )
                 supervisor.release_memory()
+                if retry_scheduled:
+                    return QcEpochResult(False, (), False, generated, evaluated)
 
             pending = [
                 item for item in self.store.qc_candidates(job.job_id)
