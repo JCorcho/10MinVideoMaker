@@ -103,6 +103,16 @@ class QualityControlSettings:
     shutdown_timeout_seconds: int = 30
     sampling_fps: float = 2.0
     frames_per_window: int = 4
+    preprocessing_version: str = "vlm-qc-lab-f634ca2-image-v1"
+    validated_lab_commit: str = "f634ca2ab7ca95ddd9abde7fe840031eba0696f4"
+    image_decode_backend: str = "ffmpeg_selected_png_rgb24"
+    image_max_short_edge: int = 512
+    image_max_pixels: int = 458_752
+    image_dimension_multiple: int = 16
+    image_resize_interpolation: str = "opencv_inter_area"
+    image_jpeg_quality: int = 88
+    image_orientation: str = "encoded_pixels_no_autorotate"
+    image_color_pipeline: str = "rgb24_to_opencv_bgr_to_jpeg"
     minimum_error_severity: int = 3
     minimum_error_confidence: float = 0.85
     minimum_strong_windows: int = 2
@@ -167,6 +177,34 @@ class QualityControlSettings:
             "image_min_tokens": (self.image_min_tokens, 1024),
             "sampling_fps": (self.sampling_fps, 2.0),
             "frames_per_window": (self.frames_per_window, 4),
+            "preprocessing_version": (
+                self.preprocessing_version,
+                "vlm-qc-lab-f634ca2-image-v1",
+            ),
+            "validated_lab_commit": (
+                self.validated_lab_commit,
+                "f634ca2ab7ca95ddd9abde7fe840031eba0696f4",
+            ),
+            "image_decode_backend": (
+                self.image_decode_backend,
+                "ffmpeg_selected_png_rgb24",
+            ),
+            "image_max_short_edge": (self.image_max_short_edge, 512),
+            "image_max_pixels": (self.image_max_pixels, 458_752),
+            "image_dimension_multiple": (self.image_dimension_multiple, 16),
+            "image_resize_interpolation": (
+                self.image_resize_interpolation,
+                "opencv_inter_area",
+            ),
+            "image_jpeg_quality": (self.image_jpeg_quality, 88),
+            "image_orientation": (
+                self.image_orientation,
+                "encoded_pixels_no_autorotate",
+            ),
+            "image_color_pipeline": (
+                self.image_color_pipeline,
+                "rgb24_to_opencv_bgr_to_jpeg",
+            ),
             "minimum_error_severity": (self.minimum_error_severity, 3),
             "minimum_error_confidence": (self.minimum_error_confidence, 0.85),
             "minimum_strong_windows": (self.minimum_strong_windows, 2),
@@ -271,6 +309,18 @@ class QualityControlSettings:
             "sampling": {
                 "fps": self.sampling_fps,
                 "frames_per_window": self.frames_per_window,
+                "preprocessing": {
+                    "version": self.preprocessing_version,
+                    "validated_lab_commit": self.validated_lab_commit,
+                    "decoder": self.image_decode_backend,
+                    "max_short_edge": self.image_max_short_edge,
+                    "max_pixels": self.image_max_pixels,
+                    "dimension_multiple": self.image_dimension_multiple,
+                    "resize_interpolation": self.image_resize_interpolation,
+                    "jpeg_quality": self.image_jpeg_quality,
+                    "orientation": self.image_orientation,
+                    "color_pipeline": self.image_color_pipeline,
+                },
             },
             "evidence_policy": {
                 "minimum_error_severity": self.minimum_error_severity,

@@ -123,6 +123,11 @@ class Phase1QcControllerRoutingTests(unittest.TestCase):
             def close(self):
                 events.append("qwen-close")
 
+        settings = replace(
+            QualityControlSettings(),
+            quality_control_enabled=True,
+            auto_advance_pass=auto,
+        )
         sampled = SampledVideo(
             VideoMetadata(24.0, 4, 1.0),
             2.0,
@@ -130,11 +135,7 @@ class Phase1QcControllerRoutingTests(unittest.TestCase):
                 SampledFrame(index, index / 2, self.root / f"{index}.jpg", b"jpeg")
                 for index in range(4)
             ),
-        )
-        settings = replace(
-            QualityControlSettings(),
-            quality_control_enabled=True,
-            auto_advance_pass=auto,
+            settings.effective_document()["sampling"]["preprocessing"],
         )
         return Phase1QcController(
             store=self.store,
@@ -818,6 +819,9 @@ class Phase1QcControllerRoutingTests(unittest.TestCase):
             def close(self):
                 events.append("qwen-close")
 
+        settings = replace(
+            QualityControlSettings(), quality_control_enabled=True
+        )
         sampled = SampledVideo(
             VideoMetadata(24.0, 8, 4.0),
             2.0,
@@ -825,13 +829,12 @@ class Phase1QcControllerRoutingTests(unittest.TestCase):
                 SampledFrame(index, index / 2, self.root / f"e2e-{index}.jpg", b"jpeg")
                 for index in range(8)
             ),
+            settings.effective_document()["sampling"]["preprocessing"],
         )
         controller = Phase1QcController(
             store=self.store,
             layout=self.layout,
-            settings=replace(
-                QualityControlSettings(), quality_control_enabled=True
-            ),
+            settings=settings,
             backend_factory=Backend,
             prompt_root=Path(__file__).parents[1] / "prompts",
             sample_video=lambda *args, **kwargs: sampled,

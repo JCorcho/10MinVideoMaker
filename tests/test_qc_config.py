@@ -18,6 +18,13 @@ class QualityControlSettingsTests(unittest.TestCase):
         self.assertEqual(settings.sampling_fps, 2.0)
         self.assertEqual(settings.frames_per_window, 4)
         self.assertEqual(settings.image_min_tokens, 1024)
+        self.assertEqual(
+            settings.preprocessing_version,
+            "vlm-qc-lab-f634ca2-image-v1",
+        )
+        self.assertEqual(settings.image_max_short_edge, 512)
+        self.assertEqual(settings.image_max_pixels, 458752)
+        self.assertEqual(settings.image_jpeg_quality, 88)
         self.assertEqual(settings.minimum_strong_windows, 2)
         with self.assertRaisesRegex(
             QualityControlConfigurationError, "kill switch is disabled"
@@ -53,6 +60,21 @@ class QualityControlSettingsTests(unittest.TestCase):
         self.assertEqual(document["schema_version"], 1)
         self.assertEqual(document["gpu"]["expected_uuid"], settings.expected_gpu_uuid)
         self.assertEqual(document["gpu"]["expected_name"], settings.expected_gpu_name)
+        self.assertEqual(
+            document["sampling"]["preprocessing"],
+            {
+                "version": "vlm-qc-lab-f634ca2-image-v1",
+                "validated_lab_commit": "f634ca2ab7ca95ddd9abde7fe840031eba0696f4",
+                "decoder": "ffmpeg_selected_png_rgb24",
+                "max_short_edge": 512,
+                "max_pixels": 458752,
+                "dimension_multiple": 16,
+                "resize_interpolation": "opencv_inter_area",
+                "jpeg_quality": 88,
+                "orientation": "encoded_pixels_no_autorotate",
+                "color_pipeline": "rgb24_to_opencv_bgr_to_jpeg",
+            },
+        )
         self.assertNotIn("ordinal", str(document).casefold())
         self.assertEqual(len(settings.effective_sha256()), 64)
 
@@ -118,6 +140,8 @@ class QualityControlSettingsTests(unittest.TestCase):
                 replace(settings, sampling_fps=1.0).validate_for_start()
             with self.assertRaises(QualityControlConfigurationError):
                 replace(settings, context_length=8192).validate_for_start()
+            with self.assertRaises(QualityControlConfigurationError):
+                replace(settings, image_max_pixels=262144).validate_for_start()
 
 
 if __name__ == "__main__":

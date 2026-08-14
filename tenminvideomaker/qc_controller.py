@@ -486,6 +486,7 @@ class Phase1QcController:
         rubric = load_production_rubric(
             self.prompt_root / "production_ltx_video_qc_v1.txt"
         )
+        effective_document = self.settings.effective_document()
         effective_hash = self.settings.effective_sha256()
         key = evaluation_idempotency_key(
             source_video_sha256=candidate.source_video_sha256,
@@ -506,11 +507,14 @@ class Phase1QcController:
             source_video_path=candidate.source_video_path,
             source_video_sha256=candidate.source_video_sha256,
             evaluator_identity=_identity_mapping(identity),
-            effective_config=self.settings.effective_document(),
+            effective_config=effective_document,
             effective_config_sha256=effective_hash,
             prompt_version=rubric.version,
             prompt_sha256=rubric.sha256,
-            sampling_config={"fps": self.settings.sampling_fps},
+            sampling_config={
+                "fps": self.settings.sampling_fps,
+                "preprocessing": effective_document["sampling"]["preprocessing"],
+            },
             window_config={
                 "frames_per_window": self.settings.frames_per_window,
                 "minimum_strong_windows": self.settings.minimum_strong_windows,
@@ -568,6 +572,13 @@ class Phase1QcController:
                 ffmpeg_command=self.ffmpeg_command,
                 temporary_root=Path(temporary),
             )
+            if (
+                dict(sampled.preprocessing)
+                != effective_document["sampling"]["preprocessing"]
+            ):
+                raise QcControllerError(
+                    "Sampled frames do not match the validated preprocessing identity."
+                )
             result = HeadlessVideoEvaluator(
                 backend,
                 rubric,

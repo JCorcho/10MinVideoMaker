@@ -3,11 +3,18 @@
 The selection and four-frame slicing semantics are ported from the validated
 standalone LTX23-VLM-Video-QC-Lab at commit f634ca2.  Production owns this copy
 so the research checkout is never a mutable runtime dependency.
+
+The lab decodes through PyAV while production extracts selected lossless RGB24
+PNGs through FFmpeg. Both use libav decoding and the subsequent OpenCV resize
+and JPEG-88 steps are identical, but exact decoded/JPEG bytes are not promised
+across different libav/OpenCV builds. Per-frame dimensions and hashes are
+persisted so a deployed runtime remains semantically and byte-level auditable.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -19,6 +26,14 @@ from uuid import uuid4
 
 class QcVideoError(RuntimeError):
     """Raised when video metadata or deterministic frame extraction fails."""
+
+
+PREPROCESSING_VERSION = "vlm-qc-lab-f634ca2-image-v1"
+VALIDATED_LAB_COMMIT = "f634ca2ab7ca95ddd9abde7fe840031eba0696f4"
+IMAGE_MAX_SHORT_EDGE = 512
+IMAGE_MAX_PIXELS = 458_752
+IMAGE_DIMENSION_MULTIPLE = 16
+IMAGE_JPEG_QUALITY = 88
 
 
 @dataclass(frozen=True)
@@ -42,6 +57,9 @@ class SampledFrame:
     timestamp_seconds: float
     image_path: Path
     image_bytes: bytes | None = None
+    width: int | None = None
+    height: int | None = None
+    image_sha256: str | None = None
 
     def bytes(self) -> bytes:
         if self.image_bytes is not None:
@@ -54,6 +72,7 @@ class SampledVideo:
     metadata: VideoMetadata
     target_fps: float
     frames: tuple[SampledFrame, ...]
+    preprocessing: Mapping[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -185,6 +204,22 @@ def build_frame_accounting(
 ) -> dict[str, object]:
     inspected = tuple(frame for window in processed_windows for frame in window.frames)
     confirmation_frames = () if confirmation is None else confirmation.frames
+    suspect_frames = next(
+        (
+            item.frames
+            for item in processed_windows
+            if confirmation is not None
+            and item.window_number == confirmation.confirmation_of_window
+        ),
+        None,
+    )
+    confirmation_independent = (
+        None
+        if confirmation is None
+        else suspect_frames is not None
+        and tuple(item.source_index for item in confirmation.frames)
+        != tuple(item.source_index for item in suspect_frames)
+    )
     return {
         "source_fps": sampled.metadata.source_fps,
         "source_frame_count": sampled.metadata.source_frame_count,
@@ -202,6 +237,10 @@ def build_frame_accounting(
         "selected_source_timestamps": [item.timestamp_seconds for item in inspected],
         "unique_selected_frames_inspected": len({item.source_index for item in inspected}),
         "confirmation_frame_exposures": len(confirmation_frames),
+        "confirmation_independence_rule": (
+            "different_source_frame_sequence_required"
+        ),
+        "confirmation_is_independent": confirmation_independent,
         "frame_count_represented_in_model_input": len(inspected)
         + len(confirmation_frames),
         "frames_per_window": max(len(item.frames) for item in planned_windows),
@@ -225,6 +264,17 @@ def build_frame_accounting(
         },
         "early_exit_applied": bool(early_exit),
         "early_exit_reason": early_exit_reason,
+        "preprocessing": dict(sampled.preprocessing),
+        "sampled_frame_artifacts": [
+            {
+                "source_frame_index": item.source_index,
+                "timestamp_seconds": item.timestamp_seconds,
+                "width": item.width,
+                "height": item.height,
+                "jpeg_sha256": item.image_sha256,
+            }
+            for item in sampled.frames
+        ],
     }
 
 
@@ -268,6 +318,84 @@ def _metadata_from_probe(payload: Mapping[str, Any]) -> tuple[VideoMetadata, tup
     if not actual_timestamps:
         actual_timestamps = [index / source_fps for index in range(total_frames)]
     return VideoMetadata(source_fps, total_frames, duration), tuple(actual_timestamps)
+
+
+def _preprocessing_provenance() -> dict[str, object]:
+    return {
+        "version": PREPROCESSING_VERSION,
+        "validated_lab_commit": VALIDATED_LAB_COMMIT,
+        "decoder": "ffmpeg_selected_png_rgb24",
+        "orientation": "encoded_pixels_no_autorotate",
+        "color_pipeline": "rgb24_to_opencv_bgr_to_jpeg",
+        "resize_interpolation": "opencv_inter_area",
+        "max_short_edge": IMAGE_MAX_SHORT_EDGE,
+        "max_pixels": IMAGE_MAX_PIXELS,
+        "dimension_multiple": IMAGE_DIMENSION_MULTIPLE,
+        "jpeg_quality": IMAGE_JPEG_QUALITY,
+    }
+
+
+def _benchmark_resize(image: Any) -> Any:
+    """Apply the reviewed lab's exact scale, floor, and INTER_AREA semantics."""
+    try:
+        import cv2
+    except ImportError as error:
+        raise QcVideoError(
+            "Production QC preprocessing requires OpenCV, matching the validated lab."
+        ) from error
+    height, width = image.shape[:2]
+    scale = min(
+        1.0,
+        IMAGE_MAX_SHORT_EDGE / max(1, min(height, width)),
+        math.sqrt(IMAGE_MAX_PIXELS / max(1, height * width)),
+    )
+    if scale < 1.0:
+        new_width = max(
+            IMAGE_DIMENSION_MULTIPLE,
+            int(width * scale) // IMAGE_DIMENSION_MULTIPLE * IMAGE_DIMENSION_MULTIPLE,
+        )
+        new_height = max(
+            IMAGE_DIMENSION_MULTIPLE,
+            int(height * scale) // IMAGE_DIMENSION_MULTIPLE * IMAGE_DIMENSION_MULTIPLE,
+        )
+        image = cv2.resize(
+            image,
+            (new_width, new_height),
+            interpolation=cv2.INTER_AREA,
+        )
+    return image
+
+
+def _encode_benchmark_jpeg(
+    source_path: Path,
+    destination: Path,
+) -> tuple[bytes, int, int, str]:
+    try:
+        import cv2
+    except ImportError as error:
+        raise QcVideoError(
+            "Production QC preprocessing requires OpenCV, matching the validated lab."
+        ) from error
+    image = cv2.imread(str(source_path), cv2.IMREAD_COLOR)
+    if image is None:
+        raise QcVideoError(f"OpenCV could not decode extracted frame {source_path}.")
+    image = _benchmark_resize(image)
+    ok, encoded = cv2.imencode(
+        ".jpg",
+        image,
+        [cv2.IMWRITE_JPEG_QUALITY, IMAGE_JPEG_QUALITY],
+    )
+    if not ok:
+        raise QcVideoError(f"OpenCV could not encode sampled frame {source_path}.")
+    payload = encoded.tobytes()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(payload)
+    return (
+        payload,
+        int(image.shape[1]),
+        int(image.shape[0]),
+        hashlib.sha256(payload).hexdigest(),
+    )
 
 
 def sample_video_frames(
@@ -320,6 +448,8 @@ def sample_video_frames(
     )
     output_root = Path(temporary_root).resolve() / f"qc-sample-{uuid4().hex}"
     output_root.mkdir(parents=True, exist_ok=False)
+    decoded_root = output_root / "decoded"
+    decoded_root.mkdir(parents=True, exist_ok=False)
     expression = "+".join(f"eq(n\\,{index})" for index in selection.indices)
     extract = run_command(
         [
@@ -327,15 +457,18 @@ def sample_video_frames(
             "-hide_banner",
             "-loglevel",
             "error",
+            "-noautorotate",
             "-i",
             str(source),
             "-vf",
             f"select='{expression}'",
             "-fps_mode",
             "vfr",
-            "-q:v",
-            "2",
-            str(output_root / "frame-%06d.jpg"),
+            "-c:v",
+            "png",
+            "-pix_fmt",
+            "rgb24",
+            str(decoded_root / "source-%06d.png"),
         ],
         capture_output=True,
         text=True,
@@ -344,15 +477,35 @@ def sample_video_frames(
     )
     if extract.returncode:
         raise QcVideoError(extract.stderr.strip() or "FFmpeg frame extraction failed.")
-    paths = tuple(sorted(output_root.glob("frame-*.jpg")))
-    if len(paths) != len(selection.indices):
+    decoded_paths = tuple(sorted(decoded_root.glob("source-*.png")))
+    if len(decoded_paths) != len(selection.indices):
         raise QcVideoError(
             "FFmpeg extracted a different number of frames than the deterministic selection."
         )
-    frames = tuple(
-        SampledFrame(index, timestamp, path)
-        for index, timestamp, path in zip(
-            selection.indices, selection.timestamps_seconds, paths
+    frames: list[SampledFrame] = []
+    for position, (index, timestamp, decoded_path) in enumerate(
+        zip(selection.indices, selection.timestamps_seconds, decoded_paths),
+        1,
+    ):
+        image_path = output_root / "frames" / f"frame-{position:06d}.jpg"
+        payload, width, height, image_sha256 = _encode_benchmark_jpeg(
+            decoded_path,
+            image_path,
         )
+        frames.append(
+            SampledFrame(
+                source_index=index,
+                timestamp_seconds=timestamp,
+                image_path=image_path,
+                image_bytes=payload,
+                width=width,
+                height=height,
+                image_sha256=image_sha256,
+            )
+        )
+    return SampledVideo(
+        metadata,
+        target_fps,
+        tuple(frames),
+        _preprocessing_provenance(),
     )
-    return SampledVideo(metadata, target_fps, frames)
