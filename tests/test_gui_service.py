@@ -848,6 +848,36 @@ class GuiServiceTests(unittest.TestCase):
             controller.wake.assert_called_once_with()
             self.assertFalse(controller.can_cancel_current_project())
 
+    def test_cancel_running_qc_closes_only_owned_backend_before_abandon(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = PipelineStateStore(root / "pipeline.sqlite3")
+            job = parse_job_payload(payload())
+            store.claim_job(job)
+            store.transition(PipelineState.RUNNING_QC, job_id=job.job_id)
+            supervisor = Mock()
+            supervisor.store = store
+            events: list[str] = []
+            supervisor.qc_controller.close.side_effect = lambda: events.append("close_qc")
+            original_abandon = store.abandon_job
+            store.abandon_job = Mock(
+                side_effect=lambda *args, **kwargs: (
+                    events.append("abandon"),
+                    original_abandon(*args, **kwargs),
+                )[1]
+            )
+            supervisor.comfy.cancel_project_prompts.side_effect = lambda: (
+                events.append("cancel_comfy"),
+                (),
+            )[1]
+            controller = SupervisorController(supervisor, StorageLayout(root / "storage"))
+
+            result = controller.cancel_current_project()
+
+            self.assertEqual(result["pipeline_state"], PipelineState.IDLE.value)
+            self.assertEqual(events, ["close_qc", "abandon", "cancel_comfy"])
+            supervisor.qc_controller.close.assert_called_once_with()
+
     def test_cancel_current_project_rejects_when_pipeline_already_free(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

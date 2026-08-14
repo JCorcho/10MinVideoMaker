@@ -281,6 +281,10 @@ class SupervisorController:
         snapshot = self.store.snapshot()
         if snapshot.state not in ACTIVE_RENDER_STATES or not snapshot.job_id:
             return ()
+        if snapshot.state == PipelineState.RUNNING_QC:
+            qc_controller = getattr(self.supervisor, "qc_controller", None)
+            if qc_controller is not None:
+                qc_controller.close()
         self.store.abandon_job(
             snapshot.job_id,
             reason="Interrupted from the GUI so a remake batch could run immediately.",
@@ -313,6 +317,10 @@ class SupervisorController:
             )
         job_id = snapshot.job_id
         cancelled: tuple[str, ...] = ()
+        if snapshot.state == PipelineState.RUNNING_QC:
+            qc_controller = getattr(self.supervisor, "qc_controller", None)
+            if qc_controller is not None:
+                qc_controller.close()
         self.store.abandon_job(
             job_id,
             reason="Cancelled from the GUI so the pipeline could advance to the next job.",

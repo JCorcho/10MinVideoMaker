@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 import hashlib
 import os
 from pathlib import Path
@@ -71,10 +72,14 @@ def discover_matching_gpu(
     )
 
 
-def build_llama_command(settings: QualityControlSettings) -> list[str]:
+def build_llama_command(
+    settings: QualityControlSettings,
+    *,
+    slot_save_path: Path | None = None,
+) -> list[str]:
     if settings.llama_executable is None or settings.model_path is None or settings.projector_path is None:
         raise LlamaCppLifecycleError("Validated llama.cpp assets are not configured.")
-    return [
+    command = [
         str(settings.llama_executable),
         "--model",
         str(settings.model_path),
@@ -94,6 +99,7 @@ def build_llama_command(settings: QualityControlSettings) -> list[str]:
         "none",
         "--parallel",
         str(settings.parallel_slots),
+        "--slots",
         "--flash-attn",
         "on",
         "--jinja",
@@ -105,6 +111,9 @@ def build_llama_command(settings: QualityControlSettings) -> list[str]:
         "0",
         "--offline",
     ]
+    if slot_save_path is not None:
+        command.extend(["--slot-save-path", str(slot_save_path)])
+    return command
 
 
 def _sha256_file(path: Path) -> str:
@@ -191,14 +200,54 @@ class LlamaCppProcess:
         version = completed.stdout.strip() or completed.stderr.strip()
         if not version:
             raise LlamaCppLifecycleError("llama.cpp returned no version identity.")
-        if not re.search(
+        if re.search(
             rf"(?<![0-9.]){re.escape(self.settings.backend_version)}(?![0-9.])",
             version,
         ):
+            return version
+        # LM Studio's packaged llama.cpp 2.28.2 binary self-reports its
+        # upstream build revision (currently ``version: 1 (fe2adf0)``), not
+        # the package version. validate_for_start already verified the exact
+        # executable SHA-256; additionally bind the immutable package folder
+        # so the reported upstream identity remains useful evidence without
+        # silently accepting another packaged release.
+        package = self.settings.llama_executable.parent.name
+        if (
+            package.endswith("-" + self.settings.backend_version)
+            and re.search(r"version:\s*\d+\s*\([0-9a-f]{7,40}\)", version, re.I)
+        ):
+            return f"LM Studio package {self.settings.backend_version}; {version}"
+        raise LlamaCppLifecycleError(
+            "llama.cpp version does not match the validated QC backend version."
+        )
+
+    def _visible_device_telemetry(self, gpu: GpuIdentity) -> str:
+        """Prove the child environment exposes only the UUID-selected 4080."""
+        assert self.settings.llama_executable is not None
+        completed = self.run_command(
+            [str(self.settings.llama_executable), "--list-devices"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+            env=self.environment,
+        )
+        telemetry = (completed.stdout + "\n" + completed.stderr).strip()
+        if completed.returncode:
             raise LlamaCppLifecycleError(
-                "llama.cpp version does not match the validated QC backend version."
+                telemetry or "llama.cpp device discovery failed."
             )
-        return version
+        device_lines = [
+            line.strip()
+            for line in telemetry.splitlines()
+            if re.search(r"(?:CUDA\d+|GPU-[A-Za-z0-9-]+)", line, re.I)
+        ]
+        if len(device_lines) != 1 or gpu.name.casefold() not in device_lines[0].casefold():
+            raise LlamaCppLifecycleError(
+                "The UUID-scoped llama.cpp child environment did not expose exactly "
+                "the configured physical GPU."
+            )
+        return telemetry
 
     def _launch_kwargs(self) -> dict[str, object]:
         kwargs: dict[str, object] = {}
@@ -230,7 +279,13 @@ class LlamaCppProcess:
         )
         self.environment["PYTHONUTF8"] = "1"
         backend_version = self._version()
-        command = build_llama_command(self.settings)
+        device_telemetry = self._visible_device_telemetry(gpu)
+        slot_save_path = (self.layout.root / "qc-slot-cache").resolve()
+        slot_save_path.mkdir(parents=True, exist_ok=True)
+        command = build_llama_command(
+            self.settings,
+            slot_save_path=slot_save_path,
+        )
         self.layout.logs_root.mkdir(parents=True, exist_ok=True)
         launch_id = uuid4().hex
         stdout_path = self.layout.logs_root / f"qc-llama-{launch_id}.stdout.log"
@@ -259,13 +314,6 @@ class LlamaCppProcess:
                 self.sleep(0.25)
             self._stdout_handle.flush()
             self._stderr_handle.flush()
-            if not (
-                self.telemetry_probe(stdout_path, gpu)
-                or self.telemetry_probe(stderr_path, gpu)
-            ):
-                raise LlamaCppLifecycleError(
-                    "llama.cpp startup telemetry did not confirm the configured physical GPU."
-                )
             assert self.settings.llama_executable is not None
             assert self.settings.model_path is not None
             assert self.settings.projector_path is not None
@@ -290,6 +338,9 @@ class LlamaCppProcess:
                 owned_pid=int(self._process.pid),
                 stdout_log_path=str(stdout_path),
                 stderr_log_path=str(stderr_path),
+                launch_id=launch_id,
+                started_at=datetime.now(UTC).isoformat(),
+                device_telemetry=device_telemetry,
             )
             return self._identity
         except BaseException:

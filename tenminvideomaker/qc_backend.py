@@ -194,6 +194,9 @@ class BackendIdentity:
     owned_pid: int
     stdout_log_path: str
     stderr_log_path: str
+    launch_id: str = ""
+    started_at: str = ""
+    device_telemetry: str = ""
 
 
 @dataclass(frozen=True)
@@ -291,10 +294,36 @@ class LlamaCppHttpBackend:
 
     def _reset_context(self) -> None:
         """Erase the sole slot KV after every completed or failed request."""
+        try:
+            self._erase_slot()
+            return
+        except HTTPError as error:
+            detail = error.read().decode("utf-8", errors="replace")
+            if error.code != 501 or "image/audio tokens" not in detail:
+                raise QcBackendError(
+                    "Could not prove fresh llama.cpp request context; slot erase "
+                    f"returned HTTP {error.code}: {detail[-600:]}"
+                ) from error
+        # llama.cpp 2.28.2 cannot erase a slot while it holds multimodal
+        # tokens. Replace that KV with a self-contained one-token text request,
+        # discard its output, then require a successful erase. The subsequent
+        # judge/planner request is issued only after this verified boundary.
+        self._scrub_multimodal_slot()
+        try:
+            self._erase_slot()
+        except HTTPError as error:
+            detail = error.read().decode("utf-8", errors="replace")
+            raise QcBackendError(
+                "Could not prove fresh llama.cpp request context after text scrub; "
+                f"slot erase returned HTTP {error.code}: {detail[-600:]}"
+            ) from error
+
+    def _erase_slot(self) -> None:
         reset = Request(
             f"http://{self.settings.loopback_host}:{self.settings.loopback_port}"
             "/slots/0?action=erase",
-            data=b"",
+            data=b"{}",
+            headers={"Content-Type": "application/json"},
             method="POST",
         )
         try:
@@ -303,9 +332,47 @@ class LlamaCppHttpBackend:
             ) as response:
                 if not 200 <= int(response.status) < 300:
                     raise QcBackendError("llama.cpp refused slot KV erasure.")
+        except HTTPError:
+            raise
         except (OSError, URLError, TimeoutError) as error:
             raise QcBackendError(
                 "Could not prove fresh llama.cpp request context; slot erase failed."
+            ) from error
+
+    def _scrub_multimodal_slot(self) -> None:
+        payload = {
+            "model": "production-vlm-qc",
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "Stateless KV scrub. Return only OK.",
+                },
+                {"role": "user", "content": "OK"},
+            ],
+            "temperature": 0.0,
+            "max_tokens": 1,
+            "stream": False,
+            "reasoning_effort": "none",
+            "chat_template_kwargs": {"enable_thinking": False},
+            "cache_prompt": False,
+        }
+        request = Request(
+            f"http://{self.settings.loopback_host}:{self.settings.loopback_port}"
+            "/v1/chat/completions",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with self._urlopen(
+                request, timeout=self.settings.request_timeout_seconds
+            ) as response:
+                response.read()
+                if not 200 <= int(response.status) < 300:
+                    raise QcBackendError("llama.cpp refused the multimodal KV scrub.")
+        except (HTTPError, OSError, URLError, TimeoutError) as error:
+            raise QcBackendError(
+                "Could not convert multimodal KV to erasable text-only KV."
             ) from error
 
     def _chat(self, payload: Mapping[str, object]) -> tuple[str, Mapping[str, Any]]:

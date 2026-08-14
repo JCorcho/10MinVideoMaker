@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from collections import deque
 import hashlib
+from io import BytesIO
 import json
 from pathlib import Path
 import unittest
+from urllib.error import HTTPError
 
 from tenminvideomaker.qc_backend import (
     HeadlessVideoEvaluator,
@@ -189,6 +191,59 @@ class QcBackendTests(unittest.TestCase):
         chats[0]["messages"][1]["content"][0]["text"] += sentinel
         self.assertNotIn(sentinel, json.dumps(chats[1]))
         self.assertEqual(len(chats[1]["messages"]), 2)
+
+    def test_multimodal_slot_is_text_scrubbed_then_verified_erased(self) -> None:
+        seen = []
+        erase_attempts = 0
+
+        class Response:
+            status = 200
+
+            def __init__(self, body: bytes = b"{}"):
+                self.body = body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return self.body
+
+        def fake_urlopen(request, timeout):
+            nonlocal erase_attempts
+            seen.append((request.full_url, request.data, timeout))
+            if "/slots/" in request.full_url:
+                erase_attempts += 1
+                if erase_attempts == 1:
+                    body = b'{"error":{"message":"slot holds image/audio tokens"}}'
+                    raise HTTPError(request.full_url, 501, "not supported", {}, BytesIO(body))
+                return Response(b'{"id_slot":0,"n_erased":12}')
+            chats = sum("/chat/completions" in url for url, _, _ in seen)
+            body = raw("PASS") if chats == 1 else "OK"
+            return Response(
+                json.dumps(
+                    {"choices": [{"message": {"content": body}}], "usage": {}}
+                ).encode()
+            )
+
+        backend = LlamaCppHttpBackend(
+            QualityControlSettings(), object(), urlopen_factory=fake_urlopen
+        )
+        request = VisionJudgeRequest.from_window(
+            chronological_windows(sampled(4))[0],
+            rubric=load_production_rubric(PROMPT_PATH),
+        )
+
+        backend.evaluate(request)
+
+        chats = [json.loads(data) for url, data, _ in seen if "/chat/completions" in url]
+        self.assertEqual(len(chats), 2)
+        self.assertEqual(chats[1]["max_tokens"], 1)
+        self.assertFalse(chats[1]["cache_prompt"])
+        self.assertNotIn("image_url", json.dumps(chats[1]))
+        self.assertEqual(erase_attempts, 2)
 
     def test_two_strong_normal_windows_end_evaluation_early(self) -> None:
         backend = FakeBackend(

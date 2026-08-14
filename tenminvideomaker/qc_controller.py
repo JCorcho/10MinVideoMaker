@@ -71,27 +71,7 @@ def _sha256_file(path: str | Path) -> str:
 
 
 def _identity_mapping(identity: BackendIdentity) -> dict[str, Any]:
-    value = asdict(identity)
-    return {
-        key: value[key]
-        for key in (
-            "evaluator_id",
-            "evaluator_version",
-            "backend_family",
-            "backend_version",
-            "executable_path",
-            "executable_sha256",
-            "model_id",
-            "model_path",
-            "model_sha256",
-            "quantization",
-            "projector_path",
-            "projector_sha256",
-            "projector_precision",
-            "gpu_uuid",
-            "gpu_name",
-        )
-    }
+    return asdict(identity)
 
 
 class Phase1QcController:

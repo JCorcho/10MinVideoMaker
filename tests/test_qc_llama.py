@@ -122,10 +122,46 @@ class QcLlamaTests(unittest.TestCase):
                 manager.start()
             self.assertEqual(launched, [])
 
+    def test_lmstudio_package_version_accepts_exact_hashed_upstream_self_report(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            configured = settings(root)
+            package = root / "llama.cpp-win-x86_64-nvidia-cuda12-avx2-2.28.2"
+            package.mkdir()
+            executable = package / "llama-server.exe"
+            executable.write_bytes(configured.llama_executable.read_bytes())
+            configured = replace(
+                configured,
+                llama_executable=executable,
+                expected_executable_sha256=hashlib.sha256(
+                    executable.read_bytes()
+                ).hexdigest(),
+            )
+            manager = LlamaCppProcess(
+                configured,
+                StorageLayout(root / "storage"),
+                run_command=lambda command, **kwargs: Completed(
+                    "version: 1 (fe2adf0)"
+                    if "--version" in command
+                    else f"{configured.expected_gpu_uuid}, {configured.expected_gpu_name}"
+                ),
+                popen_factory=lambda command, **kwargs: FakeProcess(),
+                health_probe=lambda: True,
+                port_open_probe=lambda: False,
+                telemetry_probe=lambda path, gpu: True,
+            )
+
+            identity = manager.start()
+            manager.close()
+
+            self.assertIn("package 2.28.2", identity.backend_version)
+            self.assertIn("fe2adf0", identity.backend_version)
+
     def test_command_uses_validated_assets_and_fresh_single_slot_policy(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             configured = settings(Path(directory))
-            command = build_llama_command(configured)
+            slot_cache = Path(directory) / "slot-cache"
+            command = build_llama_command(configured, slot_save_path=slot_cache)
             joined = " ".join(command)
 
             self.assertIn(str(configured.model_path), command)
@@ -133,6 +169,10 @@ class QcLlamaTests(unittest.TestCase):
             self.assertIn("--alias production-vlm-qc", joined)
             self.assertIn("--host 127.0.0.1", joined)
             self.assertIn("--parallel 1", joined)
+            self.assertIn("--slots", command)
+            self.assertEqual(
+                command[command.index("--slot-save-path") + 1], str(slot_cache)
+            )
             self.assertIn("--image-min-tokens 1024", joined)
             self.assertIn("--no-cache-prompt", command)
             self.assertIn("--no-cache-prompt", command)
@@ -185,7 +225,7 @@ class QcLlamaTests(unittest.TestCase):
             self.assertTrue(fake.terminated)
             self.assertTrue(fake.killed)
 
-    def test_startup_telemetry_must_confirm_the_bound_device(self) -> None:
+    def test_child_visible_device_telemetry_must_confirm_the_bound_device(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             configured = settings(root)
@@ -195,7 +235,11 @@ class QcLlamaTests(unittest.TestCase):
                 run_command=lambda command, **kwargs: Completed(
                     "llama.cpp version 2.28.2"
                     if "--version" in command
-                    else f"{configured.expected_gpu_uuid}, {configured.expected_gpu_name}"
+                    else (
+                        "CUDA0: NVIDIA GeForce RTX 5070 Ti"
+                        if "--list-devices" in command
+                        else f"{configured.expected_gpu_uuid}, {configured.expected_gpu_name}"
+                    )
                 ),
                 popen_factory=lambda command, **kwargs: FakeProcess(),
                 health_probe=lambda: True,
