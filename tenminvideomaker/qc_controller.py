@@ -131,23 +131,27 @@ class Phase1QcController:
         raise StateTransitionError("QC candidate lost its bound scene revision.")
 
     def register_original_candidates(self, job: JobPayload) -> tuple[QcCandidateRecord, ...]:
-        """Idempotently bind each successful original revision to immutable bytes."""
-        result: list[QcCandidateRecord] = []
-        for scene in job.scenes:
-            revision = next(
-                (item for item in self.store.scene_revisions(job.job_id, scene.scene_id)
-                 if item.revision == 1),
-                None,
-            )
-            if (
-                revision is None
-                or revision.state != SceneState.SUCCEEDED
-                or not revision.video_path
-                or not Path(revision.video_path).is_file()
-            ):
+        """Atomically bind the exact pre-QC legacy selection to immutable bytes."""
+        scene_ids = tuple(scene.scene_id for scene in job.scenes)
+        existing = tuple(
+            item for item in self.store.qc_candidates(job.job_id)
+            if item.tier == QcTier.ORIGINAL
+        )
+        if existing:
+            if tuple(item.scene_id for item in existing) != tuple(sorted(scene_ids)):
                 raise StateTransitionError(
-                    f"QC requires successful original revision 1 for scene {scene.scene_id}."
+                    "The durable pre-QC baseline snapshot is incomplete."
                 )
+            return existing
+        baseline = self.store.legacy_final_selection(job.job_id, scene_ids)
+        selected = {item.scene_id: item for item in baseline}
+        prepared: list[dict[str, Any]] = []
+        for scene in job.scenes:
+            choice = selected[scene.scene_id]
+            revision = next(
+                item for item in self.store.scene_revisions(job.job_id, scene.scene_id)
+                if item.revision == choice.revision
+            )
             document = revision.parameters
             i2v = document.get("i2v")
             if not isinstance(i2v, Mapping):
@@ -164,34 +168,28 @@ class Phase1QcController:
             video_hash = _sha256_file(revision.video_path)
             identity = canonical_json(
                 {"job_id": job.job_id, "scene_id": scene.scene_id,
-                 "revision": 1, "video_sha256": video_hash}
+                 "revision": revision.revision, "video_sha256": video_hash}
             )
             candidate_id = "candidate-original-" + hashlib.sha256(
                 identity.encode("utf-8")
             ).hexdigest()[:32]
-            result.append(
-                self.store.ensure_qc_candidate(
-                    candidate_id=candidate_id,
-                    job_id=job.job_id,
-                    scene_id=scene.scene_id,
-                    revision=1,
-                    tier=QcTier.ORIGINAL,
-                    parent_candidate_id=None,
-                    source_video_path=revision.video_path,
-                    source_video_sha256=video_hash,
-                    original_prompt=prompt,
-                    current_prompt=prompt,
-                    original_seed=seed,
-                    current_seed=seed,
-                    negative_prompt=negative,
-                    negative_prompt_sha256=hashlib.sha256(
+            prepared.append(
+                {
+                    "candidate_id": candidate_id,
+                    "job_id": job.job_id,
+                    "scene_id": scene.scene_id,
+                    "revision": revision.revision,
+                    "source_video_path": revision.video_path,
+                    "source_video_sha256": video_hash,
+                    "original_prompt": prompt,
+                    "original_seed": seed,
+                    "negative_prompt": negative,
+                    "negative_prompt_sha256": hashlib.sha256(
                         negative.encode("utf-8")
                     ).hexdigest(),
-                    state=QcCandidateState.PENDING_QC,
-                    next_action="evaluate",
-                )
+                }
             )
-        return tuple(result)
+        return self.store.ensure_original_qc_candidates(prepared)
 
     def _completed_evaluation(self, candidate_id: str) -> QcEvaluationRecord:
         completed = [

@@ -25,7 +25,11 @@ from tenminvideomaker.qc_contracts import (
 from tenminvideomaker.qc_video import SampledFrame, SampledVideo, VideoMetadata
 from tenminvideomaker.qc_controller import Phase1QcController, QcControllerError
 from tenminvideomaker.review import scene_review_document
-from tenminvideomaker.state_store import PipelineStateStore, SceneState
+from tenminvideomaker.state_store import (
+    PipelineStateStore,
+    RemakeMode,
+    SceneState,
+)
 from tenminvideomaker.storage import StorageLayout
 
 from test_contracts import payload
@@ -140,6 +144,123 @@ class Phase1QcControllerRoutingTests(unittest.TestCase):
 
     def _candidate(self):
         return self.controller().register_original_candidates(self.job)[0]
+
+    def _successful_remake(
+        self,
+        *,
+        name: str,
+        prompt: str,
+        seed: int,
+        remake_mode: RemakeMode = RemakeMode.VIDEO_ONLY,
+    ):
+        video = self.root / f"{name}.mp4"
+        video.write_bytes(name.encode("utf-8"))
+        document = {
+            **self.document,
+            "i2v": {
+                **self.document["i2v"],
+                "prompt": prompt,
+                "seed": seed,
+            },
+        }
+        revision = self.store.create_scene_revision(
+            self.job.job_id,
+            1,
+            remake_mode=remake_mode,
+            parameters=document,
+            state=SceneState.SUCCEEDED,
+            frame_path=str(self.frame),
+            video_path=str(video),
+        )
+        return revision, video, document
+
+    def test_original_snapshots_current_legacy_remake_and_never_drifts(self) -> None:
+        revision, video, document = self._successful_remake(
+            name="manual-remake",
+            prompt="Current manually selected continuation prompt.",
+            seed=444,
+        )
+
+        first = self.controller().register_original_candidates(self.job)[0]
+        restarted = self.controller().register_original_candidates(self.job)[0]
+        later_revision, _, _ = self._successful_remake(
+            name="later-unapproved",
+            prompt="Later unapproved retry.",
+            seed=555,
+        )
+
+        self.assertEqual(revision, 2)
+        self.assertEqual(first.revision, 2)
+        self.assertEqual(first.source_video_path, str(video))
+        self.assertEqual(first.current_prompt, document["i2v"]["prompt"])
+        self.assertEqual(first.current_seed, 444)
+        self.assertEqual(restarted, first)
+        self.assertEqual(later_revision, 3)
+        self.assertEqual(
+            self.store.original_final_selection(self.job.job_id, [1]),
+            (
+                type(self.store.original_final_selection(self.job.job_id, [1])[0])(
+                    scene_id=1,
+                    revision=2,
+                    video_path=str(video),
+                ),
+            ),
+        )
+
+    def test_failed_revision_one_uses_later_success_and_a1_descends_from_it(self) -> None:
+        self.store.update_scene_revision(
+            self.job.job_id,
+            1,
+            1,
+            state=SceneState.FAILED,
+            error="initial generation failed",
+        )
+        revision, video, document = self._successful_remake(
+            name="recovered-continuation",
+            prompt="Recovered continuation baseline prompt.",
+            seed=777,
+            remake_mode=RemakeMode.IMAGE_AND_VIDEO,
+        )
+        original = self.controller().register_original_candidates(self.job)[0]
+        self._evaluation(original.candidate_id, QcDecision.FAIL)
+
+        a1 = self.controller().route_completed_evaluation(
+            self.job, original.candidate_id
+        )
+
+        self.assertEqual(revision, 2)
+        self.assertEqual(original.revision, 2)
+        self.assertEqual(original.source_video_path, str(video))
+        self.assertEqual(a1.revision, 3)
+        self.assertEqual(a1.parent_candidate_id, original.candidate_id)
+        self.assertEqual(a1.original_prompt, document["i2v"]["prompt"])
+        self.assertEqual(a1.current_prompt, document["i2v"]["prompt"])
+
+    def test_original_honors_an_already_snapshotted_legacy_manual_final(self) -> None:
+        selected_revision, selected_video, _ = self._successful_remake(
+            name="manual-final-choice",
+            prompt="The operator's frozen legacy final choice.",
+            seed=888,
+        )
+        request = self.store.queue_manual_final(
+            self.job.job_id, quality_control_enabled=False
+        )
+        later_revision, _, _ = self._successful_remake(
+            name="newer-after-manual-final",
+            prompt="Newer bytes not selected by the queued legacy final.",
+            seed=999,
+        )
+
+        original = self.controller().register_original_candidates(self.job)[0]
+
+        self.assertEqual(selected_revision, 2)
+        self.assertEqual(later_revision, 3)
+        self.assertEqual(
+            self.store.manual_final_selection(request.request_id)[0].revision,
+            selected_revision,
+        )
+        self.assertEqual(original.revision, selected_revision)
+        self.assertEqual(original.source_video_path, str(selected_video))
 
     def _evaluation(self, candidate_id: str, decision: QcDecision):
         candidate = self.store.qc_candidate(candidate_id)

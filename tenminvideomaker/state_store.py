@@ -1827,9 +1827,9 @@ class PipelineStateStore:
             negative_prompt_sha256, "negative_prompt_sha256"
         )
         if tier == QcTier.ORIGINAL:
-            if revision != 1 or parent_candidate_id is not None:
+            if parent_candidate_id is not None:
                 raise StateTransitionError(
-                    "The ORIGINAL candidate must bind revision 1 without a parent."
+                    "The ORIGINAL candidate must bind a pre-QC baseline without a parent."
                 )
         else:
             if revision <= 1 or parent_candidate_id is None:
@@ -1941,6 +1941,177 @@ class PipelineStateStore:
                 (candidate_id,),
             ).fetchone()
         return self._qc_candidate_record(row)
+
+    def ensure_original_qc_candidates(
+        self,
+        candidates: Sequence[Mapping[str, Any]],
+    ) -> tuple[QcCandidateRecord, ...]:
+        """Atomically snapshot every scene's exact pre-QC legacy selection."""
+        if not candidates:
+            raise StateTransitionError("A QC baseline snapshot cannot be empty.")
+        prepared: list[tuple[Any, ...]] = []
+        job_ids: set[str] = set()
+        scene_ids: set[int] = set()
+        for item in candidates:
+            candidate_id = _evidence_id(item.get("candidate_id"), "candidate_id")
+            job_id = _required_text(item.get("job_id"), "job_id")
+            scene_id = int(item.get("scene_id"))
+            revision = _positive_revision(int(item.get("revision")))
+            source_video_path = _required_text(
+                item.get("source_video_path"), "source_video_path"
+            )
+            source_video_sha256 = _sha256(
+                item.get("source_video_sha256"), "source_video_sha256"
+            )
+            original_prompt = _required_text(
+                item.get("original_prompt"), "original_prompt"
+            )
+            original_seed = _uint64_seed(item.get("original_seed"))
+            negative_prompt = item.get("negative_prompt")
+            if not isinstance(negative_prompt, str):
+                raise StateTransitionError("negative_prompt must be text.")
+            negative_prompt_sha256 = _sha256(
+                item.get("negative_prompt_sha256"), "negative_prompt_sha256"
+            )
+            job_ids.add(job_id)
+            if scene_id in scene_ids:
+                raise StateTransitionError(
+                    "A QC baseline snapshot must contain one candidate per scene."
+                )
+            scene_ids.add(scene_id)
+            prepared.append(
+                (
+                    candidate_id,
+                    job_id,
+                    scene_id,
+                    revision,
+                    QcTier.ORIGINAL.value,
+                    None,
+                    source_video_path,
+                    source_video_sha256,
+                    original_prompt,
+                    original_prompt,
+                    str(original_seed),
+                    str(original_seed),
+                    negative_prompt,
+                    negative_prompt_sha256,
+                )
+            )
+        if len(job_ids) != 1:
+            raise StateTransitionError(
+                "A QC baseline snapshot must belong to exactly one job."
+            )
+        job_id = next(iter(job_ids))
+        self.initialize()
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                """
+                SELECT * FROM qc_candidates
+                WHERE job_id = ? AND tier = ? ORDER BY scene_id
+                """,
+                (job_id, QcTier.ORIGINAL.value),
+            ).fetchall()
+            if existing:
+                stored = [
+                    (
+                        row["candidate_id"], row["job_id"], int(row["scene_id"]),
+                        int(row["revision"]), row["tier"], row["parent_candidate_id"],
+                        row["source_video_path"], row["source_video_sha256"],
+                        row["original_prompt"], row["current_prompt"],
+                        row["original_seed"], row["current_seed"],
+                        row["negative_prompt"], row["negative_prompt_sha256"],
+                    )
+                    for row in existing
+                ]
+                if stored != prepared:
+                    raise StateTransitionError(
+                        "The durable pre-QC baseline snapshot is immutable."
+                    )
+                return tuple(self._qc_candidate_record(row) for row in existing)
+
+            active_manual = connection.execute(
+                """
+                SELECT selection_json FROM manual_final_requests
+                WHERE job_id = ? AND state IN (?, ?)
+                ORDER BY created_at DESC LIMIT 1
+                """,
+                (job_id, ManualFinalState.QUEUED.value, ManualFinalState.RUNNING.value),
+            ).fetchone()
+            manual_by_scene: dict[int, Mapping[str, Any]] | None = None
+            if active_manual is not None:
+                try:
+                    manual_items = json.loads(active_manual["selection_json"])
+                    manual_by_scene = {
+                        int(item["scene_id"]): item for item in manual_items
+                    }
+                except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+                    raise StateTransitionError(
+                        "The active legacy manual-final snapshot is invalid."
+                    ) from error
+            for values in prepared:
+                if manual_by_scene is not None:
+                    selected = manual_by_scene.get(values[2])
+                    matches_legacy = bool(
+                        selected is not None
+                        and int(selected["revision"]) == values[3]
+                        and str(selected["video_path"]) == values[6]
+                    )
+                else:
+                    latest = connection.execute(
+                        """
+                        SELECT revision, video_path FROM scene_revisions
+                        WHERE job_id = ? AND scene_id = ? AND state = ?
+                            AND video_path IS NOT NULL
+                        ORDER BY revision DESC LIMIT 1
+                        """,
+                        (values[1], values[2], SceneState.SUCCEEDED.value),
+                    ).fetchone()
+                    matches_legacy = bool(
+                        latest is not None
+                        and int(latest["revision"]) == values[3]
+                        and latest["video_path"] == values[6]
+                    )
+                revision_row = connection.execute(
+                    """
+                    SELECT state, video_path FROM scene_revisions
+                    WHERE job_id = ? AND scene_id = ? AND revision = ?
+                    """,
+                    (values[1], values[2], values[3]),
+                ).fetchone()
+                if not matches_legacy or (
+                    revision_row is None
+                    or revision_row["state"] != SceneState.SUCCEEDED.value
+                    or revision_row["video_path"] != values[6]
+                ):
+                    raise StateTransitionError(
+                        "The pre-QC legacy selection changed before its baseline snapshot committed."
+                    )
+            now = _utc_now()
+            connection.executemany(
+                """
+                INSERT INTO qc_candidates (
+                    candidate_id, job_id, scene_id, revision, tier,
+                    parent_candidate_id, source_video_path, source_video_sha256,
+                    original_prompt, current_prompt, original_seed, current_seed,
+                    negative_prompt, negative_prompt_sha256, state, next_action,
+                    infrastructure_failure_count, last_failure_json,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?)
+                """,
+                [
+                    (*values, QcCandidateState.PENDING_QC.value, "evaluate", now, now)
+                    for values in prepared
+                ],
+            )
+            rows = connection.execute(
+                """
+                SELECT * FROM qc_candidates
+                WHERE job_id = ? AND tier = ? ORDER BY scene_id
+                """,
+                (job_id, QcTier.ORIGINAL.value),
+            ).fetchall()
+        return tuple(self._qc_candidate_record(row) for row in rows)
 
     def qc_candidates(
         self, job_id: str, scene_id: int | None = None
@@ -3237,33 +3408,134 @@ class PipelineStateStore:
     def original_final_selection(
         self, job_id: str, scene_ids: Sequence[int]
     ) -> tuple[ManualFinalSceneSelection, ...]:
-        """Kill-switch resolver: use revision 1, never a promoted retry pointer."""
+        """Resolve the immutable pre-QC baseline, never a repair pointer."""
         required = tuple(sorted(set(scene_ids)))
         self.initialize()
         with self._connection() as connection:
             rows = connection.execute(
                 """
-                SELECT scene_id, revision, video_path, state FROM scene_revisions
-                WHERE job_id = ? AND revision = 1 ORDER BY scene_id
+                SELECT c.scene_id, c.revision, c.source_video_path,
+                       c.source_video_sha256, r.video_path, r.state
+                FROM qc_candidates c
+                JOIN scene_revisions r ON r.job_id = c.job_id
+                    AND r.scene_id = c.scene_id AND r.revision = c.revision
+                WHERE c.job_id = ? AND c.tier = ?
+                ORDER BY c.scene_id
                 """,
+                (job_id, QcTier.ORIGINAL.value),
+            ).fetchall()
+        if not rows:
+            # A deployment that has never enabled QC must remain byte-for-byte
+            # equivalent to the legacy selector and must not create QC state.
+            return self.legacy_final_selection(job_id, required)
+        if tuple(int(row["scene_id"]) for row in rows) != required:
+            raise StateTransitionError(
+                "Kill-switch finalization requires every snapshotted pre-QC scene."
+            )
+        selected: list[ManualFinalSceneSelection] = []
+        for row in rows:
+            if (
+                row["state"] != SceneState.SUCCEEDED.value
+                or row["video_path"] != row["source_video_path"]
+                or not Path(row["source_video_path"]).is_file()
+                or _file_sha256(row["source_video_path"])
+                != row["source_video_sha256"]
+            ):
+                raise StateTransitionError(
+                    "The snapshotted pre-QC baseline no longer matches its artifact hash."
+                )
+            selected.append(
+                ManualFinalSceneSelection(
+                    scene_id=int(row["scene_id"]),
+                    revision=int(row["revision"]),
+                    video_path=row["source_video_path"],
+                )
+            )
+        return tuple(selected)
+
+    def legacy_final_selection(
+        self, job_id: str, scene_ids: Sequence[int]
+    ) -> tuple[ManualFinalSceneSelection, ...]:
+        """Run the exact pre-QC latest-successful legacy scene selector."""
+        required = tuple(sorted(set(scene_ids)))
+        self.initialize()
+        selected: list[ManualFinalSceneSelection] = []
+        unavailable: list[int] = []
+        with self._connection() as connection:
+            active_manual = connection.execute(
+                """
+                SELECT selection_json FROM manual_final_requests
+                WHERE job_id = ? AND state IN (?, ?)
+                ORDER BY created_at DESC LIMIT 1
+                """,
+                (
+                    job_id,
+                    ManualFinalState.QUEUED.value,
+                    ManualFinalState.RUNNING.value,
+                ),
+            ).fetchone()
+            if active_manual is not None:
+                try:
+                    saved = {
+                        int(item["scene_id"]): ManualFinalSceneSelection(
+                            scene_id=int(item["scene_id"]),
+                            revision=int(item["revision"]),
+                            video_path=str(item["video_path"]),
+                        )
+                        for item in json.loads(active_manual["selection_json"])
+                    }
+                except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+                    raise StateTransitionError(
+                        "The active legacy manual-final snapshot is invalid."
+                    ) from error
+                if tuple(sorted(saved)) != required or any(
+                    not Path(item.video_path).is_file() for item in saved.values()
+                ):
+                    raise StateTransitionError(
+                        "The active legacy manual-final snapshot is incomplete."
+                    )
+                return tuple(saved[scene_id] for scene_id in required)
+            known = connection.execute(
+                "SELECT scene_id, state, video_path FROM scenes WHERE job_id = ?",
                 (job_id,),
             ).fetchall()
-        selected = tuple(
-            ManualFinalSceneSelection(
-                scene_id=int(row["scene_id"]),
-                revision=1,
-                video_path=row["video_path"],
-            )
-            for row in rows
-            if row["state"] == SceneState.SUCCEEDED.value
-            and row["video_path"]
-            and Path(row["video_path"]).is_file()
-        )
-        if tuple(item.scene_id for item in selected) != required:
+            by_scene = {int(row["scene_id"]): row for row in known}
+            for scene_id in required:
+                scene = by_scene.get(scene_id)
+                if scene is None:
+                    unavailable.append(scene_id)
+                    continue
+                revision = connection.execute(
+                    """
+                    SELECT revision, video_path FROM scene_revisions
+                    WHERE job_id = ? AND scene_id = ? AND state = ?
+                        AND video_path IS NOT NULL
+                    ORDER BY revision DESC LIMIT 1
+                    """,
+                    (job_id, scene_id, SceneState.SUCCEEDED.value),
+                ).fetchone()
+                if revision is None and (
+                    SceneState(scene["state"]) == SceneState.SUCCEEDED
+                    and scene["video_path"]
+                ):
+                    revision = {"revision": 1, "video_path": scene["video_path"]}
+                if revision is None or not Path(revision["video_path"]).is_file():
+                    unavailable.append(scene_id)
+                    continue
+                selected.append(
+                    ManualFinalSceneSelection(
+                        scene_id=scene_id,
+                        revision=int(revision["revision"]),
+                        video_path=str(revision["video_path"]),
+                    )
+                )
+        if unavailable:
+            rendered = ", ".join(f"{scene_id:02d}" for scene_id in unavailable)
             raise StateTransitionError(
-                "Kill-switch finalization requires every original revision-1 video."
+                "Legacy selection has no successful video revision for scene(s): "
+                f"{rendered}."
             )
-        return selected
+        return tuple(selected)
 
     def promote_accepted_qc_candidate(self, candidate_id: str) -> None:
         self.initialize()
@@ -3973,14 +4245,20 @@ class PipelineStateStore:
                 ).fetchone()
             elif has_qc:
                 # Kill switch: never let a newer unapproved retry become the
-                # baseline merely because it is the latest successful revision.
+                # baseline. Restore the immutable pre-QC selector snapshot.
                 revision = connection.execute(
                     """
-                    SELECT revision, video_path FROM scene_revisions
-                    WHERE job_id = ? AND scene_id = ? AND revision = 1
-                        AND state = ? AND video_path IS NOT NULL
+                    SELECT r.revision, r.video_path
+                    FROM qc_candidates c
+                    JOIN scene_revisions r ON r.job_id = c.job_id
+                        AND r.scene_id = c.scene_id AND r.revision = c.revision
+                    WHERE c.job_id = ? AND c.scene_id = ? AND c.tier = ?
+                        AND r.state = ? AND r.video_path = c.source_video_path
                     """,
-                    (job_id, scene["scene_id"], SceneState.SUCCEEDED.value),
+                    (
+                        job_id, scene["scene_id"], QcTier.ORIGINAL.value,
+                        SceneState.SUCCEEDED.value,
+                    ),
                 ).fetchone()
             else:
                 revision = connection.execute(
