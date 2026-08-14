@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 import hashlib
+import json
 import tempfile
 from types import SimpleNamespace
 import unittest
 
 from tenminvideomaker.qc_video import (
+    _benchmark_resize,
+    _encode_benchmark_jpeg,
     SampledFrame,
     SampledVideo,
     VideoMetadata,
@@ -40,6 +43,64 @@ def sampled(count: int) -> SampledVideo:
 
 
 class QcVideoTests(unittest.TestCase):
+    def test_frozen_lab_preprocessing_reference_matches_production(self) -> None:
+        import cv2
+        import numpy as np
+
+        reference = json.loads(
+            (
+                Path(__file__).parent
+                / "fixtures"
+                / "qc_lab_preprocessing_reference_v1.json"
+            ).read_text(encoding="utf-8")
+        )
+        source = reference["source_generator"]
+        y, x = np.indices((source["height"], source["width"]), dtype=np.uint32)
+        rgb = np.stack(
+            (
+                ((x * 3 + y * 5 + 17) % 256).astype(np.uint8),
+                ((x * 7 + y * 11 + 29) % 256).astype(np.uint8),
+                ((x * 13 + y * 17 + 43) % 256).astype(np.uint8),
+            ),
+            axis=2,
+        )
+
+        resized_rgb = _benchmark_resize(rgb)
+        selection = select_frame_indices(
+            reference["sampling"]["source_frame_count"],
+            reference["sampling"]["source_fps"],
+            reference["sampling"]["duration_seconds"],
+            reference["sampling"]["target_fps"],
+        )
+
+        self.assertEqual(
+            (resized_rgb.shape[1], resized_rgb.shape[0]),
+            (reference["resize"]["width"], reference["resize"]["height"]),
+        )
+        self.assertEqual(
+            hashlib.sha256(resized_rgb.tobytes()).hexdigest(),
+            reference["resize"]["rgb_sha256"],
+        )
+        self.assertEqual(list(selection.indices), reference["sampling"]["indices"])
+        self.assertEqual(
+            list(selection.timestamps_seconds),
+            reference["sampling"]["timestamps_seconds"],
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_path = root / "synthetic-source.png"
+            self.assertTrue(
+                cv2.imwrite(str(source_path), cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
+            )
+            payload, width, height, digest = _encode_benchmark_jpeg(
+                source_path, root / "production.jpg"
+            )
+        self.assertEqual((width, height), (512, 896))
+        if cv2.__version__ == reference["opencv_version"]:
+            self.assertEqual(len(payload), reference["jpeg"]["length"])
+            self.assertEqual(digest, reference["jpeg"]["sha256"])
+
     def test_reviewed_lab_fixture_indices_timestamps_dimensions_and_windows(self) -> None:
         # Read-only lab artifact:
         # results/20260813T223649Z-718671/{video-metadata,frame-selection}.json
