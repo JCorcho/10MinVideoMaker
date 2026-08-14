@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 import hashlib
+import os
 import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from dataclasses import replace
 
@@ -12,6 +15,7 @@ from tenminvideomaker.qc_llama import (
     GpuIdentity,
     LlamaCppLifecycleError,
     LlamaCppProcess,
+    WindowsKillOnCloseJob,
     build_llama_command,
     discover_matching_gpu,
 )
@@ -50,6 +54,31 @@ class FakeProcess:
         return self.returncode
 
 
+class FakeOwnershipBoundary:
+    def __init__(self):
+        self.assigned = []
+        self.closed = False
+
+    def assign(self, process):
+        self.assigned.append(process)
+
+    def close(self):
+        self.closed = True
+
+
+def successful_run(configured):
+    def run(command, **kwargs):
+        if "--version" in command:
+            return Completed("llama.cpp version 2.28.2")
+        if "--list-devices" in command:
+            return Completed(f"CUDA0: {configured.expected_gpu_name}")
+        return Completed(
+            f"{configured.expected_gpu_uuid}, {configured.expected_gpu_name}"
+        )
+
+    return run
+
+
 def settings(root: Path) -> QualityControlSettings:
     executable = root / "llama-server.exe"
     vendor = root / "vendor"
@@ -74,6 +103,78 @@ def settings(root: Path) -> QualityControlSettings:
 
 
 class QcLlamaTests(unittest.TestCase):
+    def test_owned_child_is_assigned_to_lifetime_boundary_until_close(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            configured = settings(root)
+            fake = FakeProcess()
+            boundary = FakeOwnershipBoundary()
+            manager = LlamaCppProcess(
+                configured,
+                StorageLayout(root / "storage"),
+                run_command=successful_run(configured),
+                popen_factory=lambda command, **kwargs: fake,
+                health_probe=lambda: True,
+                port_open_probe=lambda: False,
+                telemetry_probe=lambda path, gpu: True,
+                ownership_factory=lambda: boundary,
+            )
+
+            manager.start()
+
+            self.assertEqual(boundary.assigned, [fake])
+            self.assertFalse(boundary.closed)
+            manager.close()
+            self.assertTrue(boundary.closed)
+
+    @unittest.skipUnless(os.name == "nt", "Windows Job Object integration test")
+    def test_abrupt_parent_exit_kills_owned_child_but_not_unrelated_same_name(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            child_pid_path = root / "owned-child.pid"
+            parent_code = "\n".join(
+                (
+                    "import subprocess, sys, time",
+                    "from pathlib import Path",
+                    "from tenminvideomaker.qc_llama import WindowsKillOnCloseJob",
+                    "owner = WindowsKillOnCloseJob()",
+                    "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])",
+                    "owner.assign(child)",
+                    "Path(sys.argv[1]).write_text(str(child.pid), encoding='ascii')",
+                    "time.sleep(120)",
+                )
+            )
+            unrelated = subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(120)"],
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            parent = subprocess.Popen(
+                [sys.executable, "-c", parent_code, str(child_pid_path)],
+                cwd=str(Path(__file__).parents[1]),
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            try:
+                deadline = time.monotonic() + 10
+                while not child_pid_path.exists() and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                self.assertTrue(child_pid_path.exists())
+                owned_pid = int(child_pid_path.read_text(encoding="ascii"))
+
+                parent.kill()
+                parent.wait(timeout=10)
+
+                deadline = time.monotonic() + 10
+                while WindowsKillOnCloseJob.pid_is_alive(owned_pid) and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                self.assertFalse(WindowsKillOnCloseJob.pid_is_alive(owned_pid))
+                self.assertIsNone(unrelated.poll())
+            finally:
+                if parent.poll() is None:
+                    parent.kill()
+                    parent.wait(timeout=10)
+                if unrelated.poll() is None:
+                    unrelated.terminate()
+                    unrelated.wait(timeout=10)
     def test_gpu_is_matched_by_uuid_and_name_not_ordinal(self) -> None:
         configured = settings(Path(tempfile.mkdtemp()))
 
@@ -97,6 +198,23 @@ class QcLlamaTests(unittest.TestCase):
                     "GPU-other, NVIDIA GeForce RTX 4080 SUPER\n"
                 ),
             )
+
+    def test_unknown_process_on_owned_port_fails_closed_without_launch(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            configured = settings(root)
+            launched = []
+            manager = LlamaCppProcess(
+                configured,
+                StorageLayout(root / "storage"),
+                popen_factory=lambda *args, **kwargs: launched.append(args),
+                port_open_probe=lambda: True,
+            )
+
+            with self.assertRaisesRegex(LlamaCppLifecycleError, "unknown process"):
+                manager.start()
+
+            self.assertEqual(launched, [])
 
     def test_unexpected_backend_version_fails_before_launch(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -247,6 +365,68 @@ class QcLlamaTests(unittest.TestCase):
 
             with self.assertRaises(LlamaCppLifecycleError):
                 manager.start()
+
+    def test_post_launch_telemetry_runs_once_after_readiness_and_is_recorded(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            configured = settings(root)
+            fake = FakeProcess()
+            probes = []
+            manager = LlamaCppProcess(
+                configured,
+                StorageLayout(root / "storage"),
+                run_command=successful_run(configured),
+                popen_factory=lambda command, **kwargs: fake,
+                health_probe=lambda: True,
+                port_open_probe=lambda: False,
+                telemetry_probe=lambda path, gpu: probes.append((path, gpu)) or True,
+            )
+
+            identity = manager.start()
+            manager.close()
+
+            self.assertEqual(len(probes), 1)
+            self.assertIn("post_launch_log_match=expected_gpu_name", identity.device_telemetry)
+
+    def test_default_post_launch_probe_reads_llama_stderr_device_report(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            stdout_path = root / "qc-llama-launch.stdout.log"
+            stderr_path = root / "qc-llama-launch.stderr.log"
+            stdout_path.write_text("server ready", encoding="utf-8")
+            stderr_path.write_text(
+                "load_tensors: offloading to NVIDIA GeForce RTX 4080 SUPER",
+                encoding="utf-8",
+            )
+
+            self.assertTrue(
+                LlamaCppProcess._default_telemetry_probe(
+                    stdout_path,
+                    GpuIdentity("GPU-expected", "NVIDIA GeForce RTX 4080 SUPER"),
+                )
+            )
+
+    def test_post_launch_telemetry_mismatch_fails_before_backend_use(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            configured = settings(root)
+            fake = FakeProcess()
+            probes = []
+            manager = LlamaCppProcess(
+                configured,
+                StorageLayout(root / "storage"),
+                run_command=successful_run(configured),
+                popen_factory=lambda command, **kwargs: fake,
+                health_probe=lambda: True,
+                port_open_probe=lambda: False,
+                telemetry_probe=lambda path, gpu: probes.append((path, gpu)) or False,
+            )
+
+            with self.assertRaisesRegex(LlamaCppLifecycleError, "post-launch"):
+                manager.start()
+
+            self.assertEqual(len(probes), 1)
+            self.assertTrue(fake.terminated)
 
     def test_readiness_timeout_terminates_only_the_owned_child(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -25,6 +25,144 @@ class LlamaCppLifecycleError(RuntimeError):
     """Raised when physical-device binding or owned process lifecycle is unsafe."""
 
 
+class _NoopChildOwnership:
+    """Test/non-Windows boundary; production Windows launches use a Job Object."""
+
+    def assign(self, process: Any) -> None:
+        del process
+
+    def close(self) -> None:
+        return None
+
+
+class WindowsKillOnCloseJob:
+    """Own one exact child under JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE."""
+
+    _KILL_ON_JOB_CLOSE = 0x00002000
+    _EXTENDED_LIMIT_INFORMATION = 9
+    _SYNCHRONIZE = 0x00100000
+    _WAIT_TIMEOUT = 0x00000102
+
+    def __init__(self) -> None:
+        if os.name != "nt":
+            raise LlamaCppLifecycleError("Windows Job Objects are unavailable.")
+        import ctypes
+        from ctypes import wintypes
+
+        class BasicLimitInformation(ctypes.Structure):
+            _fields_ = (
+                ("PerProcessUserTimeLimit", ctypes.c_longlong),
+                ("PerJobUserTimeLimit", ctypes.c_longlong),
+                ("LimitFlags", wintypes.DWORD),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", wintypes.DWORD),
+                ("Affinity", ctypes.c_size_t),
+                ("PriorityClass", wintypes.DWORD),
+                ("SchedulingClass", wintypes.DWORD),
+            )
+
+        class IoCounters(ctypes.Structure):
+            _fields_ = tuple(
+                (name, ctypes.c_ulonglong)
+                for name in (
+                    "ReadOperationCount",
+                    "WriteOperationCount",
+                    "OtherOperationCount",
+                    "ReadTransferCount",
+                    "WriteTransferCount",
+                    "OtherTransferCount",
+                )
+            )
+
+        class ExtendedLimitInformation(ctypes.Structure):
+            _fields_ = (
+                ("BasicLimitInformation", BasicLimitInformation),
+                ("IoInfo", IoCounters),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t),
+            )
+
+        self._ctypes = ctypes
+        self._kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        self._kernel32.CreateJobObjectW.argtypes = (ctypes.c_void_p, wintypes.LPCWSTR)
+        self._kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+        self._kernel32.SetInformationJobObject.argtypes = (
+            wintypes.HANDLE,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+        )
+        self._kernel32.SetInformationJobObject.restype = wintypes.BOOL
+        self._kernel32.AssignProcessToJobObject.argtypes = (
+            wintypes.HANDLE,
+            wintypes.HANDLE,
+        )
+        self._kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+        self._kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        self._kernel32.CloseHandle.restype = wintypes.BOOL
+        self._handle = self._kernel32.CreateJobObjectW(None, None)
+        if not self._handle:
+            raise ctypes.WinError(ctypes.get_last_error())
+        information = ExtendedLimitInformation()
+        information.BasicLimitInformation.LimitFlags = self._KILL_ON_JOB_CLOSE
+        if not self._kernel32.SetInformationJobObject(
+            self._handle,
+            self._EXTENDED_LIMIT_INFORMATION,
+            ctypes.byref(information),
+            ctypes.sizeof(information),
+        ):
+            error = ctypes.WinError(ctypes.get_last_error())
+            self.close()
+            raise LlamaCppLifecycleError(
+                "Could not configure kill-on-close ownership for the QC child."
+            ) from error
+
+    def assign(self, process: Any) -> None:
+        process_handle = getattr(process, "_handle", None)
+        if process_handle is None or self._handle is None:
+            raise LlamaCppLifecycleError(
+                "The exact QC child process handle is unavailable for ownership."
+            )
+        if not self._kernel32.AssignProcessToJobObject(
+            self._handle,
+            process_handle,
+        ):
+            error = self._ctypes.WinError(self._ctypes.get_last_error())
+            raise LlamaCppLifecycleError(
+                "Could not assign the exact QC child to its kill-on-close Job Object."
+            ) from error
+
+    def close(self) -> None:
+        if self._handle is not None:
+            self._kernel32.CloseHandle(self._handle)
+            self._handle = None
+
+    @staticmethod
+    def pid_is_alive(pid: int) -> bool:
+        """Test/recovery helper: query one exact PID without process-name discovery."""
+        if os.name != "nt":
+            return False
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+        kernel32.WaitForSingleObject.restype = wintypes.DWORD
+        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        handle = kernel32.OpenProcess(WindowsKillOnCloseJob._SYNCHRONIZE, False, pid)
+        if not handle:
+            return False
+        try:
+            return kernel32.WaitForSingleObject(handle, 0) == WindowsKillOnCloseJob._WAIT_TIMEOUT
+        finally:
+            kernel32.CloseHandle(handle)
+
+
 @dataclass(frozen=True)
 class GpuIdentity:
     uuid: str
@@ -141,6 +279,7 @@ class LlamaCppProcess:
         health_probe: Callable[[], bool] | None = None,
         port_open_probe: Callable[[], bool] | None = None,
         telemetry_probe: Callable[[Path, GpuIdentity], bool] | None = None,
+        ownership_factory: Callable[[], Any] | None = None,
         sleep: Callable[[float], None] = time.sleep,
         monotonic: Callable[[], float] = time.monotonic,
     ):
@@ -153,6 +292,12 @@ class LlamaCppProcess:
             lambda: _default_port_open(settings.loopback_host, settings.loopback_port)
         )
         self.telemetry_probe = telemetry_probe or self._default_telemetry_probe
+        if ownership_factory is not None:
+            self.ownership_factory = ownership_factory
+        elif os.name == "nt" and popen_factory is subprocess.Popen:
+            self.ownership_factory = WindowsKillOnCloseJob
+        else:
+            self.ownership_factory = _NoopChildOwnership
         self.sleep = sleep
         self.monotonic = monotonic
         self.environment: dict[str, str] = {}
@@ -160,6 +305,7 @@ class LlamaCppProcess:
         self._identity: BackendIdentity | None = None
         self._stdout_handle: Any | None = None
         self._stderr_handle: Any | None = None
+        self._ownership: Any | None = None
 
     def _default_health_probe(self) -> bool:
         try:
@@ -173,10 +319,17 @@ class LlamaCppProcess:
 
     @staticmethod
     def _default_telemetry_probe(log_path: Path, gpu: GpuIdentity) -> bool:
-        try:
-            text = log_path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            return False
+        paths = [
+            log_path,
+            log_path.with_name(log_path.name.replace(".stdout.log", ".stderr.log")),
+        ]
+        parts: list[str] = []
+        for path in dict.fromkeys(paths):
+            try:
+                parts.append(path.read_text(encoding="utf-8", errors="replace"))
+            except OSError:
+                continue
+        text = "\n".join(parts)
         return gpu.name.casefold() in text.casefold()
 
     def _version(self) -> str:
@@ -284,6 +437,7 @@ class LlamaCppProcess:
         self._stdout_handle = stdout_path.open("x", encoding="utf-8")
         self._stderr_handle = stderr_path.open("x", encoding="utf-8")
         try:
+            self._ownership = self.ownership_factory()
             self._process = self.popen_factory(
                 command,
                 cwd=str(self.settings.llama_executable.parent),
@@ -294,6 +448,7 @@ class LlamaCppProcess:
                 text=True,
                 **self._launch_kwargs(),
             )
+            self._ownership.assign(self._process)
             deadline = self.monotonic() + self.settings.startup_timeout_seconds
             while not self.health_probe():
                 if self._process.poll() is not None:
@@ -305,6 +460,15 @@ class LlamaCppProcess:
                 self.sleep(0.25)
             self._stdout_handle.flush()
             self._stderr_handle.flush()
+            if not self.telemetry_probe(stdout_path, gpu):
+                raise LlamaCppLifecycleError(
+                    "The post-launch llama.cpp telemetry did not confirm the expected GPU name."
+                )
+            post_launch_telemetry = (
+                "post_launch_log_match=expected_gpu_name; "
+                f"expected_name={gpu.name}; "
+                "uuid_scope_enforced_by=CUDA_VISIBLE_DEVICES"
+            )
             assert self.settings.llama_executable is not None
             assert self.settings.model_path is not None
             assert self.settings.projector_path is not None
@@ -331,7 +495,9 @@ class LlamaCppProcess:
                 stderr_log_path=str(stderr_path),
                 launch_id=launch_id,
                 started_at=datetime.now(UTC).isoformat(),
-                device_telemetry=device_telemetry,
+                device_telemetry=(
+                    device_telemetry + "\n" + post_launch_telemetry
+                ),
             )
             return self._identity
         except BaseException:
@@ -359,6 +525,9 @@ class LlamaCppProcess:
                     "The owned llama.cpp process exited but its dedicated port remained open."
                 )
             self.sleep(0.1)
+        if self._ownership is not None:
+            self._ownership.close()
+            self._ownership = None
         # Retain the exact handle/launch identity until both child exit and
         # port closure are proven.  A failed close can then be retried without
         # falling back to unsafe process-name discovery.
