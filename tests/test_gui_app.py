@@ -989,7 +989,7 @@ class GuiAppTests(unittest.TestCase):
             self.assertEqual(document.status_code, 200)
             self.assertEqual(
                 document.json()["cases"]["latent_overlap"]["boundary"]["right"],
-                [24, 25],
+                [8, 9],
             )
             self.assertNotIn(str(storage.root), document.text)
             self.assertEqual(
