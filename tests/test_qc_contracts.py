@@ -182,7 +182,34 @@ class QcContractTests(unittest.TestCase):
         cleared = normalize_window_results(
             (suspect, passed), shifted_pass, QcEvidencePolicy()
         )
-        self.assertEqual(cleared.decision, QcDecision.PASS)
+        self.assertEqual(cleared.decision, QcDecision.UNCERTAIN)
+        self.assertEqual(cleared.strong_window_count, 1)
+        self.assertEqual(cleared.suspect_window_numbers, (1,))
+        self.assertEqual(len(cleared.strong_errors), 1)
+        self.assertIn("disagreed", cleared.normalization_reason.lower())
+        self.assertFalse(cleared.automatic_early_fail)
+
+    def test_lone_strong_main_window_with_shifted_passed_confirmation_stays_uncertain(self) -> None:
+        suspect = window(1, response("FAIL", errors=[error()]))
+        remaining = tuple(
+            window(
+                number,
+                response("PASS"),
+                image_sha256s=tuple(f"{number * 4 + offset:064x}" for offset in range(4)),
+            )
+            for number in range(2, 14)
+        )
+        shifted_pass = window(99, response("PASS"), start=0.5).as_confirmation_of(1)
+
+        normalized = normalize_window_results(
+            (suspect, *remaining), shifted_pass, QcEvidencePolicy()
+        )
+        self.assertEqual(normalized.decision, QcDecision.UNCERTAIN)
+        self.assertEqual(normalized.strong_window_count, 1)
+        self.assertEqual(normalized.suspect_window_numbers, (1,))
+        self.assertFalse(normalized.automatic_early_fail)
+        self.assertEqual(len(normalized.strong_errors), 1)
+
 
     def test_two_independent_strong_windows_fail_early(self) -> None:
         first = window(1, response("FAIL", errors=[error()]))

@@ -346,7 +346,7 @@ class QcBackendTests(unittest.TestCase):
 
         result = evaluator.evaluate_sampled(sampled(12))
 
-        self.assertEqual(result.normalized.decision, QcDecision.PASS)
+        self.assertEqual(result.normalized.decision, QcDecision.UNCERTAIN)
         self.assertEqual(len(backend.requests), 4)
         self.assertTrue(backend.requests[-1].independent_confirmation)
         self.assertEqual(backend.requests[-1].window.confirmation_of_window, 2)

@@ -355,17 +355,11 @@ def normalize_window_results(
         )
     elif normal_strong:
         if confirmation is not None and confirmation.response.decision == QcDecision.PASS:
-            remaining = tuple(
-                item.response.decision
-                for item in ordered
-                if item.window_number != normal_strong[0][0].window_number
+            decision = QcDecision.UNCERTAIN
+            reason = (
+                "Shifted review disagreed with the lone strong suspect; "
+                "hold for review."
             )
-            decision = (
-                QcDecision.UNCERTAIN
-                if QcDecision.UNCERTAIN in remaining or None in remaining
-                else QcDecision.PASS
-            )
-            reason = "Shifted review did not confirm the lone strong suspect."
         else:
             decision = QcDecision.UNCERTAIN
             reason = "One strong suspect window lacks independent confirmation."
