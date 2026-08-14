@@ -78,6 +78,39 @@ def _identity_mapping(identity: BackendIdentity) -> dict[str, Any]:
     return asdict(identity)
 
 
+_CANONICAL_DEFECT_CATEGORIES = frozenset(
+    {
+        "anatomy",
+        "topology",
+        "face",
+        "eyes",
+        "mouth",
+        "hands",
+        "limbs",
+        "skin",
+        "hair",
+        "clothing",
+        "identity",
+        "ownership",
+        "contact",
+        "temporal_consistency",
+        "object_continuity",
+        "morphing",
+        "motion_continuity",
+        "physics",
+        "lighting_color",
+        "camera_continuity",
+        "blur_artifact",
+        "other",
+    }
+)
+
+
+def _canonical_defect_category(value: str) -> str:
+    token = value.strip().lower().replace("-", "_").replace(" ", "_")
+    return token if token in _CANONICAL_DEFECT_CATEGORIES else "other"
+
+
 def _normalized_planner_windows(
     windows: Sequence[Mapping[str, Any]],
 ) -> tuple[dict[str, Any], ...]:
@@ -91,11 +124,21 @@ def _normalized_planner_windows(
             raw_errors = response.get("errors")
             if not isinstance(raw_errors, list):
                 raise ValueError("QC window errors are not an array.")
-            defects = tuple(
-                QcError.from_mapping(item).to_dict()
+            parsed_defects = tuple(
+                QcError.from_mapping(item)
                 if isinstance(item, Mapping)
                 else (_ for _ in ()).throw(ValueError("QC error is not an object."))
                 for item in raw_errors
+            )
+            defects = tuple(
+                {
+                    "category": _canonical_defect_category(item.category),
+                    "severity": item.severity,
+                    "confidence": item.confidence,
+                    "start_time_seconds": item.start_time_seconds,
+                    "end_time_seconds": item.end_time_seconds,
+                }
+                for item in parsed_defects
             )
             raw_decision = response.get("decision")
             decision = (
@@ -115,13 +158,28 @@ def _normalized_planner_windows(
                 raise ValueError("QC window number is invalid.")
             source_indices = window.get("source_frame_indices")
             timestamps = window.get("timestamps_seconds")
-            if not isinstance(source_indices, list) or not isinstance(timestamps, list):
+            image_sha256s = window.get("image_sha256s")
+            if (
+                not isinstance(source_indices, list)
+                or not isinstance(timestamps, list)
+                or not isinstance(image_sha256s, list)
+                or len(source_indices) != len(timestamps)
+                or len(source_indices) != len(image_sha256s)
+            ):
                 raise ValueError("QC window source positions are invalid.")
+            if any(
+                not isinstance(item, str)
+                or len(item) != 64
+                or any(character not in "0123456789abcdef" for character in item)
+                for item in image_sha256s
+            ):
+                raise ValueError("QC window image hashes are invalid.")
             normalized.append(
                 {
                     "window_number": window_number,
                     "source_frame_indices": [int(item) for item in source_indices],
                     "timestamps_seconds": [float(item) for item in timestamps],
+                    "image_sha256s": list(image_sha256s),
                     "decision": decision.value,
                     "confidence": (
                         None if confidence is None else float(confidence)
@@ -488,7 +546,6 @@ class Phase1QcController:
         previous = tuple(
             {
                 "status": item.status,
-                "reason": item.reason,
                 "repair_input_sha256": item.repair_input_sha256,
             }
             for item in self.store.qc_repairs(candidate.candidate_id)
