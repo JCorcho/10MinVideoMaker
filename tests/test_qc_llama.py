@@ -9,6 +9,8 @@ import tempfile
 import time
 import unittest
 from dataclasses import replace
+from unittest.mock import patch
+from uuid import UUID
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -282,7 +284,8 @@ class QcLlamaTests(unittest.TestCase):
     def test_command_uses_validated_assets_and_fresh_single_slot_policy(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             configured = settings(Path(directory))
-            command = build_llama_command(configured)
+            slot_save_path = Path(directory) / "slot-state" / "explicit"
+            command = build_llama_command(configured, slot_save_path=slot_save_path)
             joined = " ".join(command)
 
             self.assertIn(str(configured.model_path), command)
@@ -291,7 +294,11 @@ class QcLlamaTests(unittest.TestCase):
             self.assertIn("--host 127.0.0.1", joined)
             self.assertIn("--parallel 1", joined)
             self.assertIn("--slots", command)
-            self.assertNotIn("--slot-save-path", command)
+            self.assertIn("--slot-save-path", command)
+            self.assertEqual(command.count("--slot-save-path"), 1)
+            self.assertEqual(
+                command[command.index("--slot-save-path") + 1], str(slot_save_path)
+            )
             self.assertIn("--image-min-tokens 1024", joined)
             self.assertIn("--no-cache-prompt", command)
             self.assertIn("--no-cache-prompt", command)
@@ -299,6 +306,264 @@ class QcLlamaTests(unittest.TestCase):
             self.assertEqual(command[command.index("--split-mode") + 1], "none")
             self.assertIn("--no-webui", command)
             self.assertNotIn("--main-gpu", command)
+
+    def test_start_command_contains_exact_one_owned_runtime_slot_save_path(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            configured = settings(root)
+            layout = StorageLayout(root / "storage")
+            launched: dict[str, list[str]] = {}
+
+            def popen_factory(command, **kwargs):
+                launched["command"] = command
+                return FakeProcess()
+
+            manager = LlamaCppProcess(
+                configured,
+                layout,
+                run_command=successful_run(configured),
+                popen_factory=popen_factory,
+                health_probe=lambda: True,
+                port_open_probe=lambda: False,
+                telemetry_probe=lambda path, gpu: True,
+                sleep=lambda seconds: None,
+            )
+            manager.start()
+            command = launched["command"]
+            slot_save = Path(command[command.index("--slot-save-path") + 1])
+
+            self.assertEqual(command.count("--slot-save-path"), 1)
+            self.assertTrue(slot_save.is_relative_to(layout.root))
+            self.assertTrue(str(slot_save).startswith(str(layout.root)))
+            self.assertEqual(slot_save.parent, layout.root / "slot-state")
+            self.assertNotIn("LTX_Supervisor_Storage", str(slot_save))
+            self.assertEqual(slot_save.name, manager._identity.launch_id if manager._identity else "")
+
+            manager.close()
+
+    def test_distinct_launches_allocate_distinct_slot_save_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            configured = settings(root)
+            slot_paths: list[Path] = []
+
+            def popen_factory(command, **kwargs):
+                slot_paths.append(Path(command[command.index("--slot-save-path") + 1]))
+                return FakeProcess()
+
+            manager = LlamaCppProcess(
+                configured,
+                StorageLayout(root / "storage"),
+                run_command=successful_run(configured),
+                popen_factory=popen_factory,
+                health_probe=lambda: True,
+                port_open_probe=lambda: False,
+                telemetry_probe=lambda path, gpu: True,
+                sleep=lambda seconds: None,
+            )
+            manager.start()
+            manager.close()
+
+            manager = LlamaCppProcess(
+                configured,
+                StorageLayout(root / "storage"),
+                run_command=successful_run(configured),
+                popen_factory=popen_factory,
+                health_probe=lambda: True,
+                port_open_probe=lambda: False,
+                telemetry_probe=lambda path, gpu: True,
+                sleep=lambda seconds: None,
+            )
+            manager.start()
+            manager.close()
+
+            self.assertEqual(len(slot_paths), 2)
+            self.assertNotEqual(slot_paths[0], slot_paths[1])
+
+    def test_slot_save_path_is_removed_on_normal_close(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            configured = settings(root)
+            layout = StorageLayout(root / "storage")
+            captured: dict[str, Path] = {}
+
+            def popen_factory(command, **kwargs):
+                captured["slot"] = Path(command[command.index("--slot-save-path") + 1])
+                return FakeProcess()
+
+            manager = LlamaCppProcess(
+                configured,
+                layout,
+                run_command=successful_run(configured),
+                popen_factory=popen_factory,
+                health_probe=lambda: True,
+                port_open_probe=lambda: False,
+                telemetry_probe=lambda path, gpu: True,
+                sleep=lambda seconds: None,
+            )
+            manager.start()
+            slot_save = captured["slot"]
+            self.assertTrue(slot_save.exists())
+            self.assertTrue(slot_save.is_relative_to(layout.root))
+
+            manager.close()
+            self.assertFalse(slot_save.exists())
+
+    def test_slot_save_path_removed_after_safe_startup_failure_cleanup(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            configured = settings(root)
+            layout = StorageLayout(root / "storage")
+            captured: dict[str, Path] = {}
+
+            def popen_factory(command, **kwargs):
+                captured["slot"] = Path(command[command.index("--slot-save-path") + 1])
+                return FakeProcess()
+
+            manager = LlamaCppProcess(
+                configured,
+                layout,
+                run_command=successful_run(configured),
+                popen_factory=popen_factory,
+                health_probe=lambda: True,
+                port_open_probe=lambda: False,
+                telemetry_probe=lambda path, gpu: False,
+                sleep=lambda seconds: None,
+            )
+
+            with self.assertRaises(LlamaCppLifecycleError):
+                manager.start()
+            self.assertIn("slot", captured)
+            self.assertFalse(captured["slot"].exists())
+
+    def test_command_build_failure_after_slot_creation_cleans_exact_slot_path(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            configured = settings(root)
+            layout = StorageLayout(root / "storage")
+            launch_id = UUID(int=1)
+            slot = layout.root / "slot-state" / launch_id.hex
+
+            def build_command_fail(_: object, slot_save_path: Path) -> list[str]:
+                raise RuntimeError("forced command build failure")
+
+            with patch(
+                "tenminvideomaker.qc_llama.build_llama_command",
+                side_effect=build_command_fail,
+            ):
+                with patch("tenminvideomaker.qc_llama.uuid4", return_value=launch_id):
+                    manager = LlamaCppProcess(
+                        configured,
+                        layout,
+                        run_command=successful_run(configured),
+                    )
+                    with self.assertRaises(RuntimeError):
+                        manager.start()
+
+            self.assertFalse(slot.exists())
+
+    def test_stdout_open_failure_after_slot_creation_cleans_exact_slot_path(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            configured = settings(root)
+            layout = StorageLayout(root / "storage")
+            launch_id = UUID(int=1)
+            slot = layout.root / "slot-state" / launch_id.hex
+            original_path_open = Path.open
+            expected_stdout = layout.logs_root / f"qc-llama-{launch_id.hex}.stdout.log"
+
+            with patch(
+                "tenminvideomaker.qc_llama.uuid4",
+                return_value=launch_id,
+            ):
+
+                def fail_stdout_open(path: Path, *args, **kwargs):
+                    mode = args[0] if args else kwargs.get("mode", "r")
+                    if mode == "x" and path == expected_stdout:
+                        raise OSError("forced stdout open failure")
+                    return original_path_open(path, *args, **kwargs)
+
+                with patch.object(Path, "open", new=fail_stdout_open):
+                    manager = LlamaCppProcess(
+                        configured,
+                        layout,
+                        run_command=successful_run(configured),
+                    )
+
+                    with self.assertRaises(OSError):
+                        manager.start()
+
+            self.assertFalse(slot.exists())
+
+    def test_stderr_open_failure_after_slot_creation_cleans_and_closes_stdout(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            configured = settings(root)
+            layout = StorageLayout(root / "storage")
+            launch_id = UUID(int=1)
+            slot = layout.root / "slot-state" / launch_id.hex
+            original_path_open = Path.open
+            expected_stdout = layout.logs_root / f"qc-llama-{launch_id.hex}.stdout.log"
+            expected_stderr = layout.logs_root / f"qc-llama-{launch_id.hex}.stderr.log"
+
+            class StdoutHandle:
+                def __init__(self) -> None:
+                    self.closed = False
+
+                def close(self) -> None:
+                    self.closed = True
+
+            stdout_handle = StdoutHandle()
+
+            with patch("tenminvideomaker.qc_llama.uuid4", return_value=launch_id):
+
+                def fail_stderr_open(path: Path, *args, **kwargs):
+                    mode = args[0] if args else kwargs.get("mode", "r")
+                    if mode == "x":
+                        if path == expected_stdout:
+                            return stdout_handle
+                        if path == expected_stderr:
+                            raise OSError("forced stderr open failure")
+                    return original_path_open(path, *args, **kwargs)
+
+                with patch.object(Path, "open", new=fail_stderr_open):
+                    manager = LlamaCppProcess(
+                        configured,
+                        layout,
+                        run_command=successful_run(configured),
+                    )
+
+                    with self.assertRaises(OSError):
+                        manager.start()
+
+            self.assertFalse(slot.exists())
+            self.assertTrue(stdout_handle.closed)
+
+    def test_slot_save_path_collision_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            configured = settings(root)
+            layout = StorageLayout(root / "storage")
+            launch_id = UUID(int=1)
+            colliding_path = layout.root / "slot-state" / launch_id.hex
+            colliding_path.mkdir(parents=True)
+
+            launched: list[bool] = []
+            manager = LlamaCppProcess(
+                configured,
+                layout,
+                run_command=successful_run(configured),
+                popen_factory=lambda command, **kwargs: launched.append(True),
+                health_probe=lambda: True,
+                port_open_probe=lambda: False,
+                telemetry_probe=lambda path, gpu: True,
+                sleep=lambda seconds: None,
+            )
+
+            with patch("tenminvideomaker.qc_llama.uuid4", return_value=launch_id):
+                with self.assertRaises(LlamaCppLifecycleError):
+                    manager.start()
+            self.assertFalse(launched)
 
     def test_owned_process_has_hidden_launch_identity_evidence_and_bounded_close(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -55,6 +55,50 @@ def _require_auto_continuation_approval(
     )
 
 
+def _runtime_root_overlaps_disallowed_root(
+    runtime_root: Path,
+    disallowed_root: Path,
+) -> bool:
+    runtime_parts = tuple(part.casefold() for part in runtime_root.resolve().parts)
+    disallowed_parts = tuple(part.casefold() for part in disallowed_root.resolve().parts)
+    if not runtime_parts or not disallowed_parts:
+        return False
+    if len(runtime_parts) >= len(disallowed_parts):
+        if runtime_parts[: len(disallowed_parts)] == disallowed_parts:
+            return True
+    if len(disallowed_parts) >= len(runtime_parts):
+        if disallowed_parts[: len(runtime_parts)] == runtime_parts:
+            return True
+    return False
+
+
+def _qc_owned_runtime_layout(
+    qc_settings: QualityControlSettings,
+    storage: StorageLayout,
+) -> StorageLayout:
+    candidate = (PROJECT_ROOT / "runtime" / "qc-owned").resolve()
+    disallowed_roots: list[Path] = [storage.root]
+    if qc_settings.llama_vendor_root is not None:
+        disallowed_roots.append(qc_settings.llama_vendor_root)
+    if qc_settings.llama_executable is not None:
+        disallowed_roots.append(qc_settings.llama_executable)
+        disallowed_roots.append(qc_settings.llama_executable.parent)
+    if qc_settings.model_path is not None:
+        disallowed_roots.append(qc_settings.model_path)
+        disallowed_roots.append(qc_settings.model_path.parent)
+    if qc_settings.projector_path is not None:
+        disallowed_roots.append(qc_settings.projector_path)
+        disallowed_roots.append(qc_settings.projector_path.parent)
+    if any(
+        _runtime_root_overlaps_disallowed_root(candidate, disallowed_root)
+        for disallowed_root in disallowed_roots
+    ):
+        raise RuntimeError(
+            "Refusing to place QC-owned runtime under persistent production storage or QC assets."
+        )
+    return StorageLayout(candidate)
+
+
 def restart_comfyui() -> bool:
     storage = StorageLayout.configured()
     script = PROJECT_ROOT / "scripts" / "restart_comfyui.ps1"
@@ -122,7 +166,7 @@ def build_supervisor(
         settings=qc_settings,
         backend_factory=lambda: LlamaCppHttpBackend(
             qc_settings,
-            LlamaCppProcess(qc_settings, storage),
+            LlamaCppProcess(qc_settings, _qc_owned_runtime_layout(qc_settings, storage)),
         ),
         prompt_root=PROJECT_ROOT / "prompts",
         ffmpeg_command=ffmpeg,

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 import hashlib
 import os
+import shutil
 from pathlib import Path
 import re
 import socket
@@ -212,6 +213,7 @@ def discover_matching_gpu(
 
 def build_llama_command(
     settings: QualityControlSettings,
+    slot_save_path: Path | None = None,
 ) -> list[str]:
     if settings.llama_executable is None or settings.model_path is None or settings.projector_path is None:
         raise LlamaCppLifecycleError("Validated llama.cpp assets are not configured.")
@@ -236,6 +238,10 @@ def build_llama_command(
         "--parallel",
         str(settings.parallel_slots),
         "--slots",
+    ]
+    if slot_save_path is not None:
+        command.extend(["--slot-save-path", str(slot_save_path)])
+    command.extend([
         "--flash-attn",
         "on",
         "--jinja",
@@ -246,7 +252,7 @@ def build_llama_command(
         "--slot-prompt-similarity",
         "0",
         "--offline",
-    ]
+    ])
     return command
 
 
@@ -306,6 +312,7 @@ class LlamaCppProcess:
         self._stdout_handle: Any | None = None
         self._stderr_handle: Any | None = None
         self._ownership: Any | None = None
+        self._slot_save_path: Path | None = None
 
     def _default_health_probe(self) -> bool:
         try:
@@ -455,14 +462,23 @@ class LlamaCppProcess:
         self.environment["PYTHONUTF8"] = "1"
         backend_version = self._version()
         device_telemetry = self._visible_device_telemetry(gpu)
-        command = build_llama_command(self.settings)
         self.layout.logs_root.mkdir(parents=True, exist_ok=True)
         launch_id = uuid4().hex
-        stdout_path = self.layout.logs_root / f"qc-llama-{launch_id}.stdout.log"
-        stderr_path = self.layout.logs_root / f"qc-llama-{launch_id}.stderr.log"
-        self._stdout_handle = stdout_path.open("x", encoding="utf-8")
-        self._stderr_handle = stderr_path.open("x", encoding="utf-8")
+        slot_save_path = self.layout.root / "slot-state" / launch_id
         try:
+            slot_save_path.parent.mkdir(parents=True, exist_ok=True)
+            slot_save_path.mkdir()
+        except OSError as error:
+            raise LlamaCppLifecycleError(
+                "Could not create a unique owned slot-save-path for this launch."
+            ) from error
+        self._slot_save_path = slot_save_path
+        try:
+            command = build_llama_command(self.settings, slot_save_path=slot_save_path)
+            stdout_path = self.layout.logs_root / f"qc-llama-{launch_id}.stdout.log"
+            stderr_path = self.layout.logs_root / f"qc-llama-{launch_id}.stderr.log"
+            self._stdout_handle = stdout_path.open("x", encoding="utf-8")
+            self._stderr_handle = stderr_path.open("x", encoding="utf-8")
             self._ownership = self.ownership_factory()
             self._process = self.popen_factory(
                 command,
@@ -554,6 +570,15 @@ class LlamaCppProcess:
         if self._ownership is not None:
             self._ownership.close()
             self._ownership = None
+        slot_save_path = self._slot_save_path
+        if slot_save_path is not None and slot_save_path.exists():
+            try:
+                shutil.rmtree(slot_save_path)
+                self._slot_save_path = None
+            except OSError as error:
+                raise LlamaCppLifecycleError(
+                    "Failed to remove owned slot-save-path after child and port closure."
+                ) from error
         # Retain the exact handle/launch identity until both child exit and
         # port closure are proven.  A failed close can then be retried without
         # falling back to unsafe process-name discovery.
