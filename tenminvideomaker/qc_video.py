@@ -66,6 +66,10 @@ class SampledFrame:
             return self.image_bytes
         return self.image_path.read_bytes()
 
+    @property
+    def content_sha256(self) -> str:
+        return self.image_sha256 or hashlib.sha256(self.bytes()).hexdigest()
+
 
 @dataclass(frozen=True)
 class SampledVideo:
@@ -88,6 +92,10 @@ class QcWindow:
     @property
     def timestamps_seconds(self) -> tuple[float, ...]:
         return tuple(item.timestamp_seconds for item in self.frames)
+
+    @property
+    def image_sha256s(self) -> tuple[str, ...]:
+        return tuple(item.content_sha256 for item in self.frames)
 
 
 def _ratio(value: object) -> float:
@@ -186,6 +194,10 @@ def shifted_confirmation_window(
     frames = sampled.frames[confirmation_start:confirmation_end]
     if tuple(item.source_index for item in frames) == suspect.source_frame_indices:
         return None
+    if not set(item.content_sha256 for item in frames).difference(
+        suspect.image_sha256s
+    ):
+        return None
     return QcWindow(
         window_number=len(windows) + 1,
         frames=frames,
@@ -219,6 +231,11 @@ def build_frame_accounting(
         else suspect_frames is not None
         and tuple(item.source_index for item in confirmation.frames)
         != tuple(item.source_index for item in suspect_frames)
+        and bool(
+            set(item.content_sha256 for item in confirmation.frames).difference(
+                item.content_sha256 for item in suspect_frames
+            )
+        )
     )
     return {
         "source_fps": sampled.metadata.source_fps,
@@ -238,7 +255,7 @@ def build_frame_accounting(
         "unique_selected_frames_inspected": len({item.source_index for item in inspected}),
         "confirmation_frame_exposures": len(confirmation_frames),
         "confirmation_independence_rule": (
-            "different_source_frame_sequence_required"
+            "shifted_indices_and_at_least_one_new_image_sha256_required"
         ),
         "confirmation_is_independent": confirmation_independent,
         "frame_count_represented_in_model_input": len(inspected)
@@ -251,6 +268,7 @@ def build_frame_accounting(
                 "window_number": item.window_number,
                 "source_frame_indices": list(item.source_frame_indices),
                 "timestamps_seconds": list(item.timestamps_seconds),
+                "image_sha256s": list(item.image_sha256s),
             }
             for item in processed_windows
         ],
@@ -261,6 +279,7 @@ def build_frame_accounting(
             "confirmation_of_window": confirmation.confirmation_of_window,
             "source_frame_indices": list(confirmation.source_frame_indices),
             "timestamps_seconds": list(confirmation.timestamps_seconds),
+            "image_sha256s": list(confirmation.image_sha256s),
         },
         "early_exit_applied": bool(early_exit),
         "early_exit_reason": early_exit_reason,

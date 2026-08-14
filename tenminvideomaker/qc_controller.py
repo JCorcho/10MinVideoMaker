@@ -672,6 +672,7 @@ class Phase1QcController:
                 "window_number": item.window_number,
                 "source_frame_indices": list(item.source_frame_indices),
                 "timestamps_seconds": list(item.timestamps_seconds),
+                "image_sha256s": list(item.image_sha256s),
                 "response": item.response.to_dict(),
                 "confirmation_of_window": item.confirmation_of_window,
             }
@@ -684,6 +685,7 @@ class Phase1QcController:
                     "window_number": item.window_number,
                     "source_frame_indices": list(item.source_frame_indices),
                     "timestamps_seconds": list(item.timestamps_seconds),
+                    "image_sha256s": list(item.image_sha256s),
                     "response": item.response.to_dict(),
                     "confirmation_of_window": item.confirmation_of_window,
                 }

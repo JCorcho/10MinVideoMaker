@@ -142,10 +142,35 @@ class QcVideoTests(unittest.TestCase):
         self.assertEqual(accounting["frame_count_represented_in_model_input"], 12)
         self.assertEqual(
             accounting["confirmation_independence_rule"],
-            "different_source_frame_sequence_required",
+            "shifted_indices_and_at_least_one_new_image_sha256_required",
         )
         self.assertTrue(accounting["confirmation_is_independent"])
         self.assertTrue(accounting["early_exit_applied"])
+
+    def test_repeated_image_bytes_cannot_form_shifted_confirmation(self) -> None:
+        video = sampled(12)
+        repeated = b"identical-jpeg"
+        frozen = SampledVideo(
+            video.metadata,
+            video.target_fps,
+            tuple(
+                SampledFrame(
+                    item.source_index,
+                    item.timestamp_seconds,
+                    item.image_path,
+                    repeated,
+                )
+                for item in video.frames
+            ),
+        )
+
+        self.assertIsNone(
+            shifted_confirmation_window(
+                frozen,
+                chronological_windows(frozen)[1],
+                frame_count=4,
+            )
+        )
 
     def test_ffprobe_and_ffmpeg_wrapper_extracts_exact_selected_indices(self) -> None:
         import cv2

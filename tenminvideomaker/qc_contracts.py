@@ -226,6 +226,7 @@ class JudgeWindowResult:
     window_number: int
     source_frame_indices: tuple[int, ...]
     timestamps_seconds: tuple[float, ...]
+    image_sha256s: tuple[str, ...]
     response: JudgeResponse
     confirmation_of_window: int | None = None
 
@@ -236,6 +237,13 @@ class JudgeWindowResult:
             raise ValueError("A QC window must contain one to four frames.")
         if len(self.source_frame_indices) != len(self.timestamps_seconds):
             raise ValueError("Frame indices and timestamps must have equal lengths.")
+        if len(self.source_frame_indices) != len(self.image_sha256s):
+            raise ValueError("Frame indices and image hashes must have equal lengths.")
+        if any(
+            len(value) != 64 or any(character not in "0123456789abcdef" for character in value)
+            for value in self.image_sha256s
+        ):
+            raise ValueError("Image hashes must be lowercase SHA-256 values.")
         if tuple(sorted(self.source_frame_indices)) != self.source_frame_indices:
             raise ValueError("Source frame indices must remain chronological.")
         if tuple(sorted(self.timestamps_seconds)) != self.timestamps_seconds:
@@ -311,6 +319,10 @@ def normalize_window_results(
             raise ValueError("Shifted confirmation must identify its suspect window.")
         if confirmation.source_frame_indices == suspect.source_frame_indices:
             raise ValueError("Confirmation must use a shifted frame window.")
+        if not set(confirmation.image_sha256s).difference(suspect.image_sha256s):
+            raise ValueError(
+                "Confirmation must include image content absent from the suspect window."
+            )
         confirmation_errors = _window_strong_errors(confirmation, policy)
         confirming = bool(confirmation_errors)
 

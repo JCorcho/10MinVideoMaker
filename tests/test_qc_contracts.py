@@ -49,12 +49,21 @@ def error(
     }
 
 
-def window(number: int, raw: str, start: float | None = None) -> JudgeWindowResult:
+def window(
+    number: int,
+    raw: str,
+    start: float | None = None,
+    *,
+    image_sha256s: tuple[str, ...] | None = None,
+) -> JudgeWindowResult:
     start = float(number - 1) * 2.0 if start is None else start
     return JudgeWindowResult(
         window_number=number,
         source_frame_indices=(number * 4 - 4, number * 4 - 3, number * 4 - 2, number * 4 - 1),
         timestamps_seconds=(start, start + 0.5, start + 1.0, start + 1.5),
+        image_sha256s=image_sha256s or tuple(
+            f"{number * 4 + offset:064x}" for offset in range(4)
+        ),
         response=parse_judge_response(raw),
     )
 
@@ -199,6 +208,43 @@ class QcContractTests(unittest.TestCase):
         self.assertEqual(normalized.decision, QcDecision.FAIL)
         self.assertEqual(normalized.strong_window_count, 2)
         self.assertFalse(normalized.automatic_early_fail)
+
+    def test_shifted_indices_with_identical_image_content_are_not_independent(self) -> None:
+        repeated = tuple(f"{value:064x}" for value in range(4))
+        suspect = window(
+            1,
+            response("FAIL", errors=[error()]),
+            image_sha256s=repeated,
+        )
+        shifted = window(
+            99,
+            response("FAIL", errors=[error()]),
+            start=0.5,
+            image_sha256s=repeated,
+        ).as_confirmation_of(1)
+
+        with self.assertRaisesRegex(ValueError, "image content absent"):
+            normalize_window_results((suspect,), shifted, QcEvidencePolicy())
+
+    def test_shifted_window_with_one_new_image_hash_can_confirm(self) -> None:
+        repeated = tuple(f"{value:064x}" for value in range(4))
+        suspect = window(
+            1,
+            response("FAIL", errors=[error()]),
+            image_sha256s=repeated,
+        )
+        shifted = window(
+            99,
+            response("FAIL", errors=[error()]),
+            start=0.5,
+            image_sha256s=(*repeated[:3], f"{99:064x}"),
+        ).as_confirmation_of(1)
+
+        normalized = normalize_window_results(
+            (suspect,), shifted, QcEvidencePolicy()
+        )
+
+        self.assertEqual(normalized.decision, QcDecision.FAIL)
 
     def test_window_order_and_timestamps_are_preserved(self) -> None:
         windows = (window(1, response("PASS")), window(2, response("UNCERTAIN")))

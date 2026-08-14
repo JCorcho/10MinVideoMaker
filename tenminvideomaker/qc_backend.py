@@ -497,6 +497,7 @@ class HeadlessVideoEvaluator:
                 window_number=window.window_number,
                 source_frame_indices=window.source_frame_indices,
                 timestamps_seconds=window.timestamps_seconds,
+                image_sha256s=window.image_sha256s,
                 response=evaluation.response,
             )
             for window, evaluation in zip(processed, evaluations)
@@ -524,6 +525,7 @@ class HeadlessVideoEvaluator:
                     window_number=confirmation_window.window_number,
                     source_frame_indices=confirmation_window.source_frame_indices,
                     timestamps_seconds=confirmation_window.timestamps_seconds,
+                    image_sha256s=confirmation_window.image_sha256s,
                     response=confirmation_evaluation.response,
                     confirmation_of_window=confirmation_window.confirmation_of_window,
                 )
