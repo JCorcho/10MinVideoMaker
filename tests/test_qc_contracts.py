@@ -126,7 +126,7 @@ class QcContractTests(unittest.TestCase):
         values = {
             "source_video_sha256": "a" * 64,
             "evaluator_id": "production-qc",
-            "evaluator_version": "phase1-v1",
+            "evaluator_version": "phase1-v2",
             "backend_version": "2.28.2",
             "executable_sha256": "b" * 64,
             "model_sha256": "c" * 64,
@@ -137,6 +137,10 @@ class QcContractTests(unittest.TestCase):
         first = evaluation_idempotency_key(**values)
 
         self.assertEqual(first, evaluation_idempotency_key(**values))
+        self.assertNotEqual(
+            first,
+            evaluation_idempotency_key(**{**values, "evaluator_version": "phase1-v1"}),
+        )
         self.assertNotEqual(
             first,
             evaluation_idempotency_key(**{**values, "prompt_sha256": "0" * 64}),

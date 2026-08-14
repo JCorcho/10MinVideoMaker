@@ -22,7 +22,7 @@ from tenminvideomaker.qc_backend import (
 )
 from tenminvideomaker.qc_config import QualityControlSettings
 from tenminvideomaker.qc_contracts import QcDecision, parse_judge_response
-from tenminvideomaker.qc_video import chronological_windows
+from tenminvideomaker.qc_video import chronological_windows, shifted_confirmation_window
 from test_qc_video import sampled
 
 
@@ -74,6 +74,10 @@ class QcBackendTests(unittest.TestCase):
             hashlib.sha256(rubric.text.encode("utf-8")).hexdigest(),
             "5e91bc1d45809d712a8848f915c4f2c797d117a37bddc49eeef0ab80d6534dd0",
         )
+        self.assertEqual(rubric.request_recipe_version, "production_vlm_qc_request_v2")
+        self.assertEqual(
+            rubric.confirmation_recipe_version, "production_vlm_qc_confirmation_v1"
+        )
 
     def test_judge_payload_is_blind_fresh_and_tool_free(self) -> None:
         rubric = load_production_rubric(PROMPT_PATH)
@@ -85,6 +89,7 @@ class QcBackendTests(unittest.TestCase):
         serialized = json.dumps(payload)
 
         self.assertEqual(payload["temperature"], 0.0)
+        self.assertEqual(payload["max_tokens"], 1024)
         self.assertFalse(payload["cache_prompt"])
         self.assertNotIn("tools", payload)
         self.assertNotIn("tool_choice", payload)
@@ -96,6 +101,21 @@ class QcBackendTests(unittest.TestCase):
             [item["type"] for item in payload["messages"][1]["content"]],
             ["text", "image_url", "image_url", "image_url", "image_url"],
         )
+
+    def test_independent_confirmation_vision_payload_uses_1024_tokens(self) -> None:
+        rubric = load_production_rubric(PROMPT_PATH)
+        video = sampled(12)
+        suspect = chronological_windows(video)[0]
+        confirmation = shifted_confirmation_window(video, suspect)
+        self.assertIsNotNone(confirmation)
+        request = VisionJudgeRequest.from_window(confirmation, rubric=rubric)
+
+        payload = build_vision_judge_payload(request)
+        serialized = json.dumps(payload)
+
+        self.assertTrue(request.independent_confirmation)
+        self.assertEqual(payload["max_tokens"], 1024)
+        self.assertIn("INDEPENDENT SECOND-PASS REVIEW", serialized)
 
     def test_repair_planner_payload_is_separate_text_only_fresh_and_tool_free(self) -> None:
         prompt = load_repair_planner_prompt(REPAIR_PROMPT_PATH)
@@ -126,6 +146,7 @@ class QcBackendTests(unittest.TestCase):
         serialized = json.dumps(payload)
 
         self.assertEqual(payload["temperature"], 0.0)
+        self.assertEqual(payload["max_tokens"], 768)
         self.assertFalse(payload["cache_prompt"])
         self.assertNotIn("tools", payload)
         self.assertNotIn("tool_choice", payload)

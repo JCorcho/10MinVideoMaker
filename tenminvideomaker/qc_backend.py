@@ -31,7 +31,7 @@ from .qc_video import (
 
 
 VISION_SYSTEM_PROMPT_VERSION = "production_vlm_qc_system_v1"
-VISION_REQUEST_RECIPE_VERSION = "production_vlm_qc_request_v1"
+VISION_REQUEST_RECIPE_VERSION = "production_vlm_qc_request_v2"
 VISION_CONFIRMATION_RECIPE_VERSION = "production_vlm_qc_confirmation_v1"
 REPAIR_SYSTEM_PROMPT_VERSION = "production_i2v_repair_system_v1"
 REPAIR_REQUEST_RECIPE_VERSION = "production_i2v_repair_request_v1"
@@ -267,7 +267,7 @@ def build_vision_judge_payload(
             {"role": "user", "content": content},
         ],
         "temperature": 0.0,
-        "max_tokens": 512,
+        "max_tokens": 1024,
         "stream": False,
         "reasoning_effort": "none",
         "chat_template_kwargs": {"enable_thinking": False},

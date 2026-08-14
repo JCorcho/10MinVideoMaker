@@ -88,7 +88,7 @@ class QualityControlSettings:
     expected_gpu_uuid: str | None = None
     expected_gpu_name: str | None = None
     evaluator_id: str = "tenminvideomaker.production-vlm-qc"
-    evaluator_version: str = "phase1-v1"
+    evaluator_version: str = "phase1-v2"
     backend_family: str = "llama.cpp"
     backend_version: str = "2.28.2"
     model_id: str = "Qwen3.6 27B Uncensored HauhauCS Balanced"
@@ -165,7 +165,7 @@ class QualityControlSettings:
         fixed_values = {
             "schema_version": (self.schema_version, 1),
             "evaluator_id": (self.evaluator_id, "tenminvideomaker.production-vlm-qc"),
-            "evaluator_version": (self.evaluator_version, "phase1-v1"),
+            "evaluator_version": (self.evaluator_version, "phase1-v2"),
             "backend_family": (self.backend_family, "llama.cpp"),
             "backend_version": (self.backend_version, "2.28.2"),
             "model_id": (self.model_id, "Qwen3.6 27B Uncensored HauhauCS Balanced"),
