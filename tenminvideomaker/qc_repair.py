@@ -32,6 +32,8 @@ class ValidatedRepairPatch:
     summary: str
     source_candidate_id: str
     source_candidate_sha256: str
+    source_revision: int
+    source_document_sha256: str
     evaluation_id: str
     repair_input_sha256: str
     raw_patch: Mapping[str, Any]
@@ -95,6 +97,8 @@ def parse_and_validate_b1_patch(
     current_candidate_hash: str,
     current_candidate_id: str,
     evaluation_id: str,
+    source_revision: int,
+    source_document_sha256: str,
     prior_attempts: Sequence[tuple[str, int, str]] = (),
     generation_config_hash: str = "",
     required_prompt_fragments: Sequence[str] = (),
@@ -104,6 +108,7 @@ def parse_and_validate_b1_patch(
     for name, value in (
         ("repair_input_hash", repair_input_hash),
         ("current_candidate_hash", current_candidate_hash),
+        ("source_document_sha256", source_document_sha256),
     ):
         if not isinstance(value, str) or _SHA256.fullmatch(value) is None:
             raise B1PatchValidationError(f"{name} must be lowercase SHA-256.")
@@ -122,6 +127,8 @@ def parse_and_validate_b1_patch(
             "candidate_sha256",
             "evaluation_id",
             "repair_input_sha256",
+            "source_revision",
+            "source_document_sha256",
         },
         "source",
     )
@@ -130,6 +137,8 @@ def parse_and_validate_b1_patch(
         "candidate_sha256": current_candidate_hash,
         "evaluation_id": evaluation_id,
         "repair_input_sha256": repair_input_hash,
+        "source_revision": source_revision,
+        "source_document_sha256": source_document_sha256,
     }
     if dict(source) != expected_source:
         raise B1PatchValidationError(
@@ -181,6 +190,8 @@ def parse_and_validate_b1_patch(
         summary=summary.strip(),
         source_candidate_id=current_candidate_id,
         source_candidate_sha256=current_candidate_hash,
+        source_revision=source_revision,
+        source_document_sha256=source_document_sha256,
         evaluation_id=evaluation_id,
         repair_input_sha256=repair_input_hash,
         raw_patch={"i2v": {"prompt": prompt}},
@@ -308,6 +319,7 @@ def schedule_b1_retry(
     repair_input_hash: str,
     prior_repair_summaries: Sequence[Any] = (),
     required_prompt_fragments: Sequence[str] = (),
+    planner_failure_reason: str | None = None,
 ) -> B1Retry:
     """Persist one B1 plan before idempotently allocating its render revision."""
     source = store.qc_candidate(source_candidate_id)
@@ -363,6 +375,10 @@ def schedule_b1_retry(
             summary=str(saved.get("summary", "")),
             source_candidate_id=source.candidate_id,
             source_candidate_sha256=source.source_video_sha256,
+            source_revision=source.revision,
+            source_document_sha256=hashlib.sha256(
+                canonical_json(source_document).encode("utf-8")
+            ).hexdigest(),
             evaluation_id=evaluation_id,
             repair_input_sha256=repair_input_hash,
             raw_patch={"i2v": {"prompt": prompt}},
@@ -398,6 +414,8 @@ def schedule_b1_retry(
             source.job_id, source.scene_id, source.revision, repair_id
         )
         try:
+            if planner_failure_reason is not None:
+                raise B1PatchValidationError(planner_failure_reason)
             validated_patch = parse_and_validate_b1_patch(
                 raw_output,
                 source_document=source_document,
@@ -406,6 +424,10 @@ def schedule_b1_retry(
                 current_candidate_hash=source.source_video_sha256,
                 current_candidate_id=source.candidate_id,
                 evaluation_id=evaluation_id,
+                source_revision=source.revision,
+                source_document_sha256=hashlib.sha256(
+                    canonical_json(source_document).encode("utf-8")
+                ).hexdigest(),
                 prior_attempts=prior_attempts,
                 generation_config_hash=generation_config_hash,
                 required_prompt_fragments=required_prompt_fragments,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
+from dataclasses import replace
 import hashlib
 from io import BytesIO
 import json
@@ -105,6 +106,8 @@ class QcBackendTests(unittest.TestCase):
                 "candidate_id": "candidate-a1",
                 "candidate_sha256": "a" * 64,
                 "evaluation_id": "evaluation-a1",
+                "source_revision": 2,
+                "source_document_sha256": "c" * 64,
             },
             current_i2v_prompt="A woman turns toward camera.",
             negative_prompt="no deformation",
@@ -174,8 +177,10 @@ class QcBackendTests(unittest.TestCase):
             QualityControlSettings(), object(), urlopen_factory=fake_urlopen
         )
         rubric = load_production_rubric(PROMPT_PATH)
+        sentinel = "UNIQUE_SENTINEL_FROM_A"
         first = VisionJudgeRequest.from_window(
-            chronological_windows(sampled(4))[0], rubric=rubric
+            chronological_windows(sampled(4))[0],
+            rubric=replace(rubric, text=rubric.text + "\n" + sentinel),
         )
         second = VisionJudgeRequest.from_window(
             chronological_windows(sampled(5))[1], rubric=rubric
@@ -186,11 +191,64 @@ class QcBackendTests(unittest.TestCase):
         chats = [json.loads(data) for url, data, _ in seen if "/chat/completions" in url]
         resets = [url for url, _, _ in seen if "/slots/0?action=erase" in url]
         self.assertEqual(len(chats), 2)
-        self.assertEqual(len(resets), 2)
-        sentinel = "UNIQUE_SENTINEL_FROM_A"
-        chats[0]["messages"][1]["content"][0]["text"] += sentinel
+        self.assertEqual(len(resets), 4)
+        self.assertIn(sentinel, json.dumps(chats[0]))
         self.assertNotIn(sentinel, json.dumps(chats[1]))
         self.assertEqual(len(chats[1]["messages"]), 2)
+
+    def test_failed_post_chat_reset_poisons_backend_before_next_semantic_request(self) -> None:
+        seen = []
+        erase_attempts = 0
+
+        class Response:
+            status = 200
+
+            def __init__(self, body: bytes = b"{}"):
+                self.body = body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return self.body
+
+        def fake_urlopen(request, timeout):
+            nonlocal erase_attempts
+            seen.append(request.full_url)
+            if "/slots/" in request.full_url:
+                erase_attempts += 1
+                if erase_attempts == 2:
+                    raise OSError("slot erase failed")
+                return Response()
+            return Response(
+                json.dumps(
+                    {
+                        "choices": [{"message": {"content": raw("PASS")}}],
+                        "usage": {},
+                    }
+                ).encode()
+            )
+
+        backend = LlamaCppHttpBackend(
+            QualityControlSettings(), object(), urlopen_factory=fake_urlopen
+        )
+        rubric = load_production_rubric(PROMPT_PATH)
+        request = VisionJudgeRequest.from_window(
+            chronological_windows(sampled(4))[0], rubric=rubric
+        )
+
+        with self.assertRaisesRegex(Exception, "fresh llama.cpp request context"):
+            backend.evaluate(request)
+        with self.assertRaisesRegex(Exception, "poisoned"):
+            backend.evaluate(request)
+
+        self.assertEqual(
+            sum("/chat/completions" in url for url in seen),
+            1,
+        )
 
     def test_multimodal_slot_is_text_scrubbed_then_verified_erased(self) -> None:
         seen = []
@@ -220,8 +278,8 @@ class QcBackendTests(unittest.TestCase):
                     body = b'{"error":{"message":"slot holds image/audio tokens"}}'
                     raise HTTPError(request.full_url, 501, "not supported", {}, BytesIO(body))
                 return Response(b'{"id_slot":0,"n_erased":12}')
-            chats = sum("/chat/completions" in url for url, _, _ in seen)
-            body = raw("PASS") if chats == 1 else "OK"
+            payload = json.loads(request.data)
+            body = "OK" if payload.get("max_tokens") == 1 else raw("PASS")
             return Response(
                 json.dumps(
                     {"choices": [{"message": {"content": body}}], "usage": {}}
@@ -240,10 +298,10 @@ class QcBackendTests(unittest.TestCase):
 
         chats = [json.loads(data) for url, data, _ in seen if "/chat/completions" in url]
         self.assertEqual(len(chats), 2)
-        self.assertEqual(chats[1]["max_tokens"], 1)
-        self.assertFalse(chats[1]["cache_prompt"])
-        self.assertNotIn("image_url", json.dumps(chats[1]))
-        self.assertEqual(erase_attempts, 2)
+        self.assertEqual(chats[0]["max_tokens"], 1)
+        self.assertFalse(chats[0]["cache_prompt"])
+        self.assertNotIn("image_url", json.dumps(chats[0]))
+        self.assertEqual(erase_attempts, 3)
 
     def test_two_strong_normal_windows_end_evaluation_early(self) -> None:
         backend = FakeBackend(

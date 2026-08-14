@@ -7,6 +7,7 @@ import hashlib
 import json
 import logging
 from pathlib import Path
+import socket
 from tempfile import TemporaryDirectory
 from typing import Any, Callable, Mapping, Sequence
 
@@ -14,6 +15,7 @@ from .contracts import JobPayload
 from .qc_backend import (
     BackendIdentity,
     HeadlessVideoEvaluator,
+    QcBackendError,
     RepairPlannerRequest,
     load_production_rubric,
     load_repair_planner_prompt,
@@ -88,6 +90,7 @@ class Phase1QcController:
         sample_video: Callable[..., Any] = sample_video_frames,
         ffmpeg_command: str = "ffmpeg",
         ffprobe_command: str = "ffprobe",
+        qc_port_open: Callable[[], bool] | None = None,
     ):
         self.store = store
         self.layout = layout
@@ -97,12 +100,28 @@ class Phase1QcController:
         self.sample_video = sample_video
         self.ffmpeg_command = ffmpeg_command
         self.ffprobe_command = ffprobe_command
+        self.qc_port_open = qc_port_open or self._default_qc_port_open
         self._active_backend: Any | None = None
 
+    def _default_qc_port_open(self) -> bool:
+        try:
+            with socket.create_connection(
+                (self.settings.loopback_host, self.settings.loopback_port),
+                timeout=0.25,
+            ):
+                return True
+        except OSError:
+            return False
+
     def close(self) -> None:
+        self._close_active_backend()
+
+    def _close_active_backend(self) -> None:
         backend = self._active_backend
         if backend is not None:
             backend.close()
+            if self._active_backend is backend:
+                self._active_backend = None
 
     @staticmethod
     def _revision_document(store: PipelineStateStore, candidate: QcCandidateRecord) -> Mapping[str, Any]:
@@ -247,10 +266,30 @@ class Phase1QcController:
                     QcCandidateState.HOLD_FOR_REVIEW,
                     next_action="hold_for_review",
                 )
-            result_id = repair.proposed_patch.get("result_candidate_id")
-            if not isinstance(result_id, str):
-                raise StateTransitionError("Accepted B1 repair lost its candidate identity.")
-            return self.store.qc_candidate(result_id)
+            # The repair evidence is deliberately durable before the child
+            # revision is allocated.  Re-enter the idempotent scheduler so a
+            # restart in that crash window finishes candidate creation instead
+            # of assuming the result row already exists.
+            retry = schedule_b1_retry(
+                self.store,
+                self.layout,
+                original_job=job,
+                source_candidate_id=candidate_id,
+                evaluation_id=evaluation.evaluation_id,
+                source_document=source_document,
+                raw_output=repair.raw_output,
+                planner_identity=repair.planner_identity,
+                repair_input_hash=repair.repair_input_sha256,
+                prior_repair_summaries=repair.prior_repair_summaries,
+            )
+            if retry.candidate is None:
+                return self.store.qc_candidate(candidate_id)
+            self.store.set_qc_candidate_state(
+                candidate_id,
+                QcCandidateState.SUPERSEDED,
+                next_action=None,
+            )
+            return retry.candidate
         if backend is None or planner_identity is None:
             raise QcControllerError("A1 FAIL requires the isolated text planner backend.")
         request = self._repair_request(job, candidate, evaluation)
@@ -262,6 +301,36 @@ class Phase1QcController:
             "system_prompt_sha256": request.prompt.system_prompt_sha256,
             "request_recipe_version": request.prompt.request_recipe_version,
         }
+        claim, created = self.store.claim_qc_repair_planner(
+            candidate_id=candidate_id,
+            evaluation_id=evaluation.evaluation_id,
+            repair_input_sha256=request.repair_input_sha256,
+            planner_identity=durable_planner_identity,
+        )
+        if not created:
+            # A durable claim with no repair record means the process died
+            # after crossing the external-inference boundary.  The remote
+            # response is unknowable, so repeating the model call would break
+            # exactly-once semantics.  Persist that ambiguity and hold.
+            retry = schedule_b1_retry(
+                self.store,
+                self.layout,
+                original_job=job,
+                source_candidate_id=candidate_id,
+                evaluation_id=evaluation.evaluation_id,
+                source_document=source_document,
+                raw_output="",
+                planner_identity=claim.planner_identity,
+                repair_input_hash=request.repair_input_sha256,
+                prior_repair_summaries=request.previous_repairs,
+                planner_failure_reason=(
+                    "planner_invocation_ambiguous_after_restart"
+                ),
+            )
+            self.store.complete_qc_repair_planner_claim(
+                candidate_id, state="FAILED_CLOSED"
+            )
+            return self.store.qc_candidate(candidate_id)
         try:
             response = backend.plan_repair(request)
             retry = schedule_b1_retry(
@@ -278,11 +347,38 @@ class Phase1QcController:
             )
         except Exception as error:
             LOGGER.exception("B1 planner failed closed for %s.", candidate_id)
+            repairs = self.store.qc_repairs(candidate_id)
+            if not repairs:
+                schedule_b1_retry(
+                    self.store,
+                    self.layout,
+                    original_job=job,
+                    source_candidate_id=candidate_id,
+                    evaluation_id=evaluation.evaluation_id,
+                    source_document=source_document,
+                    raw_output="",
+                    planner_identity=durable_planner_identity,
+                    repair_input_hash=request.repair_input_sha256,
+                    prior_repair_summaries=request.previous_repairs,
+                    planner_failure_reason=(
+                        "planner_infrastructure_failure:" + type(error).__name__
+                    ),
+                )
+                self.store.complete_qc_repair_planner_claim(
+                    candidate_id, state="FAILED_CLOSED"
+                )
+            else:
+                self.store.complete_qc_repair_planner_claim(
+                    candidate_id, state="COMPLETED"
+                )
             return self.store.set_qc_candidate_state(
                 candidate_id,
                 QcCandidateState.HOLD_FOR_REVIEW,
                 next_action="planner_failure:" + type(error).__name__,
             )
+        self.store.complete_qc_repair_planner_claim(
+            candidate_id, state="COMPLETED"
+        )
         if retry.candidate is None:
             return self.store.qc_candidate(candidate_id)
         self.store.set_qc_candidate_state(
@@ -309,6 +405,9 @@ class Phase1QcController:
             "decision": evaluation.normalized_decision.value,
             "strong_window_count": evaluation.strong_window_count,
             "frame_accounting": dict(evaluation.frame_accounting),
+            "suspect_windows": list(evaluation.suspect_windows),
+            "raw_result": evaluation.raw_result,
+            "evaluation_state": evaluation.state,
         }
         previous = tuple(
             {"status": item.status, "reason": item.reason,
@@ -325,6 +424,10 @@ class Phase1QcController:
                 "candidate_id": candidate.candidate_id,
                 "candidate_sha256": candidate.source_video_sha256,
                 "evaluation_id": evaluation.evaluation_id,
+                "source_revision": candidate.revision,
+                "source_document_sha256": hashlib.sha256(
+                    canonical_json(fixed).encode("utf-8")
+                ).hexdigest(),
             },
             "current_i2v_prompt": candidate.current_prompt,
             "negative_prompt": candidate.negative_prompt,
@@ -526,6 +629,9 @@ class Phase1QcController:
 
     def run_epoch(self, job: JobPayload, supervisor: Any) -> QcEpochResult:
         """Run bounded whole-model epochs; never load/unload once per scene."""
+        # A prior shutdown/port verification failure retains the exact backend
+        # owner.  Prove it is gone before any Comfy repair generation can run.
+        self._close_active_backend()
         scene_ids = tuple(scene.scene_id for scene in job.scenes)
         if not self.settings.quality_control_enabled:
             return QcEpochResult(
@@ -542,6 +648,11 @@ class Phase1QcController:
                 if item.state in {QcCandidateState.PENDING_GENERATION, QcCandidateState.GENERATING}
             ]
             if generation:
+                if self.qc_port_open():
+                    raise QcControllerError(
+                        "The dedicated QC port is owned by an unverified process; "
+                        "repair generation is blocked until it exits."
+                    )
                 supervisor.render_qc_candidates(
                     job,
                     tuple(
@@ -558,11 +669,12 @@ class Phase1QcController:
             ]
             if pending:
                 self._strict_generation_barrier(supervisor)
-                backend = self.backend_factory()
-                self._active_backend = backend
+                backend: Any | None = None
                 identity: BackendIdentity | None = None
                 try:
                     try:
+                        backend = self.backend_factory()
+                        self._active_backend = backend
                         identity = backend.start()
                     except Exception as error:
                         LOGGER.exception("QC worker failed before readiness.")
@@ -576,6 +688,7 @@ class Phase1QcController:
                                 },
                             )
                         continue
+                    abort_backend = False
                     for candidate in pending:
                         try:
                             self._evaluate_candidate(candidate, backend, identity)
@@ -586,16 +699,29 @@ class Phase1QcController:
                                 backend=backend,
                                 planner_identity=_identity_mapping(identity),
                             )
+                        except QcBackendError as error:
+                            LOGGER.exception(
+                                "QC backend trust boundary failed for %s; "
+                                "aborting this worker epoch.",
+                                candidate.candidate_id,
+                            )
+                            self.store.record_qc_infrastructure_failure(
+                                candidate.candidate_id,
+                                {"kind": type(error).__name__, "message": str(error)},
+                            )
+                            abort_backend = True
+                            break
                         except Exception as error:
                             LOGGER.exception("QC failed closed for %s.", candidate.candidate_id)
                             self.store.record_qc_infrastructure_failure(
                                 candidate.candidate_id,
                                 {"kind": type(error).__name__, "message": str(error)},
                             )
+                    if abort_backend:
+                        continue
                 finally:
-                    try:
+                    if backend is not None:
                         backend.close()
-                    finally:
                         if self._active_backend is backend:
                             self._active_backend = None
                 continue

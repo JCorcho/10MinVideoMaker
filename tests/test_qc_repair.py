@@ -12,6 +12,7 @@ from tenminvideomaker.qc_contracts import (
     QcCandidateState,
     QcDecision,
     QcTier,
+    canonical_json,
     derive_retry_seed,
     evaluation_idempotency_key,
 )
@@ -218,6 +219,10 @@ class B1PatchTests(unittest.TestCase):
         self.candidate_hash = "2" * 64
         self.candidate_id = "candidate-a1"
         self.evaluation_id = "evaluation-a1"
+        self.source_revision = 2
+        self.source_document_sha256 = hashlib.sha256(
+            canonical_json(self.document).encode("utf-8")
+        ).hexdigest()
 
     def raw(self, prompt: str | None = None, **extra: object) -> str:
         value = {
@@ -227,6 +232,8 @@ class B1PatchTests(unittest.TestCase):
                 "candidate_sha256": self.candidate_hash,
                 "evaluation_id": self.evaluation_id,
                 "repair_input_sha256": self.input_hash,
+                "source_revision": self.source_revision,
+                "source_document_sha256": self.source_document_sha256,
             },
             "patch": {"i2v": {"prompt": (
                 "A smaller, defect-focused motion instruction."
@@ -247,6 +254,8 @@ class B1PatchTests(unittest.TestCase):
             current_candidate_hash=self.candidate_hash,
             current_candidate_id=self.candidate_id,
             evaluation_id=self.evaluation_id,
+            source_revision=self.source_revision,
+            source_document_sha256=self.source_document_sha256,
             **kwargs,
         )
 
@@ -281,6 +290,14 @@ class B1PatchTests(unittest.TestCase):
             self.parse(json.dumps(value))
         value = json.loads(self.raw())
         value["source"]["candidate_id"] = "candidate-old"
+        with self.assertRaises(B1PatchValidationError):
+            self.parse(json.dumps(value))
+        value = json.loads(self.raw())
+        value["source"]["source_revision"] = self.source_revision + 1
+        with self.assertRaises(B1PatchValidationError):
+            self.parse(json.dumps(value))
+        value = json.loads(self.raw())
+        value["source"]["source_document_sha256"] = "4" * 64
         with self.assertRaises(B1PatchValidationError):
             self.parse(json.dumps(value))
 
@@ -408,6 +425,10 @@ class B1DurabilityTests(A1RetryTests):
                 "candidate_sha256": a1.source_video_sha256,
                 "evaluation_id": "evaluation-a1",
                 "repair_input_sha256": input_hash,
+                "source_revision": a1.revision,
+                "source_document_sha256": hashlib.sha256(
+                    canonical_json(document).encode("utf-8")
+                ).hexdigest(),
             },
             "patch": {"i2v": {"prompt": "A minimal corrected hand transition."}},
             "summary": "Correct the visible hand transition.",

@@ -74,8 +74,6 @@ def discover_matching_gpu(
 
 def build_llama_command(
     settings: QualityControlSettings,
-    *,
-    slot_save_path: Path | None = None,
 ) -> list[str]:
     if settings.llama_executable is None or settings.model_path is None or settings.projector_path is None:
         raise LlamaCppLifecycleError("Validated llama.cpp assets are not configured.")
@@ -111,8 +109,6 @@ def build_llama_command(
         "0",
         "--offline",
     ]
-    if slot_save_path is not None:
-        command.extend(["--slot-save-path", str(slot_save_path)])
     return command
 
 
@@ -280,12 +276,7 @@ class LlamaCppProcess:
         self.environment["PYTHONUTF8"] = "1"
         backend_version = self._version()
         device_telemetry = self._visible_device_telemetry(gpu)
-        slot_save_path = (self.layout.root / "qc-slot-cache").resolve()
-        slot_save_path.mkdir(parents=True, exist_ok=True)
-        command = build_llama_command(
-            self.settings,
-            slot_save_path=slot_save_path,
-        )
+        command = build_llama_command(self.settings)
         self.layout.logs_root.mkdir(parents=True, exist_ok=True)
         launch_id = uuid4().hex
         stdout_path = self.layout.logs_root / f"qc-llama-{launch_id}.stdout.log"
@@ -349,8 +340,6 @@ class LlamaCppProcess:
 
     def close(self) -> None:
         process = self._process
-        self._process = None
-        self._identity = None
         if process is not None and process.poll() is None:
             process.terminate()
             try:
@@ -370,3 +359,8 @@ class LlamaCppProcess:
                     "The owned llama.cpp process exited but its dedicated port remained open."
                 )
             self.sleep(0.1)
+        # Retain the exact handle/launch identity until both child exit and
+        # port closure are proven.  A failed close can then be retried without
+        # falling back to unsafe process-name discovery.
+        self._process = None
+        self._identity = None

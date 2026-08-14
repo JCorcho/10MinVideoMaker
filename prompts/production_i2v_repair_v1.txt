@@ -13,4 +13,4 @@ never emit a tool call or prose outside the JSON object. No external actions
 are available.
 
 Return exactly this JSON schema and no markdown:
-{"schema_version":1,"source":{"candidate_id":"...","candidate_sha256":"64 lowercase hex","evaluation_id":"...","repair_input_sha256":"64 lowercase hex"},"patch":{"i2v":{"prompt":"..."}},"summary":"concise defect-focused change summary"}
+{"schema_version":1,"source":{"candidate_id":"...","candidate_sha256":"64 lowercase hex","evaluation_id":"...","repair_input_sha256":"64 lowercase hex","source_revision":2,"source_document_sha256":"64 lowercase hex"},"patch":{"i2v":{"prompt":"..."}},"summary":"concise defect-focused change summary"}

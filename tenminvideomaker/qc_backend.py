@@ -288,6 +288,7 @@ class LlamaCppHttpBackend:
         self.settings = settings
         self.process = process
         self._urlopen = urlopen_factory
+        self._poisoned = False
 
     def start(self) -> BackendIdentity:
         return self.process.start()
@@ -376,6 +377,18 @@ class LlamaCppHttpBackend:
             ) from error
 
     def _chat(self, payload: Mapping[str, object]) -> tuple[str, Mapping[str, Any]]:
+        if self._poisoned:
+            raise QcBackendError(
+                "llama.cpp backend is poisoned because fresh context could not be proven."
+            )
+        try:
+            # A pre-request erase is the load-bearing trust boundary after an
+            # interrupted/failed prior call.  A new HTTP request alone does not
+            # prove that the sole llama.cpp slot has no semantic history.
+            self._reset_context()
+        except BaseException:
+            self._poisoned = True
+            raise
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         http_request = Request(
             f"http://{self.settings.loopback_host}:{self.settings.loopback_port}"
@@ -397,7 +410,11 @@ class LlamaCppHttpBackend:
         except (URLError, TimeoutError, json.JSONDecodeError) as error:
             raise QcBackendError(f"llama.cpp request failed: {error}") from error
         finally:
-            self._reset_context()
+            try:
+                self._reset_context()
+            except BaseException:
+                self._poisoned = True
+                raise
         try:
             content = envelope["choices"][0]["message"]["content"]
             if isinstance(content, list):

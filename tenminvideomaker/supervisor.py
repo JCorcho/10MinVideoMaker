@@ -525,6 +525,10 @@ class PipelineSupervisor:
         """Render a whole repair batch while ComfyUI owns the generation epoch."""
         if not candidates:
             return
+        if not self.comfy.alive():
+            raise FatalPipelineError(
+                "ComfyUI is unavailable at the QC repair generation boundary."
+            )
         scene_ids = {candidate.scene_id for candidate, _ in candidates}
         preparation = self._resolve_assets(job, scene_ids=scene_ids)
         if preparation.failures:
@@ -623,7 +627,7 @@ class PipelineSupervisor:
         selection: Sequence[ManualFinalSceneSelection],
     ) -> None:
         """Deliver and assemble only the controller's deterministic selection."""
-        required = tuple(scene.scene_id for scene in job.scenes)
+        required = tuple(sorted(scene.scene_id for scene in job.scenes))
         if tuple(item.scene_id for item in selection) != required:
             raise FatalPipelineError(
                 "QC finalization selection does not contain every required scene."
@@ -1605,6 +1609,18 @@ class PipelineSupervisor:
                 LOGGER.warning(
                     "ComfyUI restarted; restored non-render pipeline state %s.",
                     snapshot.state.value,
+                )
+                return
+            if snapshot.state in {
+                PipelineState.RUNNING_QC,
+                PipelineState.AWAITING_QC_REVIEW,
+            }:
+                self.store.transition(
+                    PipelineState.RUNNING_QC,
+                    job_id=snapshot.job_id,
+                )
+                LOGGER.warning(
+                    "ComfyUI restarted; restored the durable QC controller epoch."
                 )
                 return
             LOGGER.error(

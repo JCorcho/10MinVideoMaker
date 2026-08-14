@@ -160,8 +160,7 @@ class QcLlamaTests(unittest.TestCase):
     def test_command_uses_validated_assets_and_fresh_single_slot_policy(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             configured = settings(Path(directory))
-            slot_cache = Path(directory) / "slot-cache"
-            command = build_llama_command(configured, slot_save_path=slot_cache)
+            command = build_llama_command(configured)
             joined = " ".join(command)
 
             self.assertIn(str(configured.model_path), command)
@@ -170,9 +169,7 @@ class QcLlamaTests(unittest.TestCase):
             self.assertIn("--host 127.0.0.1", joined)
             self.assertIn("--parallel 1", joined)
             self.assertIn("--slots", command)
-            self.assertEqual(
-                command[command.index("--slot-save-path") + 1], str(slot_cache)
-            )
+            self.assertNotIn("--slot-save-path", command)
             self.assertIn("--image-min-tokens 1024", joined)
             self.assertIn("--no-cache-prompt", command)
             self.assertIn("--no-cache-prompt", command)
@@ -312,6 +309,43 @@ class QcLlamaTests(unittest.TestCase):
 
             self.assertTrue(fake.terminated)
             self.assertFalse(fake.killed)
+
+    def test_failed_port_close_keeps_exact_owned_process_for_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            configured = replace(settings(root), shutdown_timeout_seconds=1)
+            fake = FakeProcess()
+            clock = [0.0]
+            port_open = [False]
+
+            def run_command(command, **kwargs):
+                return Completed(
+                    "llama.cpp version 2.28.2"
+                    if "--version" in command
+                    else f"{configured.expected_gpu_uuid}, {configured.expected_gpu_name}"
+                )
+
+            manager = LlamaCppProcess(
+                configured,
+                StorageLayout(root / "storage"),
+                run_command=run_command,
+                popen_factory=lambda command, **kwargs: fake,
+                health_probe=lambda: True,
+                port_open_probe=lambda: port_open[0],
+                telemetry_probe=lambda path, gpu: True,
+                sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+                monotonic=lambda: clock[0],
+            )
+            manager.start()
+            port_open[0] = True
+
+            with self.assertRaises(LlamaCppLifecycleError):
+                manager.close()
+            self.assertIs(manager._process, fake)
+
+            port_open[0] = False
+            manager.close()
+            self.assertIsNone(manager._process)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 import sqlite3
@@ -123,7 +124,7 @@ class StateStoreTests(unittest.TestCase):
             tier=tier,
             parent_candidate_id=None,
             source_video_path=str(video),
-            source_video_sha256="a" * 64,
+            source_video_sha256=hashlib.sha256(b"video").hexdigest(),
             original_prompt="exact original prompt",
             current_prompt="exact original prompt",
             original_seed=2**64 - 1,
@@ -2162,6 +2163,21 @@ class StateStoreTests(unittest.TestCase):
             self.store.original_final_selection(candidate.job_id, [candidate.scene_id]),
             original,
         )
+
+    def test_qc_final_selection_rejects_accepted_path_with_changed_bytes(self) -> None:
+        candidate = self._create_qc_candidate()
+        self._complete_pass_for_candidate(candidate.candidate_id)
+        self.store.decide_qc_candidate(
+            job_id=candidate.job_id,
+            scene_id=candidate.scene_id,
+            candidate_id=candidate.candidate_id,
+            decision=QcHumanDecision.APPROVE,
+            note=None,
+        )
+        Path(candidate.source_video_path).write_bytes(b"overwritten-after-approval")
+
+        with self.assertRaisesRegex(StateTransitionError, "hash"):
+            self.store.qc_final_selection(candidate.job_id, [candidate.scene_id])
 
     def test_manual_final_cannot_select_latest_unapproved_qc_revision(self) -> None:
         candidate = self._create_qc_candidate()

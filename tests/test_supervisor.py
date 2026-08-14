@@ -19,7 +19,12 @@ from tenminvideomaker.continuation_renderer import (
 )
 from tenminvideomaker.contracts import parse_job_payload
 from tenminvideomaker.delivery import DiscordDeliverySettings
-from tenminvideomaker.state_store import PipelineState, PipelineStateStore, SceneState
+from tenminvideomaker.state_store import (
+    ManualFinalSceneSelection,
+    PipelineState,
+    PipelineStateStore,
+    SceneState,
+)
 from tenminvideomaker.storage import StorageLayout
 from tenminvideomaker.supervisor import (
     FatalPipelineError,
@@ -239,6 +244,50 @@ class StageRecordingComfy(FakeComfy):
 
 
 class SupervisorTests(unittest.TestCase):
+    def test_qc_finalization_uses_deterministic_scene_order_not_payload_order(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            raw = payload()
+            second = copy.deepcopy(raw["scenes"][0])
+            second["id"] = 2
+            second["title"] = "Second scene"
+            second["t2i"]["seed"] += 1
+            second["i2v"]["seed"] += 1
+            raw["scenes"] = [second, raw["scenes"][0]]
+            job = parse_job_payload(raw)
+            store = PipelineStateStore(root / "pipeline.sqlite3")
+            store.claim_job(job)
+            clips = []
+            for scene_id in (1, 2):
+                clip = root / f"scene-{scene_id}.mp4"
+                clip.write_bytes(f"scene-{scene_id}".encode())
+                clips.append(clip)
+            assembler = FakeAssembler(root / "final.mp4")
+            mail = FakeMailClient()
+            supervisor = PipelineSupervisor(
+                store=store,
+                mail_client=mail,
+                asset_manager=FakeAssetManager(),
+                comfy=FakeComfy(root / "unused-frame.png"),
+                assembler=assembler,
+                settings=SupervisorSettings(),
+                video_probe=lambda path: VideoStreamInfo(
+                    Path(path),
+                    PRODUCTION_WIDTH,
+                    PRODUCTION_HEIGHT,
+                    Fraction(24, 1),
+                ),
+            )
+            selection = tuple(
+                ManualFinalSceneSelection(index, 1, str(clips[index - 1]))
+                for index in (1, 2)
+            )
+
+            supervisor._finalize_qc_job(job, selection)
+
+            self.assertEqual(assembler.calls[0][1], [str(item) for item in clips])
+            self.assertEqual(mail.requests, [(job.job_id, True)])
+
     def test_qc_enabled_inserts_epoch_after_complete_i2v_batch_and_blocks_stitch(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
@@ -335,6 +384,51 @@ class SupervisorTests(unittest.TestCase):
 
             self.assertEqual(store.snapshot().state, PipelineState.DOWNLOADING_ASSETS)
             requeue.assert_called_once_with(job.job_id)
+
+    def test_qc_repair_generation_fails_before_queue_when_comfy_is_dead(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            job = parse_job_payload(payload())
+            store = PipelineStateStore(root / "pipeline.sqlite3")
+            store.claim_job(job)
+            comfy = FakeComfy(root / "unused.png")
+            comfy.alive = lambda: False
+            supervisor = PipelineSupervisor(
+                store=store,
+                mail_client=FakeMailClient(),
+                asset_manager=FakeAssetManager(),
+                comfy=comfy,
+                settings=SupervisorSettings(1, 10, 10, 2),
+            )
+
+            with self.assertRaisesRegex(FatalPipelineError, "unavailable"):
+                supervisor.render_qc_candidates(
+                    job, ((SimpleNamespace(), {}),)
+                )
+
+            self.assertEqual(comfy.workflows, [])
+
+    def test_fatal_restart_restores_qc_epoch_without_replaying_originals(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            job = parse_job_payload(payload())
+            store = PipelineStateStore(root / "pipeline.sqlite3")
+            store.claim_job(job)
+            store.transition(PipelineState.RUNNING_QC, job_id=job.job_id)
+            supervisor = PipelineSupervisor(
+                store=store,
+                mail_client=FakeMailClient(),
+                asset_manager=FakeAssetManager(),
+                comfy=FakeComfy(root / "unused.png"),
+                settings=SupervisorSettings(1, 10, 10, 2),
+                restart_comfy=lambda: True,
+            )
+
+            with patch.object(store, "requeue_unfinished_scenes") as requeue:
+                supervisor.handle_fatal(FatalPipelineError("server stopped"))
+
+            self.assertEqual(store.snapshot().state, PipelineState.RUNNING_QC)
+            requeue.assert_not_called()
 
     def test_fatal_restart_restores_waiting_state_without_requeueing_old_job(
         self,

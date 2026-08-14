@@ -335,6 +335,18 @@ class QcRepairRecord:
 
 
 @dataclass(frozen=True)
+class QcRepairClaimRecord:
+    claim_id: str
+    candidate_id: str
+    evaluation_id: str
+    repair_input_sha256: str
+    planner_identity: Mapping[str, Any]
+    state: str
+    created_at: str
+    completed_at: str | None
+
+
+@dataclass(frozen=True)
 class QcHumanDecisionRecord:
     decision_id: str
     candidate_id: str
@@ -439,6 +451,14 @@ def _sha256(value: str, field: str) -> str:
     if not re.fullmatch(r"[0-9a-f]{64}", normalized):
         raise StateTransitionError(f"{field} must be a SHA-256 digest.")
     return normalized
+
+
+def _file_sha256(path: str | Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _required_text(value: object, field: str) -> str:
@@ -744,6 +764,18 @@ class PipelineStateStore:
                     evidence_manifest_path TEXT NOT NULL,
                     evidence_manifest_sha256 TEXT NOT NULL,
                     created_at TEXT NOT NULL,
+                    FOREIGN KEY (candidate_id) REFERENCES qc_candidates(candidate_id),
+                    FOREIGN KEY (evaluation_id) REFERENCES qc_evaluations(evaluation_id)
+                );
+                CREATE TABLE IF NOT EXISTS qc_repair_claims (
+                    claim_id TEXT PRIMARY KEY,
+                    candidate_id TEXT NOT NULL UNIQUE,
+                    evaluation_id TEXT NOT NULL,
+                    repair_input_sha256 TEXT NOT NULL,
+                    planner_identity_json TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    completed_at TEXT,
                     FOREIGN KEY (candidate_id) REFERENCES qc_candidates(candidate_id),
                     FOREIGN KEY (evaluation_id) REFERENCES qc_evaluations(evaluation_id)
                 );
@@ -2811,6 +2843,125 @@ class PipelineStateStore:
         return tuple(self._qc_repair_record(row) for row in rows)
 
     @staticmethod
+    def _qc_repair_claim_record(row: sqlite3.Row) -> QcRepairClaimRecord:
+        return QcRepairClaimRecord(
+            claim_id=row["claim_id"],
+            candidate_id=row["candidate_id"],
+            evaluation_id=row["evaluation_id"],
+            repair_input_sha256=row["repair_input_sha256"],
+            planner_identity=_json_load(row["planner_identity_json"], {}),
+            state=row["state"],
+            created_at=row["created_at"],
+            completed_at=row["completed_at"],
+        )
+
+    def claim_qc_repair_planner(
+        self,
+        *,
+        candidate_id: str,
+        evaluation_id: str,
+        repair_input_sha256: str,
+        planner_identity: Mapping[str, Any],
+    ) -> tuple[QcRepairClaimRecord, bool]:
+        """Durably consume the one permitted B1 planner invocation."""
+        candidate_id = _evidence_id(candidate_id, "candidate_id")
+        evaluation_id = _evidence_id(evaluation_id, "evaluation_id")
+        repair_input_sha256 = _sha256(
+            repair_input_sha256, "repair_input_sha256"
+        )
+        identity_json = _canonical_json(planner_identity)
+        claim_id = "repair-claim-" + hashlib.sha256(
+            f"{candidate_id}|{repair_input_sha256}".encode("utf-8")
+        ).hexdigest()[:32]
+        self.initialize()
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                "SELECT * FROM qc_repair_claims WHERE candidate_id = ?",
+                (candidate_id,),
+            ).fetchone()
+            if existing is not None:
+                immutable = (
+                    existing["evaluation_id"],
+                    existing["repair_input_sha256"],
+                )
+                if immutable != (
+                    evaluation_id,
+                    repair_input_sha256,
+                ):
+                    raise StateTransitionError(
+                        "The one B1 planner claim has different immutable input."
+                    )
+                return self._qc_repair_claim_record(existing), False
+            connection.execute(
+                """
+                INSERT INTO qc_repair_claims (
+                    claim_id, candidate_id, evaluation_id,
+                    repair_input_sha256, planner_identity_json, state,
+                    created_at, completed_at
+                ) VALUES (?, ?, ?, ?, ?, 'CLAIMED', ?, NULL)
+                """,
+                (
+                    claim_id,
+                    candidate_id,
+                    evaluation_id,
+                    repair_input_sha256,
+                    identity_json,
+                    _utc_now(),
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM qc_repair_claims WHERE claim_id = ?", (claim_id,)
+            ).fetchone()
+        return self._qc_repair_claim_record(row), True
+
+    def complete_qc_repair_planner_claim(
+        self, candidate_id: str, *, state: str
+    ) -> QcRepairClaimRecord:
+        candidate_id = _evidence_id(candidate_id, "candidate_id")
+        if state not in {"COMPLETED", "FAILED_CLOSED"}:
+            raise ValueError("Invalid QC repair planner claim terminal state.")
+        self.initialize()
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM qc_repair_claims WHERE candidate_id = ?",
+                (candidate_id,),
+            ).fetchone()
+            if row is None:
+                raise StateTransitionError("No durable B1 planner claim exists.")
+            if row["state"] == "CLAIMED":
+                connection.execute(
+                    """
+                    UPDATE qc_repair_claims
+                    SET state = ?, completed_at = ?
+                    WHERE candidate_id = ? AND state = 'CLAIMED'
+                    """,
+                    (state, _utc_now(), candidate_id),
+                )
+            elif row["state"] != state:
+                raise StateTransitionError(
+                    "The B1 planner claim already has a conflicting outcome."
+                )
+            final = connection.execute(
+                "SELECT * FROM qc_repair_claims WHERE candidate_id = ?",
+                (candidate_id,),
+            ).fetchone()
+        return self._qc_repair_claim_record(final)
+
+    def qc_repair_planner_claim(
+        self, candidate_id: str
+    ) -> QcRepairClaimRecord | None:
+        candidate_id = _evidence_id(candidate_id, "candidate_id")
+        self.initialize()
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM qc_repair_claims WHERE candidate_id = ?",
+                (candidate_id,),
+            ).fetchone()
+        return None if row is None else self._qc_repair_claim_record(row)
+
+    @staticmethod
     def _qc_human_decision_record(row: sqlite3.Row) -> QcHumanDecisionRecord:
         return QcHumanDecisionRecord(
             decision_id=row["decision_id"],
@@ -2982,9 +3133,12 @@ class PipelineStateStore:
                     revision is None
                     or revision["state"] != SceneState.SUCCEEDED.value
                     or revision["video_path"] != candidate["source_video_path"]
+                    or not Path(candidate["source_video_path"]).is_file()
+                    or _file_sha256(candidate["source_video_path"])
+                    != candidate["source_video_sha256"]
                 ):
                     raise StateTransitionError(
-                        "Approved candidate no longer matches a successful revision."
+                        "Approved candidate no longer matches its successful revision hash."
                     )
                 connection.execute(
                     "UPDATE qc_candidates SET state = ?, next_action = NULL, updated_at = ? WHERE candidate_id = ?",
@@ -3045,6 +3199,7 @@ class PipelineStateStore:
             rows = connection.execute(
                 """
                 SELECT c.scene_id, c.revision, c.source_video_path,
+                       c.source_video_sha256,
                        r.video_path, r.state
                 FROM qc_candidates c
                 JOIN scene_revisions r ON r.job_id = c.job_id
@@ -3064,9 +3219,11 @@ class PipelineStateStore:
                 row["state"] != SceneState.SUCCEEDED.value
                 or row["video_path"] != row["source_video_path"]
                 or not Path(row["source_video_path"]).is_file()
+                or _file_sha256(row["source_video_path"])
+                != row["source_video_sha256"]
             ):
                 raise StateTransitionError(
-                    "An ACCEPTED candidate is missing its bound successful video."
+                    "An ACCEPTED candidate is missing its bound successful video hash."
                 )
             result.append(
                 ManualFinalSceneSelection(
@@ -3126,7 +3283,7 @@ class PipelineStateStore:
                 )
             revision = connection.execute(
                 """
-                SELECT frame_path, video_path FROM scene_revisions
+                SELECT frame_path, video_path, state FROM scene_revisions
                 WHERE job_id = ? AND scene_id = ? AND revision = ?
                 """,
                 (
@@ -3135,9 +3292,16 @@ class PipelineStateStore:
                     candidate["revision"],
                 ),
             ).fetchone()
-            if revision is None or revision["video_path"] != candidate["source_video_path"]:
+            if (
+                revision is None
+                or revision["state"] != SceneState.SUCCEEDED.value
+                or revision["video_path"] != candidate["source_video_path"]
+                or not Path(candidate["source_video_path"]).is_file()
+                or _file_sha256(candidate["source_video_path"])
+                != candidate["source_video_sha256"]
+            ):
                 raise StateTransitionError(
-                    "Accepted candidate no longer matches its immutable scene revision."
+                    "Accepted candidate no longer matches its immutable scene revision hash."
                 )
             now = _utc_now()
             connection.execute(
