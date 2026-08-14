@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import hashlib
 import subprocess
 import tempfile
 import unittest
@@ -64,6 +65,9 @@ def settings(root: Path) -> QualityControlSettings:
         llama_vendor_root=vendor,
         model_path=model,
         projector_path=projector,
+        expected_executable_sha256=hashlib.sha256(b"exe").hexdigest(),
+        expected_model_sha256=hashlib.sha256(b"model").hexdigest(),
+        expected_projector_sha256=hashlib.sha256(b"projector").hexdigest(),
         expected_gpu_uuid="GPU-12345678-abcd-ef01-2345-6789abcdef01",
         expected_gpu_name="NVIDIA GeForce RTX 4080 SUPER",
     )
@@ -93,6 +97,30 @@ class QcLlamaTests(unittest.TestCase):
                     "GPU-other, NVIDIA GeForce RTX 4080 SUPER\n"
                 ),
             )
+
+    def test_unexpected_backend_version_fails_before_launch(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            configured = settings(root)
+            launched = []
+
+            def run_command(command, **kwargs):
+                return Completed(
+                    "llama.cpp version 9.0.0"
+                    if "--version" in command
+                    else f"{configured.expected_gpu_uuid}, {configured.expected_gpu_name}"
+                )
+
+            manager = LlamaCppProcess(
+                configured,
+                StorageLayout(root / "storage"),
+                run_command=run_command,
+                popen_factory=lambda *args, **kwargs: launched.append(args),
+                port_open_probe=lambda: False,
+            )
+            with self.assertRaises(LlamaCppLifecycleError):
+                manager.start()
+            self.assertEqual(launched, [])
 
     def test_command_uses_validated_assets_and_fresh_single_slot_policy(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

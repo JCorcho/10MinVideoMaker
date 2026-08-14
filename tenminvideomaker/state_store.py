@@ -19,6 +19,7 @@ from .qc_contracts import (
     QcDecision,
     QcHumanDecision,
     QcTier,
+    evaluation_idempotency_key,
 )
 
 
@@ -431,6 +432,17 @@ def _sha256(value: str, field: str) -> str:
 def _required_text(value: object, field: str) -> str:
     if not isinstance(value, str) or not value:
         raise StateTransitionError(f"{field} must be non-empty text.")
+    return value
+
+
+def _require_path_below(path: str, root: Path, field: str) -> str:
+    value = _required_text(path, field)
+    try:
+        Path(value).expanduser().resolve().relative_to(root.expanduser().resolve())
+    except (OSError, ValueError) as error:
+        raise StateTransitionError(
+            f"{field} must remain below its candidate revision evidence root."
+        ) from error
     return value
 
 
@@ -1781,7 +1793,7 @@ class PipelineStateStore:
             connection.execute("BEGIN IMMEDIATE")
             revision_row = connection.execute(
                 """
-                SELECT 1 FROM scene_revisions
+                SELECT video_path FROM scene_revisions
                 WHERE job_id = ? AND scene_id = ? AND revision = ?
                 """,
                 (job_id, scene_id, revision),
@@ -1789,6 +1801,14 @@ class PipelineStateStore:
             if revision_row is None:
                 raise StateTransitionError(
                     f"QC candidate references unknown scene revision {revision}."
+                )
+            revision_video_path = revision_row["video_path"]
+            if (
+                revision_video_path is not None
+                and revision_video_path != source_video_path
+            ) or (source_video_sha256 is not None and revision_video_path is None):
+                raise StateTransitionError(
+                    "QC candidate video path is not bound to its scene revision."
                 )
             if parent_candidate_id is not None:
                 parent = connection.execute(
@@ -1989,6 +2009,25 @@ class PipelineStateStore:
             ).fetchone()
             if used_seed is not None:
                 raise StateTransitionError("A1 seed was already used in this scene lineage.")
+            revision_seed_rows = connection.execute(
+                """
+                SELECT parameters_json FROM scene_revisions
+                WHERE job_id = ? AND scene_id = ?
+                """,
+                (job_id, scene_id),
+            ).fetchall()
+            for revision_seed_row in revision_seed_rows:
+                revision_parameters = json.loads(revision_seed_row["parameters_json"])
+                revision_i2v = revision_parameters.get("i2v")
+                if not isinstance(revision_i2v, Mapping) or "seed" not in revision_i2v:
+                    continue
+                revision_seed = revision_i2v["seed"]
+                if isinstance(revision_seed, str) and revision_seed.strip().isdigit():
+                    revision_seed = int(revision_seed.strip())
+                if revision_seed == current_seed:
+                    raise StateTransitionError(
+                        "A1 seed was already used in this scene revision lineage."
+                    )
             now = _utc_now()
             connection.execute(
                 """
@@ -2164,7 +2203,14 @@ class PipelineStateStore:
             ).fetchone()
             if row is None:
                 raise StateTransitionError(f"Unknown QC candidate {candidate_id}.")
-            count = int(row["infrastructure_failure_count"]) + 1
+            prior_count = int(row["infrastructure_failure_count"])
+            if prior_count >= maximum_failures:
+                existing = connection.execute(
+                    "SELECT * FROM qc_candidates WHERE candidate_id = ?",
+                    (candidate_id,),
+                ).fetchone()
+                return self._qc_candidate_record(existing)
+            count = prior_count + 1
             state = (
                 QcCandidateState.HOLD_FOR_REVIEW
                 if count >= maximum_failures
@@ -2290,6 +2336,21 @@ class PipelineStateStore:
             if key.endswith("sha256"):
                 value = _sha256(value, f"evaluator_identity.{key}")
             identity_values.append(value)
+        expected_idempotency_key = evaluation_idempotency_key(
+            source_video_sha256=source_video_sha256,
+            evaluator_id=identity_values[0],
+            evaluator_version=identity_values[1],
+            backend_version=identity_values[3],
+            executable_sha256=identity_values[5],
+            model_sha256=identity_values[8],
+            projector_sha256=identity_values[11],
+            effective_config_sha256=effective_config_sha256,
+            prompt_sha256=prompt_sha256,
+        )
+        if idempotency_key != expected_idempotency_key:
+            raise StateTransitionError(
+                "Evaluation idempotency key does not match immutable evidence identities."
+            )
         immutable = (
             evaluation_id,
             idempotency_key,
@@ -2375,16 +2436,6 @@ class PipelineStateStore:
     ) -> QcEvaluationRecord:
         if isinstance(strong_window_count, bool) or strong_window_count < 0:
             raise StateTransitionError("strong_window_count must be non-negative.")
-        completion = (
-            raw_result,
-            normalized_decision.value,
-            _canonical_json(list(suspect_windows)),
-            strong_window_count,
-            _canonical_json(frame_accounting),
-            _required_text(evidence_manifest_path, "evidence_manifest_path"),
-            _sha256(evidence_manifest_sha256, "evidence_manifest_sha256"),
-            _required_text(next_action, "next_action"),
-        )
         self.initialize()
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -2394,6 +2445,24 @@ class PipelineStateStore:
             ).fetchone()
             if existing is None:
                 raise StateTransitionError(f"Unknown QC evaluation {evaluation_id}.")
+            manifest_path = _require_path_below(
+                evidence_manifest_path,
+                Path(existing["source_video_path"]).parent
+                / "qc"
+                / "evaluations"
+                / evaluation_id,
+                "evidence_manifest_path",
+            )
+            completion = (
+                raw_result,
+                normalized_decision.value,
+                _canonical_json(list(suspect_windows)),
+                strong_window_count,
+                _canonical_json(frame_accounting),
+                manifest_path,
+                _sha256(evidence_manifest_sha256, "evidence_manifest_sha256"),
+                _required_text(next_action, "next_action"),
+            )
             if existing["state"] == "COMPLETE":
                 stored = tuple(existing[key] for key in (
                     "raw_result", "normalized_decision", "suspect_windows_json",
@@ -2473,23 +2542,37 @@ class PipelineStateStore:
         candidate_id = _evidence_id(candidate_id, "candidate_id")
         if evaluation_id is not None:
             evaluation_id = _evidence_id(evaluation_id, "evaluation_id")
-        values = (
-            repair_id,
-            candidate_id,
-            evaluation_id,
-            _canonical_json(planner_identity),
-            _sha256(repair_input_sha256, "repair_input_sha256"),
-            raw_output,
-            _canonical_json(proposed_patch),
-            _required_text(status, "status"),
-            reason,
-            _canonical_json(list(prior_repair_summaries)),
-            _required_text(evidence_manifest_path, "evidence_manifest_path"),
-            _sha256(evidence_manifest_sha256, "evidence_manifest_sha256"),
-        )
         self.initialize()
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            candidate = connection.execute(
+                "SELECT source_video_path FROM qc_candidates WHERE candidate_id = ?",
+                (candidate_id,),
+            ).fetchone()
+            if candidate is None:
+                raise StateTransitionError(f"Unknown QC candidate {candidate_id}.")
+            manifest_path = _require_path_below(
+                evidence_manifest_path,
+                Path(candidate["source_video_path"]).parent
+                / "qc"
+                / "repairs"
+                / repair_id,
+                "evidence_manifest_path",
+            )
+            values = (
+                repair_id,
+                candidate_id,
+                evaluation_id,
+                _canonical_json(planner_identity),
+                _sha256(repair_input_sha256, "repair_input_sha256"),
+                raw_output,
+                _canonical_json(proposed_patch),
+                _required_text(status, "status"),
+                reason,
+                _canonical_json(list(prior_repair_summaries)),
+                manifest_path,
+                _sha256(evidence_manifest_sha256, "evidence_manifest_sha256"),
+            )
             existing = connection.execute(
                 "SELECT * FROM qc_repairs WHERE repair_id = ?", (repair_id,)
             ).fetchone()

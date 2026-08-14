@@ -134,11 +134,19 @@ def schedule_a1_retry(
             raise StateTransitionError("The existing A1 document is inconsistent.")
         return A1Retry(candidate, revision.parameters, candidate.current_seed)
 
-    used_seeds = tuple(
+    candidate_seeds = tuple(
         value
         for candidate in store.qc_candidates(source.job_id, source.scene_id)
         for value in (candidate.original_seed, candidate.current_seed)
     )
+    revision_seeds: list[int] = []
+    for revision in store.scene_revisions(source.job_id, source.scene_id):
+        revision_i2v = revision.parameters.get("i2v")
+        if isinstance(revision_i2v, Mapping) and "seed" in revision_i2v:
+            revision_seeds.append(
+                _uint64(revision_i2v["seed"], "revision i2v.seed")
+            )
+    used_seeds = (*candidate_seeds, *revision_seeds)
     seed = derive_retry_seed(
         job_id=source.job_id,
         scene_id=source.scene_id,

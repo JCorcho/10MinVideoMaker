@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+from dataclasses import replace
 from pathlib import Path
 import tempfile
 import unittest
@@ -17,6 +19,10 @@ class QualityControlSettingsTests(unittest.TestCase):
         self.assertEqual(settings.frames_per_window, 4)
         self.assertEqual(settings.image_min_tokens, 1024)
         self.assertEqual(settings.minimum_strong_windows, 2)
+        with self.assertRaisesRegex(
+            QualityControlConfigurationError, "kill switch is disabled"
+        ):
+            settings.validate_for_start()
 
     def test_boolean_environment_values_are_strict(self) -> None:
         enabled = QualityControlSettings.from_environment(
@@ -68,6 +74,9 @@ class QualityControlSettingsTests(unittest.TestCase):
                     "TENMIN_QC_LLAMA_VENDOR_ROOT": str(vendor),
                     "TENMIN_QC_MODEL_PATH": str(model),
                     "TENMIN_QC_PROJECTOR_PATH": str(projector),
+                    "TENMIN_QC_LLAMA_SHA256": hashlib.sha256(b"exe").hexdigest(),
+                    "TENMIN_QC_MODEL_SHA256": hashlib.sha256(b"model").hexdigest(),
+                    "TENMIN_QC_PROJECTOR_SHA256": hashlib.sha256(b"projector").hexdigest(),
                     "TENMIN_QC_GPU_UUID": "GPU-12345678-abcd-ef01-2345-6789abcdef01",
                     "TENMIN_QC_GPU_NAME": "NVIDIA GeForce RTX 4080 SUPER",
                 }
@@ -87,6 +96,26 @@ class QualityControlSettingsTests(unittest.TestCase):
             )
             with self.assertRaises(QualityControlConfigurationError):
                 missing_uuid.validate_for_start()
+
+            changed_model = root / "changed.gguf"
+            changed_model.write_bytes(b"different model")
+            with self.assertRaises(QualityControlConfigurationError):
+                QualityControlSettings.from_environment(
+                    {
+                        "TENMIN_QC_LLAMA_EXECUTABLE": str(executable),
+                        "TENMIN_QC_LLAMA_VENDOR_ROOT": str(vendor),
+                        "TENMIN_QC_MODEL_PATH": str(changed_model),
+                        "TENMIN_QC_PROJECTOR_PATH": str(projector),
+                        "TENMIN_QC_LLAMA_SHA256": hashlib.sha256(b"exe").hexdigest(),
+                        "TENMIN_QC_MODEL_SHA256": hashlib.sha256(b"model").hexdigest(),
+                        "TENMIN_QC_PROJECTOR_SHA256": hashlib.sha256(b"projector").hexdigest(),
+                        "TENMIN_QC_GPU_UUID": "GPU-12345678-abcd-ef01-2345-6789abcdef01",
+                        "TENMIN_QC_GPU_NAME": "NVIDIA GeForce RTX 4080 SUPER",
+                    }
+                ).validate_for_start()
+
+            with self.assertRaises(QualityControlConfigurationError):
+                replace(settings, sampling_fps=1.0).validate_for_start()
 
 
 if __name__ == "__main__":

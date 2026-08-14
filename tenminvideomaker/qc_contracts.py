@@ -7,6 +7,7 @@ from enum import StrEnum
 import hashlib
 import json
 import math
+import re
 from typing import Any, Iterable, Mapping, Sequence
 
 
@@ -159,6 +160,11 @@ def parse_judge_response(raw_text: str) -> JudgeResponse:
     end = raw_text.rfind("}")
     if start < 0 or end <= start:
         return _malformed(raw_text, "No JSON object found.")
+    if raw_text[:start].strip() or raw_text[end + 1 :].strip():
+        return _malformed(
+            raw_text,
+            "Judge response must contain only one top-level JSON object.",
+        )
     try:
         payload = json.loads(raw_text[start : end + 1])
         if not isinstance(payload, dict):
@@ -382,6 +388,46 @@ def canonical_json(value: Mapping[str, Any] | Sequence[Any]) -> str:
 
 def canonical_sha256(value: Mapping[str, Any] | Sequence[Any]) -> str:
     return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
+
+
+def evaluation_idempotency_key(
+    *,
+    source_video_sha256: str,
+    evaluator_id: str,
+    evaluator_version: str,
+    backend_version: str,
+    executable_sha256: str,
+    model_sha256: str,
+    projector_sha256: str,
+    effective_config_sha256: str,
+    prompt_sha256: str,
+) -> str:
+    """Bind evaluation reuse to immutable source and evaluator identities."""
+    sha_fields = {
+        "source_video_sha256": source_video_sha256,
+        "executable_sha256": executable_sha256,
+        "model_sha256": model_sha256,
+        "projector_sha256": projector_sha256,
+        "effective_config_sha256": effective_config_sha256,
+        "prompt_sha256": prompt_sha256,
+    }
+    for field, value in sha_fields.items():
+        if not isinstance(value, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", value):
+            raise ValueError(f"{field} must be a SHA-256 hex digest.")
+    text_fields = {
+        "evaluator_id": evaluator_id,
+        "evaluator_version": evaluator_version,
+        "backend_version": backend_version,
+    }
+    for field, value in text_fields.items():
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{field} must be non-empty text.")
+    return canonical_sha256(
+        {
+            **{key: value.lower() for key, value in sha_fields.items()},
+            **text_fields,
+        }
+    )
 
 
 def derive_retry_seed(

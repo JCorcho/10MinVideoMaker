@@ -12,6 +12,7 @@ from tenminvideomaker.qc_repair import build_a1_document, schedule_a1_retry
 from tenminvideomaker.review import scene_review_document
 from tenminvideomaker.state_store import (
     PipelineStateStore,
+    RemakeMode,
     SceneState,
     StateTransitionError,
 )
@@ -135,6 +136,35 @@ class A1RetryTests(unittest.TestCase):
             len(self.store.qc_candidates(self.job.job_id, scene_id=1)), 2
         )
         self.assertEqual(len(self.store.scene_revisions(self.job.job_id, 1)), 2)
+
+    def test_a1_seed_excludes_every_seed_in_revision_lineage(self) -> None:
+        first_seed = derive_retry_seed(
+            job_id=self.job.job_id,
+            scene_id=1,
+            source_revision=1,
+            original_seed=self.original.original_seed,
+            tier=QcTier.A1,
+            used_seeds=(self.original.current_seed,),
+        )
+        intervening = deepcopy(self.document)
+        intervening["i2v"]["seed"] = str(first_seed)
+        self.store.create_scene_revision(
+            self.job.job_id,
+            1,
+            remake_mode=RemakeMode.VIDEO_ONLY,
+            parameters=intervening,
+        )
+
+        retry = schedule_a1_retry(
+            self.store,
+            self.layout,
+            original_job=self.job,
+            source_candidate_id=self.original.candidate_id,
+            source_document=self.document,
+        )
+
+        self.assertNotEqual(retry.seed, first_seed)
+        self.assertEqual(retry.candidate.revision, 3)
 
     def test_generation_completion_adds_hash_without_overwriting_original(self) -> None:
         retry = schedule_a1_retry(

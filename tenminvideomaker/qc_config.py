@@ -52,6 +52,23 @@ def _integer(
     return value
 
 
+def _optional_sha256(values: Mapping[str, str], key: str) -> str | None:
+    value = (values.get(key) or "").strip().lower()
+    if not value:
+        return None
+    if not re.fullmatch(r"[0-9a-f]{64}", value):
+        raise QualityControlConfigurationError(f"{key} must be a SHA-256 hex digest.")
+    return value
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 @dataclass(frozen=True)
 class QualityControlSettings:
     """Validated Phase-1 policy and the exact evaluator configuration."""
@@ -65,6 +82,9 @@ class QualityControlSettings:
     llama_vendor_root: Path | None = None
     model_path: Path | None = None
     projector_path: Path | None = None
+    expected_executable_sha256: str | None = None
+    expected_model_sha256: str | None = None
+    expected_projector_sha256: str | None = None
     expected_gpu_uuid: str | None = None
     expected_gpu_name: str | None = None
     evaluator_id: str = "tenminvideomaker.production-vlm-qc"
@@ -106,6 +126,13 @@ class QualityControlSettings:
             llama_vendor_root=_optional_path(values, "TENMIN_QC_LLAMA_VENDOR_ROOT"),
             model_path=_optional_path(values, "TENMIN_QC_MODEL_PATH"),
             projector_path=_optional_path(values, "TENMIN_QC_PROJECTOR_PATH"),
+            expected_executable_sha256=_optional_sha256(
+                values, "TENMIN_QC_LLAMA_SHA256"
+            ),
+            expected_model_sha256=_optional_sha256(values, "TENMIN_QC_MODEL_SHA256"),
+            expected_projector_sha256=_optional_sha256(
+                values, "TENMIN_QC_PROJECTOR_SHA256"
+            ),
             expected_gpu_uuid=(values.get("TENMIN_QC_GPU_UUID") or "").strip() or None,
             expected_gpu_name=(values.get("TENMIN_QC_GPU_NAME") or "").strip() or None,
             startup_timeout_seconds=_integer(
@@ -121,6 +148,36 @@ class QualityControlSettings:
 
     def validate_for_start(self) -> None:
         """Fail closed before any evaluator process is launched."""
+        if not self.quality_control_enabled:
+            raise QualityControlConfigurationError(
+                "The QC kill switch is disabled; evaluator launch is forbidden."
+            )
+        fixed_values = {
+            "schema_version": (self.schema_version, 1),
+            "evaluator_id": (self.evaluator_id, "tenminvideomaker.production-vlm-qc"),
+            "evaluator_version": (self.evaluator_version, "phase1-v1"),
+            "backend_family": (self.backend_family, "llama.cpp"),
+            "backend_version": (self.backend_version, "2.28.2"),
+            "model_id": (self.model_id, "Qwen3.6 27B Uncensored HauhauCS Balanced"),
+            "quantization": (self.quantization, "IQ3_M GGUF"),
+            "projector_precision": (self.projector_precision, "FP16"),
+            "prompt_version": (self.prompt_version, "production_ltx_video_qc_v1"),
+            "parallel_slots": (self.parallel_slots, 1),
+            "image_min_tokens": (self.image_min_tokens, 1024),
+            "sampling_fps": (self.sampling_fps, 2.0),
+            "frames_per_window": (self.frames_per_window, 4),
+            "minimum_error_severity": (self.minimum_error_severity, 3),
+            "minimum_error_confidence": (self.minimum_error_confidence, 0.85),
+            "minimum_strong_windows": (self.minimum_strong_windows, 2),
+        }
+        changed = [
+            name for name, (actual, expected) in fixed_values.items()
+            if actual != expected
+        ]
+        if changed:
+            raise QualityControlConfigurationError(
+                "Validated Phase-1 QC settings changed: " + ", ".join(changed) + "."
+            )
         if self.loopback_host != "127.0.0.1":
             raise QualityControlConfigurationError("QC must bind to IPv4 loopback only.")
         required_files = {
@@ -132,6 +189,28 @@ class QualityControlSettings:
             if path is None or not path.is_file():
                 raise QualityControlConfigurationError(
                     f"{key} must identify the validated existing file."
+                )
+        expected_hashes = {
+            "TENMIN_QC_LLAMA_SHA256": (
+                self.llama_executable,
+                self.expected_executable_sha256,
+            ),
+            "TENMIN_QC_MODEL_SHA256": (self.model_path, self.expected_model_sha256),
+            "TENMIN_QC_PROJECTOR_SHA256": (
+                self.projector_path,
+                self.expected_projector_sha256,
+            ),
+        }
+        for key, (path, expected) in expected_hashes.items():
+            if expected is None or not re.fullmatch(r"[0-9a-fA-F]{64}", expected):
+                raise QualityControlConfigurationError(
+                    f"{key} is required to bind the validated QC asset."
+                )
+            assert path is not None
+            actual = _sha256_file(path)
+            if actual != expected.lower():
+                raise QualityControlConfigurationError(
+                    f"{key} does not match the configured QC asset."
                 )
         if self.llama_vendor_root is None or not self.llama_vendor_root.is_dir():
             raise QualityControlConfigurationError(
@@ -170,6 +249,9 @@ class QualityControlSettings:
                 "llama_vendor_root": str(self.llama_vendor_root) if self.llama_vendor_root else None,
                 "model_path": str(self.model_path) if self.model_path else None,
                 "projector_path": str(self.projector_path) if self.projector_path else None,
+                "expected_executable_sha256": self.expected_executable_sha256,
+                "expected_model_sha256": self.expected_model_sha256,
+                "expected_projector_sha256": self.expected_projector_sha256,
             },
             "gpu": {
                 "expected_uuid": self.expected_gpu_uuid,

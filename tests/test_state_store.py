@@ -12,6 +12,7 @@ from tenminvideomaker.qc_contracts import (
     QcDecision,
     QcHumanDecision,
     QcTier,
+    evaluation_idempotency_key,
 )
 from tenminvideomaker.state_store import (
     ChunkState,
@@ -1788,6 +1789,26 @@ class StateStoreTests(unittest.TestCase):
                 next_action=candidate.next_action,
             )
 
+        with self.assertRaises(StateTransitionError):
+            self.store.ensure_qc_candidate(
+                candidate_id=candidate.candidate_id,
+                job_id=candidate.job_id,
+                scene_id=candidate.scene_id,
+                revision=candidate.revision,
+                tier=candidate.tier,
+                parent_candidate_id=None,
+                source_video_path=str(Path(self.temporary_directory.name) / "unbound.mp4"),
+                source_video_sha256=candidate.source_video_sha256,
+                original_prompt=candidate.original_prompt,
+                current_prompt=candidate.current_prompt,
+                original_seed=candidate.original_seed,
+                current_seed=candidate.current_seed,
+                negative_prompt=candidate.negative_prompt,
+                negative_prompt_sha256=candidate.negative_prompt_sha256,
+                state=candidate.state,
+                next_action=candidate.next_action,
+            )
+
     def test_qc_evaluation_persists_versions_raw_normalized_and_is_idempotent(self) -> None:
         candidate = self._create_qc_candidate()
         identity = {
@@ -1807,9 +1828,20 @@ class StateStoreTests(unittest.TestCase):
             "gpu_uuid": "GPU-stable",
             "gpu_name": "NVIDIA GeForce RTX 4080 SUPER",
         }
+        idempotency_key = evaluation_idempotency_key(
+            source_video_sha256=candidate.source_video_sha256,
+            evaluator_id=identity["evaluator_id"],
+            evaluator_version=identity["evaluator_version"],
+            backend_version=identity["backend_version"],
+            executable_sha256=identity["executable_sha256"],
+            model_sha256=identity["model_sha256"],
+            projector_sha256=identity["projector_sha256"],
+            effective_config_sha256="4" * 64,
+            prompt_sha256="5" * 64,
+        )
         begun = self.store.begin_qc_evaluation(
             evaluation_id="evaluation-1",
-            idempotency_key="e" * 64,
+            idempotency_key=idempotency_key,
             candidate_id=candidate.candidate_id,
             source_video_path=candidate.source_video_path,
             source_video_sha256=candidate.source_video_sha256,
@@ -1823,6 +1855,10 @@ class StateStoreTests(unittest.TestCase):
         )
         self.assertEqual(begun.state, "RUNNING")
 
+        manifest_path = str(
+            Path(candidate.source_video_path).parent
+            / "qc" / "evaluations" / "evaluation-1" / "result.json"
+        )
         completed = self.store.complete_qc_evaluation(
             "evaluation-1",
             raw_result="raw model response including malformed evidence",
@@ -1830,7 +1866,7 @@ class StateStoreTests(unittest.TestCase):
             suspect_windows=[{"window": 2, "times": [2.0, 3.5]}],
             strong_window_count=1,
             frame_accounting={"unique_selected_frames_inspected": 12},
-            evidence_manifest_path="result.json",
+            evidence_manifest_path=manifest_path,
             evidence_manifest_sha256="6" * 64,
             next_action="hold_for_review",
         )
@@ -1841,7 +1877,7 @@ class StateStoreTests(unittest.TestCase):
             suspect_windows=[{"window": 2, "times": [2.0, 3.5]}],
             strong_window_count=1,
             frame_accounting={"unique_selected_frames_inspected": 12},
-            evidence_manifest_path="result.json",
+            evidence_manifest_path=manifest_path,
             evidence_manifest_sha256="6" * 64,
             next_action="hold_for_review",
         )
@@ -1855,10 +1891,25 @@ class StateStoreTests(unittest.TestCase):
         self.assertEqual(restored.sampling_config["fps"], 2.0)
         self.assertEqual(restored.frame_accounting["unique_selected_frames_inspected"], 12)
 
+        with self.assertRaises(StateTransitionError):
+            self.store.complete_qc_evaluation(
+                "evaluation-1",
+                raw_result="raw model response including malformed evidence",
+                normalized_decision=QcDecision.UNCERTAIN,
+                suspect_windows=[{"window": 2, "times": [2.0, 3.5]}],
+                strong_window_count=1,
+                frame_accounting={"unique_selected_frames_inspected": 12},
+                evidence_manifest_path=str(
+                    Path(candidate.source_video_path).parent / ".." / "escaped.json"
+                ),
+                evidence_manifest_sha256="6" * 64,
+                next_action="hold_for_review",
+            )
+
         restarted = PipelineStateStore(self.store.database_path)
         same = restarted.begin_qc_evaluation(
             evaluation_id="evaluation-1",
-            idempotency_key="e" * 64,
+            idempotency_key=idempotency_key,
             candidate_id=candidate.candidate_id,
             source_video_path=candidate.source_video_path,
             source_video_sha256=candidate.source_video_sha256,
@@ -1875,7 +1926,7 @@ class StateStoreTests(unittest.TestCase):
         with self.assertRaises(StateTransitionError):
             restarted.begin_qc_evaluation(
                 evaluation_id="evaluation-changed",
-                idempotency_key="e" * 64,
+                idempotency_key=idempotency_key,
                 candidate_id=candidate.candidate_id,
                 source_video_path=candidate.source_video_path,
                 source_video_sha256="f" * 64,
@@ -1897,15 +1948,23 @@ class StateStoreTests(unittest.TestCase):
         second = self.store.record_qc_infrastructure_failure(
             candidate.candidate_id, {"kind": "worker_exit", "code": 2}
         )
+        third = self.store.record_qc_infrastructure_failure(
+            candidate.candidate_id, {"kind": "worker_exit", "code": 3}
+        )
 
         self.assertEqual(first.infrastructure_failure_count, 1)
         self.assertEqual(first.state, QcCandidateState.PENDING_QC)
         self.assertEqual(second.infrastructure_failure_count, 2)
         self.assertEqual(second.state, QcCandidateState.HOLD_FOR_REVIEW)
+        self.assertEqual(third, second)
         self.assertEqual(len(self.store.qc_candidates(self.job.job_id)), 1)
 
     def test_repair_and_human_evidence_are_append_only_and_promotion_requires_acceptance(self) -> None:
         candidate = self._create_qc_candidate()
+        repair_manifest = str(
+            Path(candidate.source_video_path).parent
+            / "qc" / "repairs" / "repair-1" / "result.json"
+        )
         repair = self.store.record_qc_repair(
             repair_id="repair-1",
             candidate_id=candidate.candidate_id,
@@ -1917,7 +1976,7 @@ class StateStoreTests(unittest.TestCase):
             status="REJECTED",
             reason="B1 disabled",
             prior_repair_summaries=[],
-            evidence_manifest_path="repair.json",
+            evidence_manifest_path=repair_manifest,
             evidence_manifest_sha256="8" * 64,
         )
         self.assertEqual(repair.status, "REJECTED")
@@ -1933,7 +1992,7 @@ class StateStoreTests(unittest.TestCase):
                 status="REJECTED",
                 reason="changed",
                 prior_repair_summaries=[],
-                evidence_manifest_path="repair.json",
+                evidence_manifest_path=repair_manifest,
                 evidence_manifest_sha256="8" * 64,
             )
 

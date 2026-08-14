@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import hashlib
 import os
 from pathlib import Path
+import re
 import socket
 import subprocess
 import time
@@ -191,6 +192,13 @@ class LlamaCppProcess:
         version = completed.stdout.strip() or completed.stderr.strip()
         if not version:
             raise LlamaCppLifecycleError("llama.cpp returned no version identity.")
+        if not re.search(
+            rf"(?<![0-9.]){re.escape(self.settings.backend_version)}(?![0-9.])",
+            version,
+        ):
+            raise LlamaCppLifecycleError(
+                "llama.cpp version does not match the validated QC backend version."
+            )
         return version
 
     def _launch_kwargs(self) -> dict[str, object]:

@@ -12,6 +12,7 @@ from tenminvideomaker.qc_contracts import (
     QcHumanDecision,
     QcTier,
     derive_retry_seed,
+    evaluation_idempotency_key,
     is_strong_evidence,
     normalize_window_results,
     parse_judge_response,
@@ -98,7 +99,10 @@ class QcContractTests(unittest.TestCase):
         self.assertEqual(normalized.strong_window_count, 0)
 
     def test_malformed_and_refusal_results_remain_auditable(self) -> None:
-        for raw in ("not json", "I cannot review this content."):
+        refusal_with_json = "I cannot review this content. " + response(
+            "FAIL", errors=[error()]
+        )
+        for raw in ("not json", "I cannot review this content.", refusal_with_json):
             with self.subTest(raw=raw):
                 parsed = parse_judge_response(raw)
                 self.assertEqual(parsed.raw_text, raw)
@@ -108,6 +112,26 @@ class QcContractTests(unittest.TestCase):
                     (window(1, raw),), None, QcEvidencePolicy()
                 )
                 self.assertEqual(normalized.decision, QcDecision.UNCERTAIN)
+
+    def test_evaluation_idempotency_is_derived_from_immutable_versions(self) -> None:
+        values = {
+            "source_video_sha256": "a" * 64,
+            "evaluator_id": "production-qc",
+            "evaluator_version": "phase1-v1",
+            "backend_version": "2.28.2",
+            "executable_sha256": "b" * 64,
+            "model_sha256": "c" * 64,
+            "projector_sha256": "d" * 64,
+            "effective_config_sha256": "e" * 64,
+            "prompt_sha256": "f" * 64,
+        }
+        first = evaluation_idempotency_key(**values)
+
+        self.assertEqual(first, evaluation_idempotency_key(**values))
+        self.assertNotEqual(
+            first,
+            evaluation_idempotency_key(**{**values, "prompt_sha256": "0" * 64}),
+        )
 
     def test_schema_bounds_and_required_fields_are_strict(self) -> None:
         cases = (
