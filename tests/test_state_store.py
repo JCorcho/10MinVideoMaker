@@ -7,6 +7,12 @@ import tempfile
 import unittest
 
 from tenminvideomaker.contracts import parse_job_payload
+from tenminvideomaker.qc_contracts import (
+    QcCandidateState,
+    QcDecision,
+    QcHumanDecision,
+    QcTier,
+)
 from tenminvideomaker.state_store import (
     ChunkState,
     JobState,
@@ -86,6 +92,45 @@ class StateStoreTests(unittest.TestCase):
             1,
             chunk_index,
             attempt.attempt_number,
+        )
+
+    def _create_qc_candidate(self, *, tier: QcTier = QcTier.ORIGINAL):
+        self.store.claim_job(self.job)
+        frame = Path(self.temporary_directory.name) / "frame.png"
+        video = Path(self.temporary_directory.name) / "video.mp4"
+        frame.write_bytes(b"frame")
+        video.write_bytes(b"video")
+        self.store.set_scene_state(
+            self.job.job_id,
+            1,
+            SceneState.SUCCEEDED,
+            frame_path=str(frame),
+            video_path=str(video),
+        )
+        self.store.ensure_original_scene_revision(
+            self.job.job_id,
+            1,
+            parameters={"job_id": self.job.job_id, "scene_id": 1},
+            frame_path=str(frame),
+            video_path=str(video),
+        )
+        return self.store.ensure_qc_candidate(
+            candidate_id="candidate-original",
+            job_id=self.job.job_id,
+            scene_id=1,
+            revision=1,
+            tier=tier,
+            parent_candidate_id=None,
+            source_video_path=str(video),
+            source_video_sha256="a" * 64,
+            original_prompt="exact original prompt",
+            current_prompt="exact original prompt",
+            original_seed=2**64 - 1,
+            current_seed=2**64 - 1,
+            negative_prompt="locked negative",
+            negative_prompt_sha256="b" * 64,
+            state=QcCandidateState.PENDING_QC,
+            next_action="evaluate",
         )
 
     def test_claiming_a_job_creates_pending_scene_and_asset_state(self) -> None:
@@ -1633,6 +1678,305 @@ class StateStoreTests(unittest.TestCase):
             completed.attempt_number,
         )
         self.assertEqual(selected.accepted_artifact_hash, "remake-handoff")
+
+    def test_qc_schema_upgrades_pre_qc_and_empty_databases_idempotently(self) -> None:
+        legacy_path = Path(self.temporary_directory.name) / "legacy.sqlite3"
+        connection = sqlite3.connect(legacy_path)
+        connection.executescript(
+            """
+            CREATE TABLE jobs (
+                job_id TEXT PRIMARY KEY, payload_json TEXT NOT NULL,
+                created_at TEXT NOT NULL, status TEXT, final_path TEXT, updated_at TEXT
+            );
+            CREATE TABLE scenes (
+                job_id TEXT NOT NULL, scene_id INTEGER NOT NULL, state TEXT NOT NULL,
+                frame_path TEXT, video_path TEXT, error TEXT, t2i_attempts INTEGER DEFAULT 0,
+                i2v_attempts INTEGER DEFAULT 0, prompt_id TEXT, prompt_stage TEXT,
+                include_in_manual_final INTEGER DEFAULT 1, updated_at TEXT NOT NULL,
+                PRIMARY KEY (job_id, scene_id)
+            );
+            CREATE TABLE scene_revisions (
+                job_id TEXT NOT NULL, scene_id INTEGER NOT NULL, revision INTEGER NOT NULL,
+                remake_mode TEXT NOT NULL, parameters_json TEXT NOT NULL, state TEXT NOT NULL,
+                frame_path TEXT, video_path TEXT, error TEXT, created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL, PRIMARY KEY (job_id, scene_id, revision)
+            );
+            """
+        )
+        connection.commit()
+        connection.close()
+
+        legacy = PipelineStateStore(legacy_path)
+        legacy.initialize()
+        legacy.initialize()
+        upgraded = sqlite3.connect(legacy_path)
+        try:
+            tables = {
+                row[0]
+                for row in upgraded.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+        finally:
+            upgraded.close()
+        self.assertTrue(
+            {"qc_candidates", "qc_evaluations", "qc_repairs", "qc_human_decisions"}
+            <= tables
+        )
+
+        empty_path = Path(self.temporary_directory.name) / "empty.sqlite3"
+        PipelineStateStore(empty_path).initialize()
+        empty = sqlite3.connect(empty_path)
+        try:
+            self.assertIsNotNone(
+                empty.execute(
+                    "SELECT 1 FROM sqlite_master WHERE name='qc_evaluations'"
+                ).fetchone()
+            )
+        finally:
+            empty.close()
+
+    def test_qc_candidate_creation_is_unique_immutable_and_uses_text_seeds(self) -> None:
+        candidate = self._create_qc_candidate()
+        duplicate = self.store.ensure_qc_candidate(
+            candidate_id=candidate.candidate_id,
+            job_id=candidate.job_id,
+            scene_id=candidate.scene_id,
+            revision=candidate.revision,
+            tier=candidate.tier,
+            parent_candidate_id=candidate.parent_candidate_id,
+            source_video_path=candidate.source_video_path,
+            source_video_sha256=candidate.source_video_sha256,
+            original_prompt=candidate.original_prompt,
+            current_prompt=candidate.current_prompt,
+            original_seed=candidate.original_seed,
+            current_seed=candidate.current_seed,
+            negative_prompt=candidate.negative_prompt,
+            negative_prompt_sha256=candidate.negative_prompt_sha256,
+            state=candidate.state,
+            next_action=candidate.next_action,
+        )
+
+        self.assertEqual(duplicate, candidate)
+        self.assertEqual(self.store.qc_candidates(self.job.job_id), (candidate,))
+        connection = sqlite3.connect(self.store.database_path)
+        try:
+            stored = connection.execute(
+                "SELECT original_seed, current_seed FROM qc_candidates"
+            ).fetchone()
+        finally:
+            connection.close()
+        self.assertEqual(stored, (str(2**64 - 1), str(2**64 - 1)))
+
+        with self.assertRaises(StateTransitionError):
+            self.store.ensure_qc_candidate(
+                candidate_id="different-id",
+                job_id=candidate.job_id,
+                scene_id=candidate.scene_id,
+                revision=candidate.revision,
+                tier=candidate.tier,
+                parent_candidate_id=None,
+                source_video_path=candidate.source_video_path,
+                source_video_sha256="c" * 64,
+                original_prompt=candidate.original_prompt,
+                current_prompt=candidate.current_prompt,
+                original_seed=candidate.original_seed,
+                current_seed=candidate.current_seed,
+                negative_prompt=candidate.negative_prompt,
+                negative_prompt_sha256=candidate.negative_prompt_sha256,
+                state=candidate.state,
+                next_action=candidate.next_action,
+            )
+
+    def test_qc_evaluation_persists_versions_raw_normalized_and_is_idempotent(self) -> None:
+        candidate = self._create_qc_candidate()
+        identity = {
+            "evaluator_id": "production-qc",
+            "evaluator_version": "phase1-v1",
+            "backend_family": "llama.cpp",
+            "backend_version": "2.28.2",
+            "executable_path": "C:/llama-server.exe",
+            "executable_sha256": "1" * 64,
+            "model_id": "Qwen3.6 27B",
+            "model_path": "C:/model.gguf",
+            "model_sha256": "2" * 64,
+            "quantization": "IQ3_M GGUF",
+            "projector_path": "C:/mmproj.gguf",
+            "projector_sha256": "3" * 64,
+            "projector_precision": "FP16",
+            "gpu_uuid": "GPU-stable",
+            "gpu_name": "NVIDIA GeForce RTX 4080 SUPER",
+        }
+        begun = self.store.begin_qc_evaluation(
+            evaluation_id="evaluation-1",
+            idempotency_key="e" * 64,
+            candidate_id=candidate.candidate_id,
+            source_video_path=candidate.source_video_path,
+            source_video_sha256=candidate.source_video_sha256,
+            evaluator_identity=identity,
+            effective_config={"sampling_fps": 2.0, "frames": 4},
+            effective_config_sha256="4" * 64,
+            prompt_version="production_ltx_video_qc_v1",
+            prompt_sha256="5" * 64,
+            sampling_config={"fps": 2.0},
+            window_config={"frames": 4, "minimum_strong_windows": 2},
+        )
+        self.assertEqual(begun.state, "RUNNING")
+
+        completed = self.store.complete_qc_evaluation(
+            "evaluation-1",
+            raw_result="raw model response including malformed evidence",
+            normalized_decision=QcDecision.UNCERTAIN,
+            suspect_windows=[{"window": 2, "times": [2.0, 3.5]}],
+            strong_window_count=1,
+            frame_accounting={"unique_selected_frames_inspected": 12},
+            evidence_manifest_path="result.json",
+            evidence_manifest_sha256="6" * 64,
+            next_action="hold_for_review",
+        )
+        repeated = self.store.complete_qc_evaluation(
+            "evaluation-1",
+            raw_result="raw model response including malformed evidence",
+            normalized_decision=QcDecision.UNCERTAIN,
+            suspect_windows=[{"window": 2, "times": [2.0, 3.5]}],
+            strong_window_count=1,
+            frame_accounting={"unique_selected_frames_inspected": 12},
+            evidence_manifest_path="result.json",
+            evidence_manifest_sha256="6" * 64,
+            next_action="hold_for_review",
+        )
+
+        self.assertEqual(repeated, completed)
+        restored = self.store.qc_evaluations(candidate.candidate_id)[0]
+        self.assertEqual(restored.raw_result, "raw model response including malformed evidence")
+        self.assertEqual(restored.normalized_decision, QcDecision.UNCERTAIN)
+        self.assertEqual(restored.evaluator_identity["model_sha256"], "2" * 64)
+        self.assertEqual(restored.prompt_version, "production_ltx_video_qc_v1")
+        self.assertEqual(restored.sampling_config["fps"], 2.0)
+        self.assertEqual(restored.frame_accounting["unique_selected_frames_inspected"], 12)
+
+        restarted = PipelineStateStore(self.store.database_path)
+        same = restarted.begin_qc_evaluation(
+            evaluation_id="evaluation-1",
+            idempotency_key="e" * 64,
+            candidate_id=candidate.candidate_id,
+            source_video_path=candidate.source_video_path,
+            source_video_sha256=candidate.source_video_sha256,
+            evaluator_identity=identity,
+            effective_config={"sampling_fps": 2.0, "frames": 4},
+            effective_config_sha256="4" * 64,
+            prompt_version="production_ltx_video_qc_v1",
+            prompt_sha256="5" * 64,
+            sampling_config={"fps": 2.0},
+            window_config={"frames": 4, "minimum_strong_windows": 2},
+        )
+        self.assertEqual(same.evaluation_id, completed.evaluation_id)
+
+        with self.assertRaises(StateTransitionError):
+            restarted.begin_qc_evaluation(
+                evaluation_id="evaluation-changed",
+                idempotency_key="e" * 64,
+                candidate_id=candidate.candidate_id,
+                source_video_path=candidate.source_video_path,
+                source_video_sha256="f" * 64,
+                evaluator_identity=identity,
+                effective_config={},
+                effective_config_sha256="4" * 64,
+                prompt_version="production_ltx_video_qc_v1",
+                prompt_sha256="5" * 64,
+                sampling_config={"fps": 2.0},
+                window_config={"frames": 4},
+            )
+
+    def test_qc_infrastructure_failure_is_bounded_without_new_candidate(self) -> None:
+        candidate = self._create_qc_candidate()
+
+        first = self.store.record_qc_infrastructure_failure(
+            candidate.candidate_id, {"kind": "worker_exit", "code": 1}
+        )
+        second = self.store.record_qc_infrastructure_failure(
+            candidate.candidate_id, {"kind": "worker_exit", "code": 2}
+        )
+
+        self.assertEqual(first.infrastructure_failure_count, 1)
+        self.assertEqual(first.state, QcCandidateState.PENDING_QC)
+        self.assertEqual(second.infrastructure_failure_count, 2)
+        self.assertEqual(second.state, QcCandidateState.HOLD_FOR_REVIEW)
+        self.assertEqual(len(self.store.qc_candidates(self.job.job_id)), 1)
+
+    def test_repair_and_human_evidence_are_append_only_and_promotion_requires_acceptance(self) -> None:
+        candidate = self._create_qc_candidate()
+        repair = self.store.record_qc_repair(
+            repair_id="repair-1",
+            candidate_id=candidate.candidate_id,
+            evaluation_id=None,
+            planner_identity={"version": "future"},
+            repair_input_sha256="7" * 64,
+            raw_output="not run in this tranche",
+            proposed_patch={},
+            status="REJECTED",
+            reason="B1 disabled",
+            prior_repair_summaries=[],
+            evidence_manifest_path="repair.json",
+            evidence_manifest_sha256="8" * 64,
+        )
+        self.assertEqual(repair.status, "REJECTED")
+        with self.assertRaises(StateTransitionError):
+            self.store.record_qc_repair(
+                repair_id="repair-1",
+                candidate_id=candidate.candidate_id,
+                evaluation_id=None,
+                planner_identity={"version": "changed"},
+                repair_input_sha256="7" * 64,
+                raw_output="changed",
+                proposed_patch={},
+                status="REJECTED",
+                reason="changed",
+                prior_repair_summaries=[],
+                evidence_manifest_path="repair.json",
+                evidence_manifest_sha256="8" * 64,
+            )
+
+        decision = self.store.record_qc_human_decision(
+            decision_id="decision-1",
+            candidate_id=candidate.candidate_id,
+            decision=QcHumanDecision.HOLD,
+            note="canary hold",
+            actor="local-owner",
+            result_sha256="9" * 64,
+            evidence_sha256="a" * 64,
+        )
+        self.assertEqual(decision.decision, QcHumanDecision.HOLD)
+        with self.assertRaises(StateTransitionError):
+            self.store.record_qc_human_decision(
+                decision_id="decision-2",
+                candidate_id=candidate.candidate_id,
+                decision=QcHumanDecision.APPROVE,
+                note=None,
+                actor="local-owner",
+                result_sha256="9" * 64,
+                evidence_sha256="a" * 64,
+            )
+        with self.assertRaises(StateTransitionError):
+            self.store.promote_accepted_qc_candidate(candidate.candidate_id)
+
+        accepted = self.store.set_qc_candidate_state(
+            candidate.candidate_id,
+            QcCandidateState.ACCEPTED,
+            next_action="promote",
+        )
+        self.store.promote_accepted_qc_candidate(accepted.candidate_id)
+        self.assertEqual(
+            self.store.scene_records(self.job.job_id)[0].video_path,
+            candidate.source_video_path,
+        )
+
+    def test_qc_tests_use_only_the_temporary_database(self) -> None:
+        self._create_qc_candidate()
+        self.assertNotIn(
+            str(Path(r"D:\LTX_Supervisor_Storage")).casefold(),
+            str(self.store.database_path).casefold(),
+        )
 
 
 if __name__ == "__main__":

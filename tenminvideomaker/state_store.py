@@ -13,6 +13,12 @@ from typing import Any, Iterator, Mapping, Sequence
 from uuid import uuid4
 
 from .contracts import JobPayload, job_content_fingerprint, parse_job_payload
+from .qc_contracts import (
+    QcCandidateState,
+    QcDecision,
+    QcHumanDecision,
+    QcTier,
+)
 
 
 class PipelineState(StrEnum):
@@ -253,6 +259,86 @@ class ChunkProgress:
     next_chunk_index: int | None
 
 
+@dataclass(frozen=True)
+class QcCandidateRecord:
+    candidate_id: str
+    job_id: str
+    scene_id: int
+    revision: int
+    tier: QcTier
+    parent_candidate_id: str | None
+    source_video_path: str
+    source_video_sha256: str
+    original_prompt: str
+    current_prompt: str
+    original_seed: int
+    current_seed: int
+    negative_prompt: str
+    negative_prompt_sha256: str
+    state: QcCandidateState
+    next_action: str | None
+    infrastructure_failure_count: int
+    last_failure: Mapping[str, Any] | None
+    created_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True)
+class QcEvaluationRecord:
+    evaluation_id: str
+    idempotency_key: str
+    candidate_id: str
+    source_video_path: str
+    source_video_sha256: str
+    evaluator_identity: Mapping[str, Any]
+    effective_config: Mapping[str, Any]
+    effective_config_sha256: str
+    prompt_version: str
+    prompt_sha256: str
+    sampling_config: Mapping[str, Any]
+    window_config: Mapping[str, Any]
+    raw_result: str | None
+    normalized_decision: QcDecision | None
+    suspect_windows: Sequence[Mapping[str, Any]]
+    strong_window_count: int | None
+    frame_accounting: Mapping[str, Any]
+    evidence_manifest_path: str | None
+    evidence_manifest_sha256: str | None
+    next_action: str | None
+    state: str
+    started_at: str
+    completed_at: str | None
+
+
+@dataclass(frozen=True)
+class QcRepairRecord:
+    repair_id: str
+    candidate_id: str
+    evaluation_id: str | None
+    planner_identity: Mapping[str, Any]
+    repair_input_sha256: str
+    raw_output: str
+    proposed_patch: Mapping[str, Any]
+    status: str
+    reason: str | None
+    prior_repair_summaries: Sequence[Any]
+    evidence_manifest_path: str
+    evidence_manifest_sha256: str
+    created_at: str
+
+
+@dataclass(frozen=True)
+class QcHumanDecisionRecord:
+    decision_id: str
+    candidate_id: str
+    decision: QcHumanDecision
+    note: str | None
+    actor: str
+    result_sha256: str
+    evidence_sha256: str
+    created_at: str
+
+
 _ACTIVE_CHUNK_STATES = frozenset(
     {
         ChunkState.GENERATING_STAGE1,
@@ -281,7 +367,7 @@ def _utc_now() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def _canonical_json(value: Mapping[str, Any]) -> str:
+def _canonical_json(value: Any) -> str:
     try:
         return json.dumps(
             value,
@@ -291,7 +377,7 @@ def _canonical_json(value: Mapping[str, Any]) -> str:
             allow_nan=False,
         )
     except (TypeError, ValueError) as error:
-        raise StateTransitionError(f"Chunk metadata must be JSON serializable: {error}") from error
+        raise StateTransitionError(f"Evidence must be JSON serializable: {error}") from error
 
 
 def _positive_revision(revision: int) -> int:
@@ -320,6 +406,37 @@ def _uint64_seed(seed: int) -> int:
     if isinstance(seed, bool) or not isinstance(seed, int) or not 0 <= seed <= _UINT64_MAX:
         raise StateTransitionError("seed must be an unsigned 64-bit integer.")
     return seed
+
+
+def _evidence_id(value: str, field: str) -> str:
+    import re
+
+    if not isinstance(value, str) or not re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", value
+    ):
+        raise StateTransitionError(f"{field} contains unsafe identity characters.")
+    return value
+
+
+def _sha256(value: str, field: str) -> str:
+    import re
+
+    normalized = str(value).strip().casefold()
+    if not re.fullmatch(r"[0-9a-f]{64}", normalized):
+        raise StateTransitionError(f"{field} must be a SHA-256 digest.")
+    return normalized
+
+
+def _required_text(value: object, field: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise StateTransitionError(f"{field} must be non-empty text.")
+    return value
+
+
+def _json_load(value: object, default: Any) -> Any:
+    if value is None:
+        return default
+    return json.loads(str(value))
 
 
 class PipelineStateStore:
@@ -518,10 +635,109 @@ class PipelineStateStore:
                     FOREIGN KEY (job_id, scene_id, revision, chunk_index)
                         REFERENCES scene_chunks(job_id, scene_id, revision, chunk_index)
                 );
+                CREATE TABLE IF NOT EXISTS qc_candidates (
+                    candidate_id TEXT PRIMARY KEY,
+                    job_id TEXT NOT NULL,
+                    scene_id INTEGER NOT NULL CHECK (scene_id >= 1),
+                    revision INTEGER NOT NULL CHECK (revision >= 1),
+                    tier TEXT NOT NULL,
+                    parent_candidate_id TEXT,
+                    source_video_path TEXT NOT NULL,
+                    source_video_sha256 TEXT NOT NULL,
+                    original_prompt TEXT NOT NULL,
+                    current_prompt TEXT NOT NULL,
+                    original_seed TEXT NOT NULL,
+                    current_seed TEXT NOT NULL,
+                    negative_prompt TEXT NOT NULL,
+                    negative_prompt_sha256 TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    next_action TEXT,
+                    infrastructure_failure_count INTEGER NOT NULL DEFAULT 0
+                        CHECK (infrastructure_failure_count >= 0),
+                    last_failure_json TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE (job_id, scene_id, tier),
+                    FOREIGN KEY (job_id, scene_id, revision)
+                        REFERENCES scene_revisions(job_id, scene_id, revision),
+                    FOREIGN KEY (parent_candidate_id) REFERENCES qc_candidates(candidate_id)
+                );
+                CREATE TABLE IF NOT EXISTS qc_evaluations (
+                    evaluation_id TEXT PRIMARY KEY,
+                    idempotency_key TEXT NOT NULL UNIQUE,
+                    candidate_id TEXT NOT NULL,
+                    source_video_path TEXT NOT NULL,
+                    source_video_sha256 TEXT NOT NULL,
+                    evaluator_id TEXT NOT NULL,
+                    evaluator_version TEXT NOT NULL,
+                    backend_family TEXT NOT NULL,
+                    backend_version TEXT NOT NULL,
+                    executable_path TEXT NOT NULL,
+                    executable_sha256 TEXT NOT NULL,
+                    model_id TEXT NOT NULL,
+                    model_path TEXT NOT NULL,
+                    model_sha256 TEXT NOT NULL,
+                    quantization TEXT NOT NULL,
+                    projector_path TEXT NOT NULL,
+                    projector_sha256 TEXT NOT NULL,
+                    projector_precision TEXT NOT NULL,
+                    gpu_uuid TEXT NOT NULL,
+                    gpu_name TEXT NOT NULL,
+                    effective_config_json TEXT NOT NULL,
+                    effective_config_sha256 TEXT NOT NULL,
+                    prompt_version TEXT NOT NULL,
+                    prompt_sha256 TEXT NOT NULL,
+                    sampling_config_json TEXT NOT NULL,
+                    window_config_json TEXT NOT NULL,
+                    raw_result TEXT,
+                    normalized_decision TEXT,
+                    suspect_windows_json TEXT NOT NULL DEFAULT '[]',
+                    strong_window_count INTEGER,
+                    frame_accounting_json TEXT NOT NULL DEFAULT '{}',
+                    evidence_manifest_path TEXT,
+                    evidence_manifest_sha256 TEXT,
+                    next_action TEXT,
+                    state TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    completed_at TEXT,
+                    FOREIGN KEY (candidate_id) REFERENCES qc_candidates(candidate_id)
+                );
+                CREATE TABLE IF NOT EXISTS qc_repairs (
+                    repair_id TEXT PRIMARY KEY,
+                    candidate_id TEXT NOT NULL,
+                    evaluation_id TEXT,
+                    planner_identity_json TEXT NOT NULL,
+                    repair_input_sha256 TEXT NOT NULL,
+                    raw_output TEXT NOT NULL,
+                    proposed_patch_json TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    reason TEXT,
+                    prior_repair_summaries_json TEXT NOT NULL,
+                    evidence_manifest_path TEXT NOT NULL,
+                    evidence_manifest_sha256 TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (candidate_id) REFERENCES qc_candidates(candidate_id),
+                    FOREIGN KEY (evaluation_id) REFERENCES qc_evaluations(evaluation_id)
+                );
+                CREATE TABLE IF NOT EXISTS qc_human_decisions (
+                    decision_id TEXT PRIMARY KEY,
+                    candidate_id TEXT NOT NULL UNIQUE,
+                    decision TEXT NOT NULL,
+                    note TEXT,
+                    actor TEXT NOT NULL,
+                    result_sha256 TEXT NOT NULL,
+                    evidence_sha256 TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (candidate_id) REFERENCES qc_candidates(candidate_id)
+                );
                 CREATE INDEX IF NOT EXISTS idx_scene_chunks_state
                     ON scene_chunks(job_id, scene_id, revision, state, chunk_index);
                 CREATE INDEX IF NOT EXISTS idx_chunk_attempts_state
                     ON chunk_attempts(job_id, scene_id, revision, chunk_index, state);
+                CREATE INDEX IF NOT EXISTS idx_qc_candidates_state
+                    ON qc_candidates(job_id, scene_id, state, tier);
+                CREATE INDEX IF NOT EXISTS idx_qc_evaluations_candidate
+                    ON qc_evaluations(candidate_id, started_at);
                 """
             )
             scene_columns = {
@@ -1460,6 +1676,715 @@ class PipelineStateStore:
             )
             for row in rows
         )
+
+    @staticmethod
+    def _qc_candidate_record(row: sqlite3.Row) -> QcCandidateRecord:
+        return QcCandidateRecord(
+            candidate_id=row["candidate_id"],
+            job_id=row["job_id"],
+            scene_id=int(row["scene_id"]),
+            revision=int(row["revision"]),
+            tier=QcTier(row["tier"]),
+            parent_candidate_id=row["parent_candidate_id"],
+            source_video_path=row["source_video_path"],
+            source_video_sha256=row["source_video_sha256"],
+            original_prompt=row["original_prompt"],
+            current_prompt=row["current_prompt"],
+            original_seed=int(row["original_seed"]),
+            current_seed=int(row["current_seed"]),
+            negative_prompt=row["negative_prompt"],
+            negative_prompt_sha256=row["negative_prompt_sha256"],
+            state=QcCandidateState(row["state"]),
+            next_action=row["next_action"],
+            infrastructure_failure_count=int(row["infrastructure_failure_count"]),
+            last_failure=_json_load(row["last_failure_json"], None),
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+    def ensure_qc_candidate(
+        self,
+        *,
+        candidate_id: str,
+        job_id: str,
+        scene_id: int,
+        revision: int,
+        tier: QcTier,
+        parent_candidate_id: str | None,
+        source_video_path: str,
+        source_video_sha256: str,
+        original_prompt: str,
+        current_prompt: str,
+        original_seed: int,
+        current_seed: int,
+        negative_prompt: str,
+        negative_prompt_sha256: str,
+        state: QcCandidateState,
+        next_action: str | None,
+    ) -> QcCandidateRecord:
+        candidate_id = _evidence_id(candidate_id, "candidate_id")
+        _positive_revision(revision)
+        source_video_path = _required_text(source_video_path, "source_video_path")
+        source_video_sha256 = _sha256(source_video_sha256, "source_video_sha256")
+        original_prompt = _required_text(original_prompt, "original_prompt")
+        current_prompt = _required_text(current_prompt, "current_prompt")
+        original_seed = _uint64_seed(original_seed)
+        current_seed = _uint64_seed(current_seed)
+        if not isinstance(negative_prompt, str):
+            raise StateTransitionError("negative_prompt must be text.")
+        negative_prompt_sha256 = _sha256(
+            negative_prompt_sha256, "negative_prompt_sha256"
+        )
+        if tier == QcTier.ORIGINAL:
+            if revision != 1 or parent_candidate_id is not None:
+                raise StateTransitionError(
+                    "The ORIGINAL candidate must bind revision 1 without a parent."
+                )
+        else:
+            if revision <= 1 or parent_candidate_id is None:
+                raise StateTransitionError(
+                    "A repair candidate must bind a later revision and parent candidate."
+                )
+            parent_candidate_id = _evidence_id(
+                parent_candidate_id, "parent_candidate_id"
+            )
+        immutable = (
+            candidate_id,
+            job_id,
+            scene_id,
+            revision,
+            tier.value,
+            parent_candidate_id,
+            source_video_path,
+            source_video_sha256,
+            original_prompt,
+            current_prompt,
+            str(original_seed),
+            str(current_seed),
+            negative_prompt,
+            negative_prompt_sha256,
+        )
+        self.initialize()
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            revision_row = connection.execute(
+                """
+                SELECT 1 FROM scene_revisions
+                WHERE job_id = ? AND scene_id = ? AND revision = ?
+                """,
+                (job_id, scene_id, revision),
+            ).fetchone()
+            if revision_row is None:
+                raise StateTransitionError(
+                    f"QC candidate references unknown scene revision {revision}."
+                )
+            if parent_candidate_id is not None:
+                parent = connection.execute(
+                    """
+                    SELECT job_id, scene_id FROM qc_candidates
+                    WHERE candidate_id = ?
+                    """,
+                    (parent_candidate_id,),
+                ).fetchone()
+                if (
+                    parent is None
+                    or parent["job_id"] != job_id
+                    or int(parent["scene_id"]) != scene_id
+                ):
+                    raise StateTransitionError(
+                        "A QC parent candidate must belong to the same job and scene."
+                    )
+            existing = connection.execute(
+                """
+                SELECT * FROM qc_candidates
+                WHERE candidate_id = ? OR (job_id = ? AND scene_id = ? AND tier = ?)
+                """,
+                (candidate_id, job_id, scene_id, tier.value),
+            ).fetchone()
+            if existing is not None:
+                stored = (
+                    existing["candidate_id"],
+                    existing["job_id"],
+                    int(existing["scene_id"]),
+                    int(existing["revision"]),
+                    existing["tier"],
+                    existing["parent_candidate_id"],
+                    existing["source_video_path"],
+                    existing["source_video_sha256"],
+                    existing["original_prompt"],
+                    existing["current_prompt"],
+                    existing["original_seed"],
+                    existing["current_seed"],
+                    existing["negative_prompt"],
+                    existing["negative_prompt_sha256"],
+                )
+                if stored != immutable:
+                    raise StateTransitionError(
+                        "Existing QC candidate identity/evidence is immutable."
+                    )
+                return self._qc_candidate_record(existing)
+            now = _utc_now()
+            connection.execute(
+                """
+                INSERT INTO qc_candidates (
+                    candidate_id, job_id, scene_id, revision, tier,
+                    parent_candidate_id, source_video_path, source_video_sha256,
+                    original_prompt, current_prompt, original_seed, current_seed,
+                    negative_prompt, negative_prompt_sha256, state, next_action,
+                    infrastructure_failure_count, last_failure_json,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?)
+                """,
+                (*immutable, state.value, next_action, now, now),
+            )
+            row = connection.execute(
+                "SELECT * FROM qc_candidates WHERE candidate_id = ?",
+                (candidate_id,),
+            ).fetchone()
+        return self._qc_candidate_record(row)
+
+    def qc_candidates(
+        self, job_id: str, scene_id: int | None = None
+    ) -> tuple[QcCandidateRecord, ...]:
+        self.initialize()
+        sql = "SELECT * FROM qc_candidates WHERE job_id = ?"
+        parameters: list[object] = [job_id]
+        if scene_id is not None:
+            sql += " AND scene_id = ?"
+            parameters.append(scene_id)
+        sql += " ORDER BY scene_id, revision, created_at"
+        with self._connection() as connection:
+            rows = connection.execute(sql, parameters).fetchall()
+        return tuple(self._qc_candidate_record(row) for row in rows)
+
+    def set_qc_candidate_state(
+        self,
+        candidate_id: str,
+        state: QcCandidateState,
+        *,
+        next_action: str | None,
+    ) -> QcCandidateRecord:
+        self.initialize()
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            cursor = connection.execute(
+                """
+                UPDATE qc_candidates SET state = ?, next_action = ?, updated_at = ?
+                WHERE candidate_id = ?
+                """,
+                (state.value, next_action, _utc_now(), candidate_id),
+            )
+            if cursor.rowcount != 1:
+                raise StateTransitionError(f"Unknown QC candidate {candidate_id}.")
+            row = connection.execute(
+                "SELECT * FROM qc_candidates WHERE candidate_id = ?", (candidate_id,)
+            ).fetchone()
+        return self._qc_candidate_record(row)
+
+    def record_qc_infrastructure_failure(
+        self,
+        candidate_id: str,
+        failure: Mapping[str, Any],
+        *,
+        maximum_failures: int = 2,
+    ) -> QcCandidateRecord:
+        if maximum_failures != 2:
+            raise StateTransitionError("Phase 1 permits exactly two infrastructure failures.")
+        failure_json = _canonical_json(failure)
+        self.initialize()
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT infrastructure_failure_count FROM qc_candidates WHERE candidate_id = ?",
+                (candidate_id,),
+            ).fetchone()
+            if row is None:
+                raise StateTransitionError(f"Unknown QC candidate {candidate_id}.")
+            count = int(row["infrastructure_failure_count"]) + 1
+            state = (
+                QcCandidateState.HOLD_FOR_REVIEW
+                if count >= maximum_failures
+                else QcCandidateState.PENDING_QC
+            )
+            next_action = "hold_for_review" if count >= maximum_failures else "retry_evaluation"
+            connection.execute(
+                """
+                UPDATE qc_candidates
+                SET infrastructure_failure_count = ?, last_failure_json = ?,
+                    state = ?, next_action = ?, updated_at = ?
+                WHERE candidate_id = ?
+                """,
+                (count, failure_json, state.value, next_action, _utc_now(), candidate_id),
+            )
+            updated = connection.execute(
+                "SELECT * FROM qc_candidates WHERE candidate_id = ?", (candidate_id,)
+            ).fetchone()
+        return self._qc_candidate_record(updated)
+
+    @staticmethod
+    def _qc_evaluation_record(row: sqlite3.Row) -> QcEvaluationRecord:
+        identity_keys = (
+            "evaluator_id",
+            "evaluator_version",
+            "backend_family",
+            "backend_version",
+            "executable_path",
+            "executable_sha256",
+            "model_id",
+            "model_path",
+            "model_sha256",
+            "quantization",
+            "projector_path",
+            "projector_sha256",
+            "projector_precision",
+            "gpu_uuid",
+            "gpu_name",
+        )
+        return QcEvaluationRecord(
+            evaluation_id=row["evaluation_id"],
+            idempotency_key=row["idempotency_key"],
+            candidate_id=row["candidate_id"],
+            source_video_path=row["source_video_path"],
+            source_video_sha256=row["source_video_sha256"],
+            evaluator_identity={key: row[key] for key in identity_keys},
+            effective_config=_json_load(row["effective_config_json"], {}),
+            effective_config_sha256=row["effective_config_sha256"],
+            prompt_version=row["prompt_version"],
+            prompt_sha256=row["prompt_sha256"],
+            sampling_config=_json_load(row["sampling_config_json"], {}),
+            window_config=_json_load(row["window_config_json"], {}),
+            raw_result=row["raw_result"],
+            normalized_decision=(
+                QcDecision(row["normalized_decision"])
+                if row["normalized_decision"] is not None
+                else None
+            ),
+            suspect_windows=_json_load(row["suspect_windows_json"], []),
+            strong_window_count=(
+                int(row["strong_window_count"])
+                if row["strong_window_count"] is not None
+                else None
+            ),
+            frame_accounting=_json_load(row["frame_accounting_json"], {}),
+            evidence_manifest_path=row["evidence_manifest_path"],
+            evidence_manifest_sha256=row["evidence_manifest_sha256"],
+            next_action=row["next_action"],
+            state=row["state"],
+            started_at=row["started_at"],
+            completed_at=row["completed_at"],
+        )
+
+    def begin_qc_evaluation(
+        self,
+        *,
+        evaluation_id: str,
+        idempotency_key: str,
+        candidate_id: str,
+        source_video_path: str,
+        source_video_sha256: str,
+        evaluator_identity: Mapping[str, Any],
+        effective_config: Mapping[str, Any],
+        effective_config_sha256: str,
+        prompt_version: str,
+        prompt_sha256: str,
+        sampling_config: Mapping[str, Any],
+        window_config: Mapping[str, Any],
+    ) -> QcEvaluationRecord:
+        evaluation_id = _evidence_id(evaluation_id, "evaluation_id")
+        candidate_id = _evidence_id(candidate_id, "candidate_id")
+        idempotency_key = _sha256(idempotency_key, "idempotency_key")
+        source_video_sha256 = _sha256(source_video_sha256, "source_video_sha256")
+        effective_config_sha256 = _sha256(
+            effective_config_sha256, "effective_config_sha256"
+        )
+        prompt_sha256 = _sha256(prompt_sha256, "prompt_sha256")
+        identity_keys = (
+            "evaluator_id",
+            "evaluator_version",
+            "backend_family",
+            "backend_version",
+            "executable_path",
+            "executable_sha256",
+            "model_id",
+            "model_path",
+            "model_sha256",
+            "quantization",
+            "projector_path",
+            "projector_sha256",
+            "projector_precision",
+            "gpu_uuid",
+            "gpu_name",
+        )
+        missing = [key for key in identity_keys if key not in evaluator_identity]
+        if missing:
+            raise StateTransitionError(
+                f"Evaluator identity is missing: {', '.join(missing)}."
+            )
+        identity_values: list[str] = []
+        for key in identity_keys:
+            value = _required_text(evaluator_identity[key], f"evaluator_identity.{key}")
+            if key.endswith("sha256"):
+                value = _sha256(value, f"evaluator_identity.{key}")
+            identity_values.append(value)
+        immutable = (
+            evaluation_id,
+            idempotency_key,
+            candidate_id,
+            _required_text(source_video_path, "source_video_path"),
+            source_video_sha256,
+            *identity_values,
+            _canonical_json(effective_config),
+            effective_config_sha256,
+            _required_text(prompt_version, "prompt_version"),
+            prompt_sha256,
+            _canonical_json(sampling_config),
+            _canonical_json(window_config),
+        )
+        self.initialize()
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            candidate = connection.execute(
+                "SELECT source_video_path, source_video_sha256 FROM qc_candidates WHERE candidate_id = ?",
+                (candidate_id,),
+            ).fetchone()
+            if candidate is None:
+                raise StateTransitionError(f"Unknown QC candidate {candidate_id}.")
+            if (
+                candidate["source_video_path"] != source_video_path
+                or candidate["source_video_sha256"] != source_video_sha256
+            ):
+                raise StateTransitionError(
+                    "Evaluation source does not match immutable candidate video evidence."
+                )
+            existing = connection.execute(
+                """
+                SELECT * FROM qc_evaluations
+                WHERE evaluation_id = ? OR idempotency_key = ?
+                """,
+                (evaluation_id, idempotency_key),
+            ).fetchone()
+            if existing is not None:
+                stored = tuple(existing[key] for key in (
+                    "evaluation_id", "idempotency_key", "candidate_id",
+                    "source_video_path", "source_video_sha256", *identity_keys,
+                    "effective_config_json", "effective_config_sha256",
+                    "prompt_version", "prompt_sha256", "sampling_config_json",
+                    "window_config_json",
+                ))
+                if stored != immutable:
+                    raise StateTransitionError(
+                        "Existing evaluation idempotency evidence is immutable."
+                    )
+                return self._qc_evaluation_record(existing)
+            now = _utc_now()
+            placeholders = ", ".join("?" for _ in range(len(immutable) + 2))
+            connection.execute(
+                f"""
+                INSERT INTO qc_evaluations (
+                    evaluation_id, idempotency_key, candidate_id,
+                    source_video_path, source_video_sha256,
+                    {', '.join(identity_keys)}, effective_config_json,
+                    effective_config_sha256, prompt_version, prompt_sha256,
+                    sampling_config_json, window_config_json, state, started_at
+                ) VALUES ({placeholders})
+                """,
+                (*immutable, "RUNNING", now),
+            )
+            row = connection.execute(
+                "SELECT * FROM qc_evaluations WHERE evaluation_id = ?",
+                (evaluation_id,),
+            ).fetchone()
+        return self._qc_evaluation_record(row)
+
+    def complete_qc_evaluation(
+        self,
+        evaluation_id: str,
+        *,
+        raw_result: str,
+        normalized_decision: QcDecision,
+        suspect_windows: Sequence[Mapping[str, Any]],
+        strong_window_count: int,
+        frame_accounting: Mapping[str, Any],
+        evidence_manifest_path: str,
+        evidence_manifest_sha256: str,
+        next_action: str,
+    ) -> QcEvaluationRecord:
+        if isinstance(strong_window_count, bool) or strong_window_count < 0:
+            raise StateTransitionError("strong_window_count must be non-negative.")
+        completion = (
+            raw_result,
+            normalized_decision.value,
+            _canonical_json(list(suspect_windows)),
+            strong_window_count,
+            _canonical_json(frame_accounting),
+            _required_text(evidence_manifest_path, "evidence_manifest_path"),
+            _sha256(evidence_manifest_sha256, "evidence_manifest_sha256"),
+            _required_text(next_action, "next_action"),
+        )
+        self.initialize()
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                "SELECT * FROM qc_evaluations WHERE evaluation_id = ?",
+                (evaluation_id,),
+            ).fetchone()
+            if existing is None:
+                raise StateTransitionError(f"Unknown QC evaluation {evaluation_id}.")
+            if existing["state"] == "COMPLETE":
+                stored = tuple(existing[key] for key in (
+                    "raw_result", "normalized_decision", "suspect_windows_json",
+                    "strong_window_count", "frame_accounting_json",
+                    "evidence_manifest_path", "evidence_manifest_sha256", "next_action",
+                ))
+                if stored != completion:
+                    raise StateTransitionError(
+                        "Completed QC evaluation evidence is immutable."
+                    )
+                return self._qc_evaluation_record(existing)
+            completed_at = _utc_now()
+            connection.execute(
+                """
+                UPDATE qc_evaluations
+                SET raw_result = ?, normalized_decision = ?, suspect_windows_json = ?,
+                    strong_window_count = ?, frame_accounting_json = ?,
+                    evidence_manifest_path = ?, evidence_manifest_sha256 = ?,
+                    next_action = ?, state = 'COMPLETE', completed_at = ?
+                WHERE evaluation_id = ? AND state = 'RUNNING'
+                """,
+                (*completion, completed_at, evaluation_id),
+            )
+            row = connection.execute(
+                "SELECT * FROM qc_evaluations WHERE evaluation_id = ?",
+                (evaluation_id,),
+            ).fetchone()
+        return self._qc_evaluation_record(row)
+
+    def qc_evaluations(self, candidate_id: str) -> tuple[QcEvaluationRecord, ...]:
+        self.initialize()
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM qc_evaluations
+                WHERE candidate_id = ? ORDER BY started_at, evaluation_id
+                """,
+                (candidate_id,),
+            ).fetchall()
+        return tuple(self._qc_evaluation_record(row) for row in rows)
+
+    @staticmethod
+    def _qc_repair_record(row: sqlite3.Row) -> QcRepairRecord:
+        return QcRepairRecord(
+            repair_id=row["repair_id"],
+            candidate_id=row["candidate_id"],
+            evaluation_id=row["evaluation_id"],
+            planner_identity=_json_load(row["planner_identity_json"], {}),
+            repair_input_sha256=row["repair_input_sha256"],
+            raw_output=row["raw_output"],
+            proposed_patch=_json_load(row["proposed_patch_json"], {}),
+            status=row["status"],
+            reason=row["reason"],
+            prior_repair_summaries=_json_load(row["prior_repair_summaries_json"], []),
+            evidence_manifest_path=row["evidence_manifest_path"],
+            evidence_manifest_sha256=row["evidence_manifest_sha256"],
+            created_at=row["created_at"],
+        )
+
+    def record_qc_repair(
+        self,
+        *,
+        repair_id: str,
+        candidate_id: str,
+        evaluation_id: str | None,
+        planner_identity: Mapping[str, Any],
+        repair_input_sha256: str,
+        raw_output: str,
+        proposed_patch: Mapping[str, Any],
+        status: str,
+        reason: str | None,
+        prior_repair_summaries: Sequence[Any],
+        evidence_manifest_path: str,
+        evidence_manifest_sha256: str,
+    ) -> QcRepairRecord:
+        repair_id = _evidence_id(repair_id, "repair_id")
+        candidate_id = _evidence_id(candidate_id, "candidate_id")
+        if evaluation_id is not None:
+            evaluation_id = _evidence_id(evaluation_id, "evaluation_id")
+        values = (
+            repair_id,
+            candidate_id,
+            evaluation_id,
+            _canonical_json(planner_identity),
+            _sha256(repair_input_sha256, "repair_input_sha256"),
+            raw_output,
+            _canonical_json(proposed_patch),
+            _required_text(status, "status"),
+            reason,
+            _canonical_json(list(prior_repair_summaries)),
+            _required_text(evidence_manifest_path, "evidence_manifest_path"),
+            _sha256(evidence_manifest_sha256, "evidence_manifest_sha256"),
+        )
+        self.initialize()
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                "SELECT * FROM qc_repairs WHERE repair_id = ?", (repair_id,)
+            ).fetchone()
+            if existing is not None:
+                stored = tuple(existing[key] for key in (
+                    "repair_id", "candidate_id", "evaluation_id",
+                    "planner_identity_json", "repair_input_sha256", "raw_output",
+                    "proposed_patch_json", "status", "reason",
+                    "prior_repair_summaries_json", "evidence_manifest_path",
+                    "evidence_manifest_sha256",
+                ))
+                if stored != values:
+                    raise StateTransitionError("Recorded QC repair evidence is immutable.")
+                return self._qc_repair_record(existing)
+            connection.execute(
+                """
+                INSERT INTO qc_repairs (
+                    repair_id, candidate_id, evaluation_id, planner_identity_json,
+                    repair_input_sha256, raw_output, proposed_patch_json, status,
+                    reason, prior_repair_summaries_json, evidence_manifest_path,
+                    evidence_manifest_sha256, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (*values, _utc_now()),
+            )
+            row = connection.execute(
+                "SELECT * FROM qc_repairs WHERE repair_id = ?", (repair_id,)
+            ).fetchone()
+        return self._qc_repair_record(row)
+
+    @staticmethod
+    def _qc_human_decision_record(row: sqlite3.Row) -> QcHumanDecisionRecord:
+        return QcHumanDecisionRecord(
+            decision_id=row["decision_id"],
+            candidate_id=row["candidate_id"],
+            decision=QcHumanDecision(row["decision"]),
+            note=row["note"],
+            actor=row["actor"],
+            result_sha256=row["result_sha256"],
+            evidence_sha256=row["evidence_sha256"],
+            created_at=row["created_at"],
+        )
+
+    def record_qc_human_decision(
+        self,
+        *,
+        decision_id: str,
+        candidate_id: str,
+        decision: QcHumanDecision,
+        note: str | None,
+        actor: str,
+        result_sha256: str,
+        evidence_sha256: str,
+    ) -> QcHumanDecisionRecord:
+        values = (
+            _evidence_id(decision_id, "decision_id"),
+            _evidence_id(candidate_id, "candidate_id"),
+            decision.value,
+            note,
+            _required_text(actor, "actor"),
+            _sha256(result_sha256, "result_sha256"),
+            _sha256(evidence_sha256, "evidence_sha256"),
+        )
+        self.initialize()
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                """
+                SELECT * FROM qc_human_decisions
+                WHERE decision_id = ? OR candidate_id = ?
+                """,
+                (values[0], values[1]),
+            ).fetchone()
+            if existing is not None:
+                stored = tuple(existing[key] for key in (
+                    "decision_id", "candidate_id", "decision", "note", "actor",
+                    "result_sha256", "evidence_sha256",
+                ))
+                if stored != values:
+                    raise StateTransitionError(
+                        "A terminal human QC decision cannot be overwritten."
+                    )
+                return self._qc_human_decision_record(existing)
+            connection.execute(
+                """
+                INSERT INTO qc_human_decisions (
+                    decision_id, candidate_id, decision, note, actor,
+                    result_sha256, evidence_sha256, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (*values, _utc_now()),
+            )
+            row = connection.execute(
+                "SELECT * FROM qc_human_decisions WHERE decision_id = ?", (values[0],)
+            ).fetchone()
+        return self._qc_human_decision_record(row)
+
+    def promote_accepted_qc_candidate(self, candidate_id: str) -> None:
+        self.initialize()
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            candidate = connection.execute(
+                """
+                SELECT * FROM qc_candidates WHERE candidate_id = ?
+                """,
+                (candidate_id,),
+            ).fetchone()
+            if candidate is None:
+                raise StateTransitionError(f"Unknown QC candidate {candidate_id}.")
+            if QcCandidateState(candidate["state"]) != QcCandidateState.ACCEPTED:
+                raise StateTransitionError(
+                    "Only an ACCEPTED QC candidate may be promoted."
+                )
+            revision = connection.execute(
+                """
+                SELECT frame_path, video_path FROM scene_revisions
+                WHERE job_id = ? AND scene_id = ? AND revision = ?
+                """,
+                (
+                    candidate["job_id"],
+                    candidate["scene_id"],
+                    candidate["revision"],
+                ),
+            ).fetchone()
+            if revision is None or revision["video_path"] != candidate["source_video_path"]:
+                raise StateTransitionError(
+                    "Accepted candidate no longer matches its immutable scene revision."
+                )
+            now = _utc_now()
+            connection.execute(
+                """
+                UPDATE scenes SET state = ?, frame_path = COALESCE(?, frame_path),
+                    video_path = ?, error = NULL, updated_at = ?
+                WHERE job_id = ? AND scene_id = ?
+                """,
+                (
+                    SceneState.SUCCEEDED.value,
+                    revision["frame_path"],
+                    candidate["source_video_path"],
+                    now,
+                    candidate["job_id"],
+                    candidate["scene_id"],
+                ),
+            )
+            connection.execute(
+                """
+                UPDATE qc_candidates SET state = ?, next_action = NULL, updated_at = ?
+                WHERE job_id = ? AND scene_id = ? AND candidate_id != ?
+                    AND state != ?
+                """,
+                (
+                    QcCandidateState.SUPERSEDED.value,
+                    now,
+                    candidate["job_id"],
+                    candidate["scene_id"],
+                    candidate_id,
+                    QcCandidateState.ACCEPTED.value,
+                ),
+            )
 
     def create_remake_batch(
         self,

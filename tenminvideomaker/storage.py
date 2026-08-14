@@ -33,6 +33,52 @@ def write_json_atomic(path: str | Path, value: object) -> Path:
     return destination
 
 
+def _write_immutable_bytes(path: str | Path, payload: bytes) -> Path:
+    """Atomically create immutable evidence, reusing only byte-identical data."""
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists():
+        if destination.is_file() and destination.read_bytes() == payload:
+            return destination
+        raise StorageError(f"Immutable evidence already differs at {destination}.")
+    temporary = destination.with_name(f".{destination.name}.{os.getpid()}.tmp")
+    try:
+        with temporary.open("xb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.link(temporary, destination)
+        except FileExistsError:
+            if destination.is_file() and destination.read_bytes() == payload:
+                return destination
+            raise StorageError(f"Immutable evidence already differs at {destination}.")
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+    return destination
+
+
+def write_immutable_json(path: str | Path, value: object) -> Path:
+    payload = (
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+            allow_nan=False,
+        )
+        + "\n"
+    ).encode("utf-8")
+    return _write_immutable_bytes(path, payload)
+
+
+def write_immutable_text(path: str | Path, value: str) -> Path:
+    if not isinstance(value, str):
+        raise StorageError("Immutable text evidence must be a string.")
+    return _write_immutable_bytes(path, value.encode("utf-8"))
+
+
 def _resolved(path: str | Path) -> Path:
     return Path(path).expanduser().resolve()
 
@@ -149,6 +195,69 @@ class StorageLayout:
         revision: int = 1,
     ) -> Path:
         return self.revision_root(job_id, scene_id, revision) / "generation-manifest.json"
+
+    def qc_evaluation_root(
+        self,
+        job_id: str,
+        scene_id: int,
+        revision: int,
+        evaluation_id: str,
+    ) -> Path:
+        _validate_evidence_id(evaluation_id, "evaluation_id")
+        return (
+            self.revision_root(job_id, scene_id, revision)
+            / "qc"
+            / "evaluations"
+            / evaluation_id
+        )
+
+    def qc_evaluation_manifest_path(
+        self,
+        job_id: str,
+        scene_id: int,
+        revision: int,
+        evaluation_id: str,
+    ) -> Path:
+        return self.qc_evaluation_root(
+            job_id, scene_id, revision, evaluation_id
+        ) / "result.json"
+
+    def qc_evaluation_raw_path(
+        self,
+        job_id: str,
+        scene_id: int,
+        revision: int,
+        evaluation_id: str,
+    ) -> Path:
+        return self.qc_evaluation_root(
+            job_id, scene_id, revision, evaluation_id
+        ) / "raw-response.txt"
+
+    def qc_evaluation_frame_accounting_path(
+        self,
+        job_id: str,
+        scene_id: int,
+        revision: int,
+        evaluation_id: str,
+    ) -> Path:
+        return self.qc_evaluation_root(
+            job_id, scene_id, revision, evaluation_id
+        ) / "frame-accounting.json"
+
+    def qc_repair_manifest_path(
+        self,
+        job_id: str,
+        scene_id: int,
+        revision: int,
+        repair_id: str,
+    ) -> Path:
+        _validate_evidence_id(repair_id, "repair_id")
+        return (
+            self.revision_root(job_id, scene_id, revision)
+            / "qc"
+            / "repairs"
+            / f"{repair_id}.json"
+        )
 
     def chunk_root(
         self,
@@ -343,6 +452,13 @@ def _validate_attempt_number(attempt_number: int) -> None:
         or attempt_number < 1
     ):
         raise StorageError("attempt_number must be a positive integer.")
+
+
+def _validate_evidence_id(value: str, field: str) -> None:
+    if not isinstance(value, str) or not re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", value
+    ):
+        raise StorageError(f"{field} contains unsafe path characters.")
 
 
 def _copy_if_missing(source: Path, destination: Path) -> bool:

@@ -7,7 +7,13 @@ import unittest
 
 from tenminvideomaker.contracts import parse_job_payload
 from tenminvideomaker.state_store import PipelineStateStore, SceneState
-from tenminvideomaker.storage import StorageError, StorageLayout, migrate_legacy_storage
+from tenminvideomaker.storage import (
+    StorageError,
+    StorageLayout,
+    migrate_legacy_storage,
+    write_immutable_json,
+    write_immutable_text,
+)
 
 from test_contracts import payload
 
@@ -109,6 +115,42 @@ class StorageTests(unittest.TestCase):
                 ).name,
                 "stage2_audio.safetensors",
             )
+
+    def test_qc_evidence_paths_are_revision_local_and_reject_traversal(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            layout = StorageLayout(Path(directory))
+            root = layout.qc_evaluation_root("job-1", 2, 3, "evaluation-1")
+
+            self.assertTrue(root.is_relative_to(layout.revision_root("job-1", 2, 3)))
+            self.assertEqual(layout.qc_evaluation_manifest_path("job-1", 2, 3, "evaluation-1"), root / "result.json")
+            self.assertEqual(layout.qc_evaluation_raw_path("job-1", 2, 3, "evaluation-1"), root / "raw-response.txt")
+            self.assertEqual(layout.qc_evaluation_frame_accounting_path("job-1", 2, 3, "evaluation-1"), root / "frame-accounting.json")
+            self.assertEqual(
+                layout.qc_repair_manifest_path("job-1", 2, 3, "repair-1"),
+                layout.revision_root("job-1", 2, 3) / "qc" / "repairs" / "repair-1.json",
+            )
+            with self.assertRaises(StorageError):
+                layout.qc_evaluation_root("job-1", 2, 3, "../escape")
+            with self.assertRaises(StorageError):
+                layout.qc_repair_manifest_path("job-1", 2, 3, "C:/escape")
+
+    def test_immutable_evidence_writers_reuse_identical_bytes_only(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            document_path = root / "result.json"
+            raw_path = root / "raw.txt"
+
+            write_immutable_json(document_path, {"decision": "PASS"})
+            first = document_path.read_bytes()
+            write_immutable_json(document_path, {"decision": "PASS"})
+            self.assertEqual(document_path.read_bytes(), first)
+            with self.assertRaises(StorageError):
+                write_immutable_json(document_path, {"decision": "FAIL"})
+
+            write_immutable_text(raw_path, "raw judge evidence")
+            write_immutable_text(raw_path, "raw judge evidence")
+            with self.assertRaises(StorageError):
+                write_immutable_text(raw_path, "changed")
 
     def test_migration_copies_database_payloads_and_media_without_deleting_sources(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
