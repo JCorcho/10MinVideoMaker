@@ -24,6 +24,7 @@ from .qc_config import QualityControlSettings
 from .qc_contracts import (
     QcCandidateState,
     QcDecision,
+    QcError,
     QcEvidencePolicy,
     QcTier,
     canonical_json,
@@ -75,6 +76,65 @@ def _sha256_file(path: str | Path) -> str:
 
 def _identity_mapping(identity: BackendIdentity) -> dict[str, Any]:
     return asdict(identity)
+
+
+def _normalized_planner_windows(
+    windows: Sequence[Mapping[str, Any]],
+) -> tuple[dict[str, Any], ...]:
+    """Strip raw judge prose and retain only schema-validated defect evidence."""
+    normalized: list[dict[str, Any]] = []
+    try:
+        for window in windows:
+            response = window.get("response")
+            if not isinstance(response, Mapping):
+                raise ValueError("QC window response is missing.")
+            raw_errors = response.get("errors")
+            if not isinstance(raw_errors, list):
+                raise ValueError("QC window errors are not an array.")
+            defects = tuple(
+                QcError.from_mapping(item).to_dict()
+                if isinstance(item, Mapping)
+                else (_ for _ in ()).throw(ValueError("QC error is not an object."))
+                for item in raw_errors
+            )
+            raw_decision = response.get("decision")
+            decision = (
+                QcDecision.UNCERTAIN
+                if raw_decision is None
+                else QcDecision(raw_decision)
+            )
+            confidence = response.get("confidence")
+            if confidence is not None and (
+                isinstance(confidence, bool)
+                or not isinstance(confidence, (int, float))
+                or not 0.0 <= float(confidence) <= 1.0
+            ):
+                raise ValueError("QC window confidence is invalid.")
+            window_number = window.get("window_number")
+            if isinstance(window_number, bool) or not isinstance(window_number, int):
+                raise ValueError("QC window number is invalid.")
+            source_indices = window.get("source_frame_indices")
+            timestamps = window.get("timestamps_seconds")
+            if not isinstance(source_indices, list) or not isinstance(timestamps, list):
+                raise ValueError("QC window source positions are invalid.")
+            normalized.append(
+                {
+                    "window_number": window_number,
+                    "source_frame_indices": [int(item) for item in source_indices],
+                    "timestamps_seconds": [float(item) for item in timestamps],
+                    "decision": decision.value,
+                    "confidence": (
+                        None if confidence is None else float(confidence)
+                    ),
+                    "defects": list(defects),
+                    "confirmation_of_window": window.get("confirmation_of_window"),
+                }
+            )
+    except (TypeError, ValueError) as error:
+        raise QcControllerError(
+            "Durable QC evidence failed planner-input normalization."
+        ) from error
+    return tuple(normalized)
 
 
 class Phase1QcController:
@@ -406,17 +466,31 @@ class Phase1QcController:
             key: value for key, value in fixed_i2v.items()
             if key not in {"prompt", "negative"}
         } if isinstance(fixed_i2v, Mapping) else {}
+        suspect_windows = _normalized_planner_windows(evaluation.suspect_windows)
+        defects = tuple(
+            defect
+            for window in suspect_windows
+            for defect in window["defects"]
+        )
         normalized_qc = {
             "decision": evaluation.normalized_decision.value,
             "strong_window_count": evaluation.strong_window_count,
             "frame_accounting": dict(evaluation.frame_accounting),
-            "suspect_windows": list(evaluation.suspect_windows),
-            "raw_result": evaluation.raw_result,
+            "defect_categories": sorted(
+                {str(item["category"]) for item in defects}
+            ),
+            "maximum_defect_severity": max(
+                (int(item["severity"]) for item in defects),
+                default=None,
+            ),
             "evaluation_state": evaluation.state,
         }
         previous = tuple(
-            {"status": item.status, "reason": item.reason,
-             "summary": item.proposed_patch.get("summary")}
+            {
+                "status": item.status,
+                "reason": item.reason,
+                "repair_input_sha256": item.repair_input_sha256,
+            }
             for item in self.store.qc_repairs(candidate.candidate_id)
         )
         prompt = load_repair_planner_prompt(
@@ -439,7 +513,7 @@ class Phase1QcController:
             "fixed_scene_facts": fixed,
             "generation_config": generation_config,
             "normalized_qc": normalized_qc,
-            "suspect_windows": list(evaluation.suspect_windows),
+            "suspect_windows": list(suspect_windows),
             "previous_repairs": list(previous),
             "mutable_fields": ["i2v.prompt"],
             "locked_fields": ["*", "!i2v.prompt"],
@@ -457,7 +531,7 @@ class Phase1QcController:
             fixed_scene_facts=fixed,
             generation_config=generation_config,
             normalized_qc=normalized_qc,
-            suspect_windows=evaluation.suspect_windows,
+            suspect_windows=suspect_windows,
             previous_repairs=previous,
             mutable_fields=("i2v.prompt",),
             locked_fields=("all fields except i2v.prompt",),
