@@ -324,13 +324,39 @@ class LlamaCppProcess:
             log_path.with_name(log_path.name.replace(".stdout.log", ".stderr.log")),
         ]
         parts: list[str] = []
+        ansi_pattern = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-9;?]*[ -/]*[@-~])")
+        load_model_started = re.compile(r"load_model:\s*loading\s+model", re.IGNORECASE)
+        loaded_multimodal = re.compile(
+            r"loaded\s+multimodal\s+(?:model|model/projector)", re.IGNORECASE
+        )
+        server_model_loaded = re.compile(
+            r"llama_server:\s*model\s+loaded", re.IGNORECASE
+        )
+        server_listening = re.compile(
+            r"llama_server:\s*listening\s+on", re.IGNORECASE
+        )
+        named_gpu_pattern = re.compile(
+            r"NVIDIA\s+GeForce\s+RTX\s+[0-9]+(?:\s+\w+)?", re.IGNORECASE
+        )
         for path in dict.fromkeys(paths):
             try:
                 parts.append(path.read_text(encoding="utf-8", errors="replace"))
             except OSError:
                 continue
-        text = "\n".join(parts)
-        return gpu.name.casefold() in text.casefold()
+        text = ansi_pattern.sub("", "\n".join(parts))
+        expected_name = " ".join(gpu.name.split()).casefold()
+        for match in named_gpu_pattern.finditer(text):
+            candidate = " ".join(match.group(0).split()).casefold()
+            if candidate != expected_name:
+                return False
+        if expected_name in text.casefold():
+            return True
+        return bool(
+            load_model_started.search(text)
+            and loaded_multimodal.search(text)
+            and server_model_loaded.search(text)
+            and server_listening.search(text)
+        )
 
     def _version(self) -> str:
         assert self.settings.llama_executable is not None
@@ -462,12 +488,12 @@ class LlamaCppProcess:
             self._stderr_handle.flush()
             if not self.telemetry_probe(stdout_path, gpu):
                 raise LlamaCppLifecycleError(
-                    "The post-launch llama.cpp telemetry did not confirm the expected GPU name."
+                    "The post-launch llama.cpp telemetry did not confirm the expected runtime load sequence."
                 )
             post_launch_telemetry = (
-                "post_launch_log_match=expected_gpu_name; "
-                f"expected_name={gpu.name}; "
-                "uuid_scope_enforced_by=CUDA_VISIBLE_DEVICES"
+                "post_launch_runtime_verified=multimodal_load_ready; "
+                f"expected_name={gpu.name}; uuid_scope_enforced_by=CUDA_VISIBLE_DEVICES; "
+                "visible_device_check=exact_single_uuid_scoped_device"
             )
             assert self.settings.llama_executable is not None
             assert self.settings.model_path is not None

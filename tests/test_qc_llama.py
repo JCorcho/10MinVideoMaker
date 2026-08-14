@@ -10,6 +10,10 @@ import time
 import unittest
 from dataclasses import replace
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from tenminvideomaker.qc_config import QualityControlSettings
 from tenminvideomaker.qc_llama import (
     GpuIdentity,
@@ -386,7 +390,7 @@ class QcLlamaTests(unittest.TestCase):
             manager.close()
 
             self.assertEqual(len(probes), 1)
-            self.assertIn("post_launch_log_match=expected_gpu_name", identity.device_telemetry)
+            self.assertIn("post_launch_runtime_verified=multimodal_load_ready", identity.device_telemetry)
 
     def test_default_post_launch_probe_reads_llama_stderr_device_report(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -395,7 +399,84 @@ class QcLlamaTests(unittest.TestCase):
             stderr_path = root / "qc-llama-launch.stderr.log"
             stdout_path.write_text("server ready", encoding="utf-8")
             stderr_path.write_text(
-                "load_tensors: offloading to NVIDIA GeForce RTX 4080 SUPER",
+                "\x1b[31mload_tensors: offloading to NVIDIA GeForce RTX 4080 SUPER\x1b[0m",
+                encoding="utf-8",
+            )
+
+            self.assertTrue(
+                LlamaCppProcess._default_telemetry_probe(
+                    stdout_path,
+                    GpuIdentity("GPU-expected", "NVIDIA GeForce RTX 4080 SUPER"),
+                )
+            )
+
+    def test_default_post_launch_probe_accepts_runtime_markers_without_visible_gpu_name(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            stdout_path = root / "qc-llama-launch.stdout.log"
+            stderr_path = root / "qc-llama-launch.stderr.log"
+            stdout_path.write_text(
+                "\n".join(
+                    (
+                        "load_model: loading model '...Qwen3.6...IQ3_M.gguf'",
+                        "load_model: loaded multimodal model, '...mmproj...f16.gguf'",
+                        "llama_server: model loaded",
+                        "llama_server: listening on http://127.0.0.1:18081",
+                    )
+                ),
+                encoding="utf-8",
+            )
+            stderr_path.write_text("", encoding="utf-8")
+
+            self.assertTrue(
+                LlamaCppProcess._default_telemetry_probe(
+                    stdout_path,
+                    GpuIdentity("GPU-expected", "NVIDIA GeForce RTX 4080 SUPER"),
+                )
+            )
+
+    def test_default_post_launch_probe_fails_when_wrong_nvidia_rtx_name_is_present(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            stdout_path = root / "qc-llama-launch.stdout.log"
+            stderr_path = root / "qc-llama-launch.stderr.log"
+            stdout_path.write_text(
+                "\n".join(
+                    (
+                        "load_model: loading model '...Qwen3.6...IQ3_M.gguf'",
+                        "load_model: loaded multimodal model, '...mmproj...f16.gguf'",
+                        "NVIDIA GeForce RTX 5070 Ti",
+                        "llama_server: model loaded",
+                        "llama_server: listening on http://127.0.0.1:18081",
+                    )
+                ),
+                encoding="utf-8",
+            )
+            stderr_path.write_text("", encoding="utf-8")
+
+            self.assertFalse(
+                LlamaCppProcess._default_telemetry_probe(
+                    stdout_path,
+                    GpuIdentity("GPU-expected", "NVIDIA GeForce RTX 4080 SUPER"),
+                )
+            )
+
+    def test_default_post_launch_probe_accepts_trailing_tokens_after_expected_rtx_name(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            stdout_path = root / "qc-llama-launch.stdout.log"
+            stderr_path = root / "qc-llama-launch.stderr.log"
+            stdout_path.write_text(
+                "\n".join(
+                    (
+                        "load_model: loading model '...Qwen3.6...IQ3_M.gguf'",
+                        "load_model: loaded multimodal model, '...mmproj...f16.gguf'",
+                    )
+                ),
+                encoding="utf-8",
+            )
+            stderr_path.write_text(
+                "load_tensors: offloading to NVIDIA GeForce RTX 4080 SUPER primary",
                 encoding="utf-8",
             )
 
