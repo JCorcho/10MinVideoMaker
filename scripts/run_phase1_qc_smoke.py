@@ -72,6 +72,16 @@ def _gpu_snapshot(uuid: str, expected_name: str) -> dict[str, object]:
     }
 
 
+def _numeric_compute_processes(output: str, gpu_uuid: str) -> list[str]:
+    """Ignore Windows display-client rows whose memory is reported as N/A."""
+    return [
+        line.strip()
+        for line in output.splitlines()
+        if gpu_uuid in line
+        and line.rsplit(",", 1)[-1].strip().isdigit()
+    ]
+
+
 def hardware_preflight(
     *, gpu_uuid: str, gpu_name: str, host: str, port: int
 ) -> dict[str, object]:
@@ -88,9 +98,7 @@ def hardware_preflight(
         check=True,
         timeout=30,
     ).stdout
-    matching_compute = [
-        line.strip() for line in compute.splitlines() if gpu_uuid in line
-    ]
+    matching_compute = _numeric_compute_processes(compute, gpu_uuid)
     try:
         with socket.create_connection((host, port), timeout=0.25):
             port_open = True

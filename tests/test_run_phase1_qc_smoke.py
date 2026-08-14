@@ -6,6 +6,7 @@ import tempfile
 import unittest
 
 from scripts.run_phase1_qc_smoke import (
+    _numeric_compute_processes,
     ensure_nonproduction_smoke_paths,
     run_context_isolation_probe,
 )
@@ -13,6 +14,18 @@ from tenminvideomaker.qc_backend import RepairPlannerResponse, load_repair_plann
 
 
 class Phase1QcSmokeHarnessTests(unittest.TestCase):
+    def test_windows_display_rows_do_not_count_as_compute_owners(self) -> None:
+        uuid = "GPU-stable"
+        output = (
+            f"100, explorer.exe, {uuid}, [N/A]\n"
+            f"200, llama-server.exe, {uuid}, 9123\n"
+            "300, other.exe, GPU-other, 100\n"
+        )
+        self.assertEqual(
+            _numeric_compute_processes(output, uuid),
+            [f"200, llama-server.exe, {uuid}, 9123"],
+        )
+
     def test_context_probe_actually_sends_sentinel_in_a_but_not_b(self) -> None:
         requests = []
 
