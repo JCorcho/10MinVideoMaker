@@ -257,6 +257,9 @@ def build_frame_accounting(
         "confirmation_independence_rule": (
             "shifted_indices_and_at_least_one_new_image_sha256_required"
         ),
+        "strong_window_independence_rule": (
+            "each_additional_strong_window_requires_at_least_one_new_image_sha256"
+        ),
         "confirmation_is_independent": confirmation_independent,
         "frame_count_represented_in_model_input": len(inspected)
         + len(confirmation_frames),

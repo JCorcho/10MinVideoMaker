@@ -304,11 +304,18 @@ def normalize_window_results(
     ):
         raise ValueError("Judge windows must be supplied chronologically.")
 
-    normal_strong = tuple(
-        (item, _window_strong_errors(item, policy))
-        for item in ordered
-        if _window_strong_errors(item, policy)
-    )
+    independent_strong: list[tuple[JudgeWindowResult, tuple[QcError, ...]]] = []
+    represented_hashes: set[str] = set()
+    for item in ordered:
+        strong_errors = _window_strong_errors(item, policy)
+        if not strong_errors:
+            continue
+        image_hashes = set(item.image_sha256s)
+        if independent_strong and not image_hashes.difference(represented_hashes):
+            continue
+        independent_strong.append((item, strong_errors))
+        represented_hashes.update(image_hashes)
+    normal_strong = tuple(independent_strong)
     confirming = False
     confirmation_errors: tuple[QcError, ...] = ()
     if confirmation is not None:

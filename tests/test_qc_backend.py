@@ -316,6 +316,28 @@ class QcBackendTests(unittest.TestCase):
         self.assertEqual(result.frame_accounting["processed_window_count"], 2)
         self.assertTrue(result.frame_accounting["early_exit_applied"])
 
+    def test_frozen_strong_windows_do_not_early_exit_or_trust_duplicate_pixels(self) -> None:
+        video = sampled(12)
+        frozen = replace(
+            video,
+            frames=tuple(
+                replace(frame, image_bytes=b"identical-frozen-frame")
+                for frame in video.frames
+            ),
+        )
+        backend = FakeBackend(
+            [raw("FAIL", strong=True), raw("FAIL", strong=True), raw("FAIL", strong=True)]
+        )
+        evaluator = HeadlessVideoEvaluator(backend, load_production_rubric(PROMPT_PATH))
+
+        result = evaluator.evaluate_sampled(frozen)
+
+        self.assertEqual(result.normalized.decision, QcDecision.UNCERTAIN)
+        self.assertEqual(result.normalized.strong_window_count, 1)
+        self.assertEqual(len(backend.requests), 3)
+        self.assertEqual(result.frame_accounting["processed_window_count"], 3)
+        self.assertFalse(result.frame_accounting["early_exit_applied"])
+
     def test_lone_suspect_gets_one_fresh_shifted_confirmation(self) -> None:
         backend = FakeBackend(
             [raw("PASS"), raw("FAIL", strong=True), raw("PASS"), raw("PASS")]

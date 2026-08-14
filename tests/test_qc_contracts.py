@@ -197,6 +197,28 @@ class QcContractTests(unittest.TestCase):
         self.assertEqual(normalized.strong_window_count, 2)
         self.assertEqual(normalized.suspect_window_numbers, (1, 2))
 
+    def test_frozen_content_cannot_become_two_independent_strong_windows(self) -> None:
+        repeated = tuple(f"{value:064x}" for value in range(4))
+        first = window(
+            1,
+            response("FAIL", errors=[error()]),
+            image_sha256s=repeated,
+        )
+        second = window(
+            2,
+            response("FAIL", errors=[error()]),
+            image_sha256s=repeated,
+        )
+
+        normalized = normalize_window_results(
+            (first, second), None, QcEvidencePolicy()
+        )
+
+        self.assertEqual(normalized.decision, QcDecision.UNCERTAIN)
+        self.assertEqual(normalized.strong_window_count, 1)
+        self.assertFalse(normalized.automatic_early_fail)
+        self.assertEqual(normalized.suspect_window_numbers, (1,))
+
     def test_shifted_strong_confirmation_is_independent_evidence(self) -> None:
         suspect = window(2, response("FAIL", errors=[error()]))
         shifted = window(99, response("FAIL", errors=[error()]), start=1.0).as_confirmation_of(2)

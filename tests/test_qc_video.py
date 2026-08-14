@@ -205,6 +205,10 @@ class QcVideoTests(unittest.TestCase):
             accounting["confirmation_independence_rule"],
             "shifted_indices_and_at_least_one_new_image_sha256_required",
         )
+        self.assertEqual(
+            accounting["strong_window_independence_rule"],
+            "each_additional_strong_window_requires_at_least_one_new_image_sha256",
+        )
         self.assertTrue(accounting["confirmation_is_independent"])
         self.assertTrue(accounting["early_exit_applied"])
 

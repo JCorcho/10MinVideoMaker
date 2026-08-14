@@ -478,17 +478,26 @@ class HeadlessVideoEvaluator:
         processed: list[QcWindow] = []
         evaluations: list[VisionJudgeEvaluation] = []
         early_exit = False
+        independent_strong_hashes: set[str] = set()
+        independent_strong_count = 0
         for window in planned:
             evaluation = self.backend.evaluate(
                 VisionJudgeRequest.from_window(window, rubric=self.rubric)
             )
             processed.append(window)
             evaluations.append(evaluation)
-            strong_count = sum(
-                any(is_strong_evidence(error, self.policy) for error in item.response.errors)
-                for item in evaluations
+            has_strong_evidence = any(
+                is_strong_evidence(error, self.policy)
+                for error in evaluation.response.errors
             )
-            if strong_count >= self.policy.minimum_strong_windows:
+            window_hashes = set(window.image_sha256s)
+            if has_strong_evidence and (
+                independent_strong_count == 0
+                or window_hashes.difference(independent_strong_hashes)
+            ):
+                independent_strong_count += 1
+                independent_strong_hashes.update(window_hashes)
+            if independent_strong_count >= self.policy.minimum_strong_windows:
                 early_exit = True
                 break
 
@@ -505,11 +514,23 @@ class HeadlessVideoEvaluator:
         confirmation_window: QcWindow | None = None
         confirmation_evaluation: VisionJudgeEvaluation | None = None
         confirmation_result: JudgeWindowResult | None = None
-        strong_positions = tuple(
-            index
-            for index, result in enumerate(main_results)
-            if any(is_strong_evidence(error, self.policy) for error in result.response.errors)
-        )
+        strong_position_list: list[int] = []
+        represented_strong_hashes: set[str] = set()
+        for index, result in enumerate(main_results):
+            if not any(
+                is_strong_evidence(error, self.policy)
+                for error in result.response.errors
+            ):
+                continue
+            result_hashes = set(result.image_sha256s)
+            if (
+                strong_position_list
+                and not result_hashes.difference(represented_strong_hashes)
+            ):
+                continue
+            strong_position_list.append(index)
+            represented_strong_hashes.update(result_hashes)
+        strong_positions = tuple(strong_position_list)
         if not early_exit and len(processed) == len(planned) and len(strong_positions) == 1:
             suspect_window = processed[strong_positions[0]]
             confirmation_window = shifted_confirmation_window(
