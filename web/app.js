@@ -16,6 +16,7 @@ const state = {
   qcReview: null,
   progressRefreshes: new Set(),
 };
+let qcReviewRefreshTimer = null;
 
 function qcErrorRows(windows) {
   return (windows || []).flatMap((window) =>
@@ -51,7 +52,8 @@ function renderQcReviewQueue() {
       <p>${escapeHtml(item.summary)}</p>
       <dl class="context-grid">
         <div class="context-item"><dt>Seed</dt><dd>${escapeHtml(item.seed)}</dd></div>
-        <div class="context-item"><dt>Evaluator</dt><dd>${escapeHtml(item.evaluator?.evaluator_version || "unknown")} · ${escapeHtml(item.evaluator?.model_id || "unknown")}</dd></div>
+        <div class="context-item"><dt>Evaluator</dt><dd>${escapeHtml(item.evaluator?.evaluator_version || "unknown")} · ${escapeHtml(item.evaluator?.backend_version || "unknown")} · ${escapeHtml(item.evaluator?.model_id || "unknown")}</dd></div>
+        <div class="context-item"><dt>Prompt/config</dt><dd>${escapeHtml(item.prompt_version || "unknown")} · ${escapeHtml((item.effective_config_sha256 || "unknown").slice(0, 12))}</dd></div>
         <div class="context-item lineage-wide"><dt>Current I2V prompt</dt><dd>${escapeHtml(item.prompt)}</dd></div>
       </dl>
       ${errors ? `<table class="qc-errors"><thead><tr><th>Window</th><th>Category</th><th>Evidence</th></tr></thead><tbody>${errors}</tbody></table>` : ""}
@@ -72,6 +74,18 @@ function renderQcReviewQueue() {
 async function loadQcReviewQueue() {
   state.qcReview = await api("/api/qc/review-queue");
   renderQcReviewQueue();
+}
+
+function scheduleQcReviewRefresh() {
+  if (qcReviewRefreshTimer != null) return;
+  qcReviewRefreshTimer = setTimeout(async () => {
+    qcReviewRefreshTimer = null;
+    try {
+      await loadQcReviewQueue();
+    } catch (error) {
+      console.warn("Could not refresh the QC review queue.", error);
+    }
+  }, 250);
 }
 
 async function submitQcDecision(event) {
@@ -1386,6 +1400,7 @@ async function refreshChunkProgress(progress) {
 }
 
 function updateStatus(status) {
+  const previousStatus = state.status;
   state.status = status;
   const element = $("#status");
   const intake = typeof status.hold_new_jobs_for_review === "boolean"
@@ -1414,6 +1429,14 @@ function updateStatus(status) {
     void refreshChunkProgress(previousProgress);
   }
   state.activeChunkProgress = nextProgress;
+  if (
+    !previousStatus
+    || previousStatus.pipeline_state !== status.pipeline_state
+    || previousStatus.job_id !== status.job_id
+    || status.pipeline_state === "awaiting_qc_review"
+  ) {
+    scheduleQcReviewRefresh();
+  }
   if (state.working) renderProductionProfile();
   mobileView();
 }

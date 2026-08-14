@@ -234,6 +234,24 @@ class SupervisorController:
                     and isinstance(response.get("summary"), str)
                     and response.get("summary").strip()
                 ]
+                evaluator = {
+                    key: evaluation.evaluator_identity.get(key)
+                    for key in (
+                        "evaluator_id",
+                        "evaluator_version",
+                        "backend_family",
+                        "backend_version",
+                        "executable_sha256",
+                        "model_id",
+                        "model_sha256",
+                        "quantization",
+                        "projector_sha256",
+                        "projector_precision",
+                        "gpu_uuid",
+                        "gpu_name",
+                    )
+                    if evaluation.evaluator_identity.get(key) is not None
+                }
                 pending.append(
                     {
                         "job_id": job.job_id,
@@ -252,7 +270,12 @@ class SupervisorController:
                         "confidence": min(confidences) if confidences else None,
                         "summary": summaries[-1] if summaries else "QC PASS",
                         "suspect_windows": windows,
-                        "evaluator": evaluation.evaluator_identity,
+                        "evaluator": evaluator,
+                        "effective_config_sha256": (
+                            evaluation.effective_config_sha256
+                        ),
+                        "prompt_version": evaluation.prompt_version,
+                        "prompt_sha256": evaluation.prompt_sha256,
                         "evaluation_id": evaluation.evaluation_id,
                         "history": [
                             {
@@ -263,6 +286,7 @@ class SupervisorController:
                                 "seed": str(prior.current_seed),
                             }
                             for prior in by_scene[candidate.scene_id]
+                            if prior.candidate_id != candidate.candidate_id
                         ],
                     }
                 )

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -38,6 +39,7 @@ class GuiStaticAssetTests(unittest.TestCase):
         self.assertIn('JSON.stringify({ decision: button.dataset.qcDecision })', script)
         self.assertIn("Approve", script)
         self.assertIn("Reject / Hold", script)
+        self.assertIn("scheduleQcReviewRefresh", script)
         self.assertNotIn("qc-prompt-editor", markup)
 
     def test_acceptance_review_page_shows_labeled_boundary_comparison(self) -> None:
@@ -224,7 +226,7 @@ class GuiAppTests(unittest.TestCase):
                 tier=QcTier.ORIGINAL,
                 parent_candidate_id=None,
                 source_video_path=str(video),
-                source_video_sha256="a" * 64,
+                source_video_sha256=hashlib.sha256(b"video").hexdigest(),
                 original_prompt=document["i2v"]["prompt"],
                 current_prompt=document["i2v"]["prompt"],
                 original_seed=int(document["i2v"]["seed"]),
@@ -301,6 +303,25 @@ class GuiAppTests(unittest.TestCase):
             self.assertEqual(queue["pending"][0]["candidate_id"], candidate.candidate_id)
             self.assertEqual(queue["pending"][0]["video_url"], f"/api/media/{job.job_id}/1/1/video")
             self.assertNotIn("source_video_path", queue["pending"][0])
+            serialized_queue = json.dumps(queue)
+            for forbidden in (
+                "executable_path",
+                "model_path",
+                "projector_path",
+                "stdout_log_path",
+                "stderr_log_path",
+                "C:/llama-server.exe",
+            ):
+                self.assertNotIn(forbidden, serialized_queue)
+            self.assertEqual(
+                queue["pending"][0]["prompt_version"],
+                "production_ltx_video_qc_v1",
+            )
+            self.assertEqual(
+                queue["pending"][0]["effective_config_sha256"],
+                "4" * 64,
+            )
+            self.assertEqual(queue["pending"][0]["history"], [])
             route = f"/api/qc/jobs/{job.job_id}/scenes/1/candidates/{candidate.candidate_id}/decision"
             self.assertEqual(
                 client.post(route, json={"decision": "APPROVE", "path": "D:/injected.mp4"}).status_code,
