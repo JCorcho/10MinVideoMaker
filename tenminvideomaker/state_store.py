@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
+import hashlib
 import json
 from pathlib import Path
 import sqlite3
@@ -268,7 +269,7 @@ class QcCandidateRecord:
     tier: QcTier
     parent_candidate_id: str | None
     source_video_path: str
-    source_video_sha256: str
+    source_video_sha256: str | None
     original_prompt: str
     current_prompt: str
     original_seed: int
@@ -643,7 +644,7 @@ class PipelineStateStore:
                     tier TEXT NOT NULL,
                     parent_candidate_id TEXT,
                     source_video_path TEXT NOT NULL,
-                    source_video_sha256 TEXT NOT NULL,
+                    source_video_sha256 TEXT,
                     original_prompt TEXT NOT NULL,
                     current_prompt TEXT NOT NULL,
                     original_seed TEXT NOT NULL,
@@ -1712,7 +1713,7 @@ class PipelineStateStore:
         tier: QcTier,
         parent_candidate_id: str | None,
         source_video_path: str,
-        source_video_sha256: str,
+        source_video_sha256: str | None,
         original_prompt: str,
         current_prompt: str,
         original_seed: int,
@@ -1725,7 +1726,18 @@ class PipelineStateStore:
         candidate_id = _evidence_id(candidate_id, "candidate_id")
         _positive_revision(revision)
         source_video_path = _required_text(source_video_path, "source_video_path")
-        source_video_sha256 = _sha256(source_video_sha256, "source_video_sha256")
+        if source_video_sha256 is None:
+            if state not in {
+                QcCandidateState.PENDING_GENERATION,
+                QcCandidateState.GENERATING,
+            }:
+                raise StateTransitionError(
+                    "Only a not-yet-generated candidate may omit its video hash."
+                )
+        else:
+            source_video_sha256 = _sha256(
+                source_video_sha256, "source_video_sha256"
+            )
         original_prompt = _required_text(original_prompt, "original_prompt")
         current_prompt = _required_text(current_prompt, "current_prompt")
         original_seed = _uint64_seed(original_seed)
@@ -1856,6 +1868,258 @@ class PipelineStateStore:
         with self._connection() as connection:
             rows = connection.execute(sql, parameters).fetchall()
         return tuple(self._qc_candidate_record(row) for row in rows)
+
+    def qc_candidate(self, candidate_id: str) -> QcCandidateRecord:
+        self.initialize()
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM qc_candidates WHERE candidate_id = ?", (candidate_id,)
+            ).fetchone()
+        if row is None:
+            raise StateTransitionError(f"Unknown QC candidate {candidate_id}.")
+        return self._qc_candidate_record(row)
+
+    def ensure_a1_candidate_revision(
+        self,
+        *,
+        candidate_id: str,
+        parent_candidate_id: str,
+        job_id: str,
+        scene_id: int,
+        expected_revision: int,
+        parameters: Mapping[str, Any],
+        frame_path: str,
+        source_video_path: str,
+        original_prompt: str,
+        current_prompt: str,
+        original_seed: int,
+        current_seed: int,
+        negative_prompt: str,
+        negative_prompt_sha256: str,
+    ) -> QcCandidateRecord:
+        """Atomically allocate the one A1 VIDEO_ONLY revision and candidate."""
+        candidate_id = _evidence_id(candidate_id, "candidate_id")
+        parent_candidate_id = _evidence_id(
+            parent_candidate_id, "parent_candidate_id"
+        )
+        expected_revision = _positive_revision(expected_revision)
+        if expected_revision <= 1:
+            raise StateTransitionError("A1 must use a later scene revision.")
+        frame_path = _required_text(frame_path, "frame_path")
+        source_video_path = _required_text(source_video_path, "source_video_path")
+        parameters_json = _canonical_json(parameters)
+        original_seed = _uint64_seed(original_seed)
+        current_seed = _uint64_seed(current_seed)
+        if current_seed == original_seed:
+            raise StateTransitionError("A1 must change the seed.")
+        if current_prompt != original_prompt:
+            raise StateTransitionError("A1 must preserve the I2V prompt exactly.")
+        negative_prompt_sha256 = _sha256(
+            negative_prompt_sha256, "negative_prompt_sha256"
+        )
+        self.initialize()
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                """
+                SELECT * FROM qc_candidates
+                WHERE job_id = ? AND scene_id = ? AND tier = ?
+                """,
+                (job_id, scene_id, QcTier.A1.value),
+            ).fetchone()
+            if existing is not None:
+                if (
+                    existing["candidate_id"] != candidate_id
+                    or existing["parent_candidate_id"] != parent_candidate_id
+                    or int(existing["revision"]) != expected_revision
+                    or existing["source_video_path"] != source_video_path
+                    or int(existing["current_seed"]) != current_seed
+                    or existing["current_prompt"] != current_prompt
+                ):
+                    raise StateTransitionError(
+                        "The one A1 retry already exists with different immutable evidence."
+                    )
+                revision_row = connection.execute(
+                    """
+                    SELECT parameters_json FROM scene_revisions
+                    WHERE job_id = ? AND scene_id = ? AND revision = ?
+                    """,
+                    (job_id, scene_id, expected_revision),
+                ).fetchone()
+                if (
+                    revision_row is None
+                    or _canonical_json(json.loads(revision_row["parameters_json"]))
+                    != parameters_json
+                ):
+                    raise StateTransitionError("The persisted A1 revision is inconsistent.")
+                return self._qc_candidate_record(existing)
+            parent = connection.execute(
+                """
+                SELECT * FROM qc_candidates WHERE candidate_id = ?
+                """,
+                (parent_candidate_id,),
+            ).fetchone()
+            if (
+                parent is None
+                or parent["job_id"] != job_id
+                or int(parent["scene_id"]) != scene_id
+                or QcTier(parent["tier"]) != QcTier.ORIGINAL
+            ):
+                raise StateTransitionError(
+                    "A1 must descend from the ORIGINAL candidate for this scene."
+                )
+            next_row = connection.execute(
+                """
+                SELECT COALESCE(MAX(revision), 0) + 1 AS revision
+                FROM scene_revisions WHERE job_id = ? AND scene_id = ?
+                """,
+                (job_id, scene_id),
+            ).fetchone()
+            if int(next_row["revision"]) != expected_revision:
+                raise StateTransitionError(
+                    "The expected A1 revision is stale; recompute from durable state."
+                )
+            used_seed = connection.execute(
+                """
+                SELECT 1 FROM qc_candidates
+                WHERE job_id = ? AND scene_id = ?
+                    AND (original_seed = ? OR current_seed = ?)
+                """,
+                (job_id, scene_id, str(current_seed), str(current_seed)),
+            ).fetchone()
+            if used_seed is not None:
+                raise StateTransitionError("A1 seed was already used in this scene lineage.")
+            now = _utc_now()
+            connection.execute(
+                """
+                INSERT INTO scene_revisions (
+                    job_id, scene_id, revision, remake_mode, parameters_json,
+                    state, frame_path, video_path, error, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?)
+                """,
+                (
+                    job_id,
+                    scene_id,
+                    expected_revision,
+                    RemakeMode.VIDEO_ONLY.value,
+                    parameters_json,
+                    SceneState.PENDING.value,
+                    frame_path,
+                    now,
+                    now,
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO qc_candidates (
+                    candidate_id, job_id, scene_id, revision, tier,
+                    parent_candidate_id, source_video_path, source_video_sha256,
+                    original_prompt, current_prompt, original_seed, current_seed,
+                    negative_prompt, negative_prompt_sha256, state, next_action,
+                    infrastructure_failure_count, last_failure_json,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?)
+                """,
+                (
+                    candidate_id,
+                    job_id,
+                    scene_id,
+                    expected_revision,
+                    QcTier.A1.value,
+                    parent_candidate_id,
+                    source_video_path,
+                    original_prompt,
+                    current_prompt,
+                    str(original_seed),
+                    str(current_seed),
+                    negative_prompt,
+                    negative_prompt_sha256,
+                    QcCandidateState.PENDING_GENERATION.value,
+                    "render_a1",
+                    now,
+                    now,
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM qc_candidates WHERE candidate_id = ?", (candidate_id,)
+            ).fetchone()
+        return self._qc_candidate_record(row)
+
+    def complete_qc_candidate_generation(
+        self,
+        candidate_id: str,
+        *,
+        source_video_path: str,
+        source_video_sha256: str,
+    ) -> QcCandidateRecord:
+        source_video_sha256 = _sha256(
+            source_video_sha256, "source_video_sha256"
+        )
+        artifact = Path(source_video_path)
+        if not artifact.is_file():
+            raise StateTransitionError("Generated QC candidate video does not exist.")
+        digest = hashlib.sha256()
+        with artifact.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        if digest.hexdigest() != source_video_sha256:
+            raise StateTransitionError(
+                "Generated QC candidate hash does not match the persisted artifact."
+            )
+        self.initialize()
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                "SELECT * FROM qc_candidates WHERE candidate_id = ?", (candidate_id,)
+            ).fetchone()
+            if existing is None:
+                raise StateTransitionError(f"Unknown QC candidate {candidate_id}.")
+            if existing["source_video_path"] != source_video_path:
+                raise StateTransitionError("Candidate generation path is immutable.")
+            if existing["source_video_sha256"] is not None:
+                if existing["source_video_sha256"] != source_video_sha256:
+                    raise StateTransitionError("Candidate video evidence is immutable.")
+                return self._qc_candidate_record(existing)
+            if QcCandidateState(existing["state"]) not in {
+                QcCandidateState.PENDING_GENERATION,
+                QcCandidateState.GENERATING,
+            }:
+                raise StateTransitionError(
+                    "Only a generating candidate may record its video hash."
+                )
+            now = _utc_now()
+            connection.execute(
+                """
+                UPDATE scene_revisions SET state = ?, video_path = ?, error = NULL,
+                    updated_at = ?
+                WHERE job_id = ? AND scene_id = ? AND revision = ?
+                """,
+                (
+                    SceneState.SUCCEEDED.value,
+                    source_video_path,
+                    now,
+                    existing["job_id"],
+                    existing["scene_id"],
+                    existing["revision"],
+                ),
+            )
+            connection.execute(
+                """
+                UPDATE qc_candidates SET source_video_sha256 = ?, state = ?,
+                    next_action = ?, updated_at = ? WHERE candidate_id = ?
+                """,
+                (
+                    source_video_sha256,
+                    QcCandidateState.PENDING_QC.value,
+                    "evaluate",
+                    now,
+                    candidate_id,
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM qc_candidates WHERE candidate_id = ?", (candidate_id,)
+            ).fetchone()
+        return self._qc_candidate_record(row)
 
     def set_qc_candidate_state(
         self,
