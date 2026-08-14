@@ -7,6 +7,7 @@ from email import policy
 from email.message import EmailMessage, Message
 from email.parser import BytesParser
 from email.utils import formataddr, make_msgid, parseaddr
+import hashlib
 import imaplib
 import json
 import logging
@@ -108,13 +109,21 @@ def build_pipeline_request(
     *,
     previous_job_id: str | None = None,
     succeeded: bool | None = None,
+    request_id: str | None = None,
 ) -> EmailMessage:
     """Build the stable initial-trigger email without sending it."""
     message = EmailMessage()
     message["From"] = formataddr(("10MinVideoMaker", settings.username))
     message["To"] = settings.recipient
     message["Subject"] = PIPELINE_REQUEST_SUBJECT
-    message["Message-ID"] = make_msgid(domain=settings.username.split("@")[-1])
+    if request_id is None:
+        message["Message-ID"] = make_msgid(domain=settings.username.split("@")[-1])
+    else:
+        if not request_id or len(request_id) > 256:
+            raise ValueError("request_id must be a non-empty bounded string.")
+        digest = hashlib.sha256(request_id.encode("utf-8")).hexdigest()
+        domain = settings.username.split("@")[-1]
+        message["Message-ID"] = f"<tenmin-qc-{digest}@{domain}>"
     body = [
         f"Send the completed handoff as a new email with the exact subject {PIPELINE_RESPONSE_SUBJECT}. "
         "Do not reply to this request email.",
@@ -315,13 +324,58 @@ class GmailClient:
         self._cached_access_token = ""
         self._access_token_expires_at = 0.0
 
-    def send_request(self, *, previous_job_id: str | None = None, succeeded: bool | None = None) -> str:
-        message = build_pipeline_request(self.settings, previous_job_id=previous_job_id, succeeded=succeeded)
+    def send_request(
+        self,
+        *,
+        previous_job_id: str | None = None,
+        succeeded: bool | None = None,
+        request_id: str | None = None,
+    ) -> str:
+        message = build_pipeline_request(
+            self.settings,
+            previous_job_id=previous_job_id,
+            succeeded=succeeded,
+            request_id=request_id,
+        )
         context = ssl.create_default_context()
         with smtplib.SMTP_SSL(self.settings.smtp_host, self.settings.smtp_port, context=context, timeout=30) as smtp:
             self._authenticate_smtp(smtp)
             smtp.send_message(message)
         return str(message["Message-ID"])
+
+    def request_message_id(self, request_id: str) -> str:
+        return str(
+            build_pipeline_request(self.settings, request_id=request_id)["Message-ID"]
+        )
+
+    def request_was_sent(self, request_id: str) -> bool:
+        """Reconcile one deterministic QC request through Gmail's All Mail view."""
+        message_id = self.request_message_id(request_id)
+        context = ssl.create_default_context()
+        with imaplib.IMAP4_SSL(
+            self.settings.imap_host,
+            self.settings.imap_port,
+            ssl_context=context,
+            timeout=30,
+        ) as client:
+            self._authenticate_imap(client)
+            status, _ = client.select("[Gmail]/All Mail", readonly=True)
+            if status != "OK":
+                raise MailTransportError(
+                    "Could not select Gmail All Mail to reconcile the QC request."
+                )
+            status, data = client.uid(
+                "SEARCH",
+                None,
+                "HEADER",
+                "Message-ID",
+                f'"{message_id}"',
+            )
+            if status != "OK":
+                raise MailTransportError(
+                    "Could not reconcile the deterministic QC request Message-ID."
+                )
+            return bool(data and data[0] and data[0].split())
 
     def unread_pipeline_messages(self) -> list[MailboxMessage]:
         context = ssl.create_default_context()

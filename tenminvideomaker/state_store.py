@@ -384,6 +384,34 @@ class QcHumanDecisionResult:
     replayed: bool
 
 
+@dataclass(frozen=True)
+class QcFinalizationPlanRecord:
+    job_id: str
+    version: int
+    selection: tuple[Mapping[str, Any], ...]
+    plan_sha256: str
+    state: str
+    final_path: str
+    final_sha256: str | None
+    next_request_id: str | None
+    next_request_receipt: str | None
+    created_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True)
+class QcFinalizationStepRecord:
+    job_id: str
+    step_key: str
+    kind: str
+    state: str
+    evidence: Mapping[str, Any]
+    evidence_sha256: str
+    receipt: Mapping[str, Any] | None
+    created_at: str
+    updated_at: str
+
+
 _ACTIVE_CHUNK_STATES = frozenset(
     {
         ChunkState.GENERATING_STAGE1,
@@ -817,6 +845,33 @@ class PipelineStateStore:
                     evidence_sha256 TEXT NOT NULL,
                     created_at TEXT NOT NULL,
                     FOREIGN KEY (job_id) REFERENCES jobs(job_id)
+                );
+                CREATE TABLE IF NOT EXISTS qc_finalization_plans (
+                    job_id TEXT PRIMARY KEY,
+                    version INTEGER NOT NULL,
+                    selection_json TEXT NOT NULL,
+                    plan_sha256 TEXT NOT NULL UNIQUE,
+                    state TEXT NOT NULL,
+                    final_path TEXT NOT NULL,
+                    final_sha256 TEXT,
+                    next_request_id TEXT,
+                    next_request_receipt TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (job_id) REFERENCES jobs(job_id)
+                );
+                CREATE TABLE IF NOT EXISTS qc_finalization_steps (
+                    job_id TEXT NOT NULL,
+                    step_key TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    evidence_json TEXT NOT NULL,
+                    evidence_sha256 TEXT NOT NULL,
+                    receipt_json TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (job_id, step_key),
+                    FOREIGN KEY (job_id) REFERENCES qc_finalization_plans(job_id)
                 );
                 CREATE INDEX IF NOT EXISTS idx_scene_chunks_state
                     ON scene_chunks(job_id, scene_id, revision, state, chunk_index);
@@ -3456,6 +3511,383 @@ class PipelineStateStore:
                 )
             )
         return tuple(result)
+
+    @staticmethod
+    def _qc_finalization_plan_record(
+        row: sqlite3.Row,
+    ) -> QcFinalizationPlanRecord:
+        return QcFinalizationPlanRecord(
+            job_id=row["job_id"],
+            version=int(row["version"]),
+            selection=tuple(json.loads(row["selection_json"])),
+            plan_sha256=row["plan_sha256"],
+            state=row["state"],
+            final_path=row["final_path"],
+            final_sha256=row["final_sha256"],
+            next_request_id=row["next_request_id"],
+            next_request_receipt=row["next_request_receipt"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+    @staticmethod
+    def _qc_finalization_step_record(
+        row: sqlite3.Row,
+    ) -> QcFinalizationStepRecord:
+        return QcFinalizationStepRecord(
+            job_id=row["job_id"],
+            step_key=row["step_key"],
+            kind=row["kind"],
+            state=row["state"],
+            evidence=json.loads(row["evidence_json"]),
+            evidence_sha256=row["evidence_sha256"],
+            receipt=(
+                None if row["receipt_json"] is None else json.loads(row["receipt_json"])
+            ),
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+    def ensure_qc_finalization_plan(
+        self,
+        job_id: str,
+        scene_ids: Sequence[int],
+        *,
+        final_path: str,
+    ) -> QcFinalizationPlanRecord:
+        """Commit the accepted selection before any QC finalization side effect."""
+        required = tuple(sorted(set(int(item) for item in scene_ids)))
+        resolved_final = str(Path(final_path).resolve())
+        self.initialize()
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._assert_active_automatic_job_connection(connection, job_id)
+            existing = connection.execute(
+                "SELECT * FROM qc_finalization_plans WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+            if existing is not None:
+                record = self._qc_finalization_plan_record(existing)
+                if (
+                    tuple(int(item["scene_id"]) for item in record.selection) != required
+                    or record.final_path != resolved_final
+                ):
+                    raise StateTransitionError(
+                        "The durable QC finalization plan is immutable."
+                    )
+                for item in record.selection:
+                    if (
+                        not Path(str(item["artifact_path"])).is_file()
+                        or _file_sha256(str(item["artifact_path"]))
+                        != item["artifact_sha256"]
+                    ):
+                        raise StateTransitionError(
+                            "A snapshotted QC finalization artifact failed integrity validation."
+                        )
+                return record
+
+            rows = connection.execute(
+                """
+                SELECT c.candidate_id, c.scene_id, c.revision,
+                       c.source_video_path, c.source_video_sha256,
+                       r.state AS revision_state, r.video_path AS revision_video_path
+                FROM qc_candidates c
+                JOIN scene_revisions r ON r.job_id = c.job_id
+                    AND r.scene_id = c.scene_id AND r.revision = c.revision
+                WHERE c.job_id = ? AND c.state = ?
+                ORDER BY c.scene_id
+                """,
+                (job_id, QcCandidateState.ACCEPTED.value),
+            ).fetchall()
+            if tuple(int(row["scene_id"]) for row in rows) != required:
+                raise StateTransitionError(
+                    "QC finalization plan requires one ACCEPTED candidate for every scene."
+                )
+            selection: list[dict[str, Any]] = []
+            for position, row in enumerate(rows, start=1):
+                path = str(row["source_video_path"])
+                artifact_hash = row["source_video_sha256"]
+                if (
+                    row["revision_state"] != SceneState.SUCCEEDED.value
+                    or row["revision_video_path"] != path
+                    or not artifact_hash
+                    or not Path(path).is_file()
+                    or _file_sha256(path) != artifact_hash
+                ):
+                    raise StateTransitionError(
+                        "An ACCEPTED candidate cannot be snapshotted because its artifact changed."
+                    )
+                selection.append(
+                    {
+                        "position": position,
+                        "candidate_id": row["candidate_id"],
+                        "scene_id": int(row["scene_id"]),
+                        "revision": int(row["revision"]),
+                        "artifact_path": path,
+                        "artifact_sha256": artifact_hash,
+                    }
+                )
+            document = {
+                "schema_version": 1,
+                "job_id": job_id,
+                "ordered_selection": selection,
+                "final_path": resolved_final,
+            }
+            selection_json = _canonical_json(selection)
+            plan_sha256 = hashlib.sha256(
+                _canonical_json(document).encode("utf-8")
+            ).hexdigest()
+            now = _utc_now()
+            connection.execute(
+                """
+                INSERT INTO qc_finalization_plans (
+                    job_id, version, selection_json, plan_sha256, state,
+                    final_path, final_sha256, next_request_id,
+                    next_request_receipt, created_at, updated_at
+                ) VALUES (?, 1, ?, ?, 'PLAN_COMMITTED', ?, NULL, NULL, NULL, ?, ?)
+                """,
+                (job_id, selection_json, plan_sha256, resolved_final, now, now),
+            )
+            stored = connection.execute(
+                "SELECT * FROM qc_finalization_plans WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+        return self._qc_finalization_plan_record(stored)
+
+    def qc_finalization_plan(self, job_id: str) -> QcFinalizationPlanRecord | None:
+        self.initialize()
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM qc_finalization_plans WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+        return None if row is None else self._qc_finalization_plan_record(row)
+
+    def advance_qc_finalization_plan(
+        self,
+        job_id: str,
+        state: str,
+        *,
+        final_sha256: str | None = None,
+        next_request_id: str | None = None,
+        next_request_receipt: str | None = None,
+    ) -> QcFinalizationPlanRecord:
+        order = {
+            "PLAN_COMMITTED": 0,
+            "DELIVERING": 1,
+            "DELIVERED": 2,
+            "STITCHING": 3,
+            "STITCHED": 4,
+            "JOB_COMMITTED": 5,
+            "NEXT_REQUEST_INTENT": 6,
+            "COMPLETED": 7,
+        }
+        if state not in order:
+            raise StateTransitionError("Unknown QC finalization plan state.")
+        self.initialize()
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._assert_active_automatic_job_connection(connection, job_id)
+            row = connection.execute(
+                "SELECT * FROM qc_finalization_plans WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+            if row is None:
+                raise StateTransitionError("QC finalization plan is not committed.")
+            current = self._qc_finalization_plan_record(row)
+            if order[state] < order[current.state]:
+                return current
+            for old, new, label in (
+                (current.final_sha256, final_sha256, "final artifact hash"),
+                (current.next_request_id, next_request_id, "next request id"),
+                (
+                    current.next_request_receipt,
+                    next_request_receipt,
+                    "next request receipt",
+                ),
+            ):
+                if old is not None and new is not None and old != new:
+                    raise StateTransitionError(
+                        f"The QC finalization {label} is immutable."
+                    )
+            now = _utc_now()
+            connection.execute(
+                """
+                UPDATE qc_finalization_plans
+                SET state = ?,
+                    final_sha256 = COALESCE(final_sha256, ?),
+                    next_request_id = COALESCE(next_request_id, ?),
+                    next_request_receipt = COALESCE(next_request_receipt, ?),
+                    updated_at = ?
+                WHERE job_id = ?
+                """,
+                (
+                    state,
+                    final_sha256,
+                    next_request_id,
+                    next_request_receipt,
+                    now,
+                    job_id,
+                ),
+            )
+            stored = connection.execute(
+                "SELECT * FROM qc_finalization_plans WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+        return self._qc_finalization_plan_record(stored)
+
+    def begin_qc_finalization_step(
+        self,
+        job_id: str,
+        step_key: str,
+        *,
+        kind: str,
+        evidence: Mapping[str, Any],
+    ) -> QcFinalizationStepRecord:
+        _evidence_id(step_key, "finalization step key")
+        _evidence_id(kind, "finalization step kind")
+        evidence_json = _canonical_json(dict(evidence))
+        evidence_sha256 = hashlib.sha256(evidence_json.encode("utf-8")).hexdigest()
+        self.initialize()
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._assert_active_automatic_job_connection(connection, job_id)
+            existing = connection.execute(
+                """
+                SELECT * FROM qc_finalization_steps
+                WHERE job_id = ? AND step_key = ?
+                """,
+                (job_id, step_key),
+            ).fetchone()
+            if existing is not None:
+                record = self._qc_finalization_step_record(existing)
+                if record.kind != kind or record.evidence_sha256 != evidence_sha256:
+                    raise StateTransitionError(
+                        "Durable QC finalization step evidence is immutable."
+                    )
+                return record
+            now = _utc_now()
+            connection.execute(
+                """
+                INSERT INTO qc_finalization_steps (
+                    job_id, step_key, kind, state, evidence_json,
+                    evidence_sha256, receipt_json, created_at, updated_at
+                ) VALUES (?, ?, ?, 'INTENT', ?, ?, NULL, ?, ?)
+                """,
+                (job_id, step_key, kind, evidence_json, evidence_sha256, now, now),
+            )
+            row = connection.execute(
+                """
+                SELECT * FROM qc_finalization_steps
+                WHERE job_id = ? AND step_key = ?
+                """,
+                (job_id, step_key),
+            ).fetchone()
+        return self._qc_finalization_step_record(row)
+
+    def complete_qc_finalization_step(
+        self,
+        job_id: str,
+        step_key: str,
+        *,
+        receipt: Mapping[str, Any],
+    ) -> QcFinalizationStepRecord:
+        receipt_json = _canonical_json(dict(receipt))
+        self.initialize()
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._assert_active_automatic_job_connection(connection, job_id)
+            existing = connection.execute(
+                """
+                SELECT * FROM qc_finalization_steps
+                WHERE job_id = ? AND step_key = ?
+                """,
+                (job_id, step_key),
+            ).fetchone()
+            if existing is None:
+                raise StateTransitionError(
+                    "QC finalization step must have durable intent before completion."
+                )
+            record = self._qc_finalization_step_record(existing)
+            if record.state == "COMPLETED":
+                if _canonical_json(record.receipt) != receipt_json:
+                    raise StateTransitionError(
+                        "Durable QC finalization step receipt is immutable."
+                    )
+                return record
+            now = _utc_now()
+            connection.execute(
+                """
+                UPDATE qc_finalization_steps
+                SET state = 'COMPLETED', receipt_json = ?, updated_at = ?
+                WHERE job_id = ? AND step_key = ? AND state IN ('INTENT', 'DISPATCHING')
+                """,
+                (receipt_json, now, job_id, step_key),
+            )
+            row = connection.execute(
+                """
+                SELECT * FROM qc_finalization_steps
+                WHERE job_id = ? AND step_key = ?
+                """,
+                (job_id, step_key),
+            ).fetchone()
+        return self._qc_finalization_step_record(row)
+
+    def mark_qc_finalization_step_dispatching(
+        self,
+        job_id: str,
+        step_key: str,
+    ) -> QcFinalizationStepRecord:
+        """Persist the ambiguity boundary immediately before an external send."""
+        self.initialize()
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._assert_active_automatic_job_connection(connection, job_id)
+            row = connection.execute(
+                """
+                SELECT * FROM qc_finalization_steps
+                WHERE job_id = ? AND step_key = ?
+                """,
+                (job_id, step_key),
+            ).fetchone()
+            if row is None:
+                raise StateTransitionError("QC finalization dispatch has no intent.")
+            record = self._qc_finalization_step_record(row)
+            if record.state == "INTENT":
+                connection.execute(
+                    """
+                    UPDATE qc_finalization_steps
+                    SET state = 'DISPATCHING', updated_at = ?
+                    WHERE job_id = ? AND step_key = ? AND state = 'INTENT'
+                    """,
+                    (_utc_now(), job_id, step_key),
+                )
+                row = connection.execute(
+                    """
+                    SELECT * FROM qc_finalization_steps
+                    WHERE job_id = ? AND step_key = ?
+                    """,
+                    (job_id, step_key),
+                ).fetchone()
+                return self._qc_finalization_step_record(row)
+            if record.state in {"DISPATCHING", "COMPLETED"}:
+                return record
+            raise StateTransitionError("QC finalization dispatch state is invalid.")
+
+    def qc_finalization_steps(
+        self,
+        job_id: str,
+    ) -> tuple[QcFinalizationStepRecord, ...]:
+        self.initialize()
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM qc_finalization_steps
+                WHERE job_id = ? ORDER BY created_at, step_key
+                """,
+                (job_id,),
+            ).fetchall()
+        return tuple(self._qc_finalization_step_record(row) for row in rows)
 
     @staticmethod
     def _qc_job_hold_record(row: sqlite3.Row) -> QcJobHoldRecord:

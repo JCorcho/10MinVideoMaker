@@ -5,11 +5,16 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from fractions import Fraction
+import hashlib
+import os
 from pathlib import Path
+import re
+import shutil
 import subprocess
 from typing import Callable, Iterable, Sequence
 
 from .storage import StorageLayout
+from .storage import write_json_atomic
 
 from .constants import PRODUCTION_FPS, PRODUCTION_HEIGHT, PRODUCTION_WIDTH
 
@@ -77,8 +82,21 @@ class FfmpegAssembler:
             raise AssemblyError("Job id is not safe for an output filename.")
         return self.output_root / f"{job_id}_final.mp4"
 
-    def stitch(self, job_id: str, clips: Sequence[str | Path], concat_directory: str | Path) -> Path:
-        output_path = self.final_path(job_id)
+    @staticmethod
+    def _sha256(path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    def _stitch_to(
+        self,
+        job_id: str,
+        clips: Sequence[str | Path],
+        concat_directory: str | Path,
+        output_path: Path,
+    ) -> Path:
         concat_directory = Path(concat_directory)
         concat_directory.mkdir(parents=True, exist_ok=True)
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -106,6 +124,87 @@ class FfmpegAssembler:
         if not output_path.is_file():
             raise AssemblyError("FFmpeg reported success but did not create the final video.")
         return output_path
+
+    def stitch(self, job_id: str, clips: Sequence[str | Path], concat_directory: str | Path) -> Path:
+        return self._stitch_to(
+            job_id,
+            clips,
+            concat_directory,
+            self.final_path(job_id),
+        )
+
+    def stitch_qc_plan(
+        self,
+        job_id: str,
+        clips: Sequence[str | Path],
+        concat_directory: str | Path,
+        *,
+        checkpoint_directory: str | Path,
+        plan_sha256: str,
+    ) -> Path:
+        """Assemble once into a plan-addressed artifact, then publish atomically."""
+        if not re.fullmatch(r"[0-9a-f]{64}", plan_sha256):
+            raise AssemblyError("QC finalization plan hash is invalid.")
+        final_path = self.final_path(job_id)
+        workspace = Path(checkpoint_directory) / job_id / plan_sha256
+        workspace.mkdir(parents=True, exist_ok=True)
+        assembled_path = workspace / "assembled.mp4"
+        in_progress_path = workspace / "assembled.in-progress.mp4"
+        receipt_path = workspace / "assembly.json"
+        artifact_hash: str | None = None
+
+        if receipt_path.is_file():
+            try:
+                receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+                if (
+                    receipt.get("schema_version") != 1
+                    or receipt.get("job_id") != job_id
+                    or receipt.get("plan_sha256") != plan_sha256
+                    or receipt.get("assembled_path") != str(assembled_path)
+                ):
+                    raise AssemblyError("QC assembly receipt identity is invalid.")
+                artifact_hash = str(receipt["artifact_sha256"])
+            except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+                raise AssemblyError("QC assembly receipt is unreadable.") from error
+            if (
+                not assembled_path.is_file()
+                or self._sha256(assembled_path) != artifact_hash
+            ):
+                raise AssemblyError("Checkpointed QC assembly artifact changed.")
+        elif assembled_path.is_file():
+            # assembled.mp4 is created only by atomic rename after FFmpeg success.
+            # A crash before the SQLite checkpoint can therefore adopt it safely.
+            artifact_hash = self._sha256(assembled_path)
+        else:
+            if in_progress_path.exists():
+                in_progress_path.unlink()
+            self._stitch_to(
+                job_id,
+                clips,
+                concat_directory,
+                in_progress_path,
+            )
+            os.replace(in_progress_path, assembled_path)
+            artifact_hash = self._sha256(assembled_path)
+
+        assert artifact_hash is not None
+        if not receipt_path.is_file():
+            write_json_atomic(
+                receipt_path,
+                {
+                    "schema_version": 1,
+                    "job_id": job_id,
+                    "plan_sha256": plan_sha256,
+                    "assembled_path": str(assembled_path),
+                    "artifact_sha256": artifact_hash,
+                },
+            )
+        if not final_path.is_file() or self._sha256(final_path) != artifact_hash:
+            final_path.parent.mkdir(parents=True, exist_ok=True)
+            publish_path = final_path.with_name(final_path.name + ".qc-publish.tmp")
+            shutil.copy2(assembled_path, publish_path)
+            os.replace(publish_path, final_path)
+        return final_path
 
 
 def probe_video(

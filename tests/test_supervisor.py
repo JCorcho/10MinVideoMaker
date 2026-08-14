@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import copy
 from fractions import Fraction
+import hashlib
+import json
 import os
 from pathlib import Path
 import tempfile
@@ -18,6 +20,7 @@ from tenminvideomaker.continuation_renderer import (
     ContinuationRenderError,
 )
 from tenminvideomaker.contracts import parse_job_payload
+from tenminvideomaker.qc_contracts import QcCandidateState, QcTier
 from tenminvideomaker.delivery import DiscordDeliverySettings
 from tenminvideomaker.state_store import (
     ManualFinalSceneSelection,
@@ -31,6 +34,7 @@ from tenminvideomaker.supervisor import (
     PipelineSupervisor,
     SupervisorSettings,
 )
+from tenminvideomaker.review import scene_review_document
 
 from test_contracts import payload
 
@@ -39,10 +43,21 @@ class FakeMailClient:
     def __init__(self):
         self.requests = []
         self.unread_messages = []
+        self.sent_request_ids = set()
+        self.actual_send_count = 0
 
-    def send_request(self, *, previous_job_id=None, succeeded=None):
+    def send_request(self, *, previous_job_id=None, succeeded=None, request_id=None):
         self.requests.append((previous_job_id, succeeded))
-        return "message-id"
+        self.actual_send_count += 1
+        if request_id is not None:
+            self.sent_request_ids.add(request_id)
+        return f"message-id-{request_id or 'legacy'}"
+
+    def request_was_sent(self, request_id):
+        return request_id in self.sent_request_ids
+
+    def request_message_id(self, request_id):
+        return f"message-id-{request_id}"
 
     def unread_pipeline_messages(self):
         return list(self.unread_messages)
@@ -141,13 +156,39 @@ class FakeComfy:
 
 class FakeAssembler:
     def __init__(self, final_path: Path):
-        self.final_path = final_path
+        self._final_path = final_path
         self.calls = []
+
+    def final_path(self, job_id):
+        del job_id
+        return self._final_path
 
     def stitch(self, job_id, clips, concat_directory):
         self.calls.append((job_id, list(clips), Path(concat_directory)))
-        self.final_path.write_bytes(b"final")
-        return self.final_path
+        self._final_path.write_bytes(b"final")
+        return self._final_path
+
+    def stitch_qc_plan(
+        self,
+        job_id,
+        clips,
+        concat_directory,
+        *,
+        checkpoint_directory,
+        plan_sha256,
+    ):
+        workspace = Path(checkpoint_directory) / job_id / plan_sha256
+        receipt = workspace / "assembly.json"
+        if not receipt.is_file():
+            workspace.mkdir(parents=True, exist_ok=True)
+            self.stitch(job_id, clips, concat_directory)
+            receipt.write_text(
+                json.dumps({"artifact_sha256": hashlib.sha256(b"final").hexdigest()}),
+                encoding="utf-8",
+            )
+        elif not self._final_path.is_file():
+            self._final_path.write_bytes(b"final")
+        return self._final_path
 
 
 class RetryOnceComfy(FakeComfy):
@@ -244,6 +285,53 @@ class StageRecordingComfy(FakeComfy):
 
 
 class SupervisorTests(unittest.TestCase):
+    @staticmethod
+    def _accept_qc_scenes(store, job, root):
+        selection = []
+        for scene in sorted(job.scenes, key=lambda item: item.scene_id):
+            clip = root / f"scene-{scene.scene_id}.mp4"
+            clip.write_bytes(f"scene-{scene.scene_id}".encode())
+            store.set_scene_state(
+                job.job_id,
+                scene.scene_id,
+                SceneState.SUCCEEDED,
+                video_path=str(clip),
+            )
+            store.ensure_original_scene_revision(
+                job.job_id,
+                scene.scene_id,
+                parameters=scene_review_document(job, scene),
+                video_path=str(clip),
+            )
+            candidate = store.ensure_qc_candidate(
+                candidate_id=f"accepted-{scene.scene_id}",
+                job_id=job.job_id,
+                scene_id=scene.scene_id,
+                revision=1,
+                tier=QcTier.ORIGINAL,
+                parent_candidate_id=None,
+                source_video_path=str(clip),
+                source_video_sha256=hashlib.sha256(clip.read_bytes()).hexdigest(),
+                original_prompt=scene.i2v.prompt,
+                current_prompt=scene.i2v.prompt,
+                original_seed=scene.i2v.seed,
+                current_seed=scene.i2v.seed,
+                negative_prompt=scene.i2v.negative,
+                negative_prompt_sha256=hashlib.sha256(
+                    scene.i2v.negative.encode()
+                ).hexdigest(),
+                state=QcCandidateState.ACCEPTED,
+                next_action=None,
+            )
+            selection.append(
+                ManualFinalSceneSelection(
+                    scene.scene_id,
+                    candidate.revision,
+                    candidate.source_video_path,
+                )
+            )
+        return tuple(selection)
+
     def test_qc_finalization_uses_deterministic_scene_order_not_payload_order(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
@@ -257,11 +345,8 @@ class SupervisorTests(unittest.TestCase):
             job = parse_job_payload(raw)
             store = PipelineStateStore(root / "pipeline.sqlite3")
             store.claim_job(job)
-            clips = []
-            for scene_id in (1, 2):
-                clip = root / f"scene-{scene_id}.mp4"
-                clip.write_bytes(f"scene-{scene_id}".encode())
-                clips.append(clip)
+            selection = self._accept_qc_scenes(store, job, root)
+            clips = [Path(item.video_path) for item in selection]
             assembler = FakeAssembler(root / "final.mp4")
             mail = FakeMailClient()
             supervisor = PipelineSupervisor(
@@ -278,15 +363,137 @@ class SupervisorTests(unittest.TestCase):
                     Fraction(24, 1),
                 ),
             )
-            selection = tuple(
-                ManualFinalSceneSelection(index, 1, str(clips[index - 1]))
-                for index in (1, 2)
-            )
-
             supervisor._finalize_qc_job(job, selection)
 
             self.assertEqual(assembler.calls[0][1], [str(item) for item in clips])
             self.assertEqual(mail.requests, [(job.job_id, True)])
+
+    def test_qc_disabled_result_uses_baseline_without_committing_qc_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            job = parse_job_payload(payload())
+            store = PipelineStateStore(root / "pipeline.sqlite3")
+            store.claim_job(job)
+            selection = self._accept_qc_scenes(store, job, root)
+            assembler = FakeAssembler(root / "final.mp4")
+            mail = FakeMailClient()
+            supervisor = PipelineSupervisor(
+                store=store,
+                mail_client=mail,
+                asset_manager=FakeAssetManager(),
+                comfy=FakeComfy(root / "unused.png"),
+                assembler=assembler,
+                settings=SupervisorSettings(),
+                qc_controller=SimpleNamespace(
+                    settings=SimpleNamespace(quality_control_enabled=False)
+                ),
+                video_probe=lambda path: VideoStreamInfo(
+                    Path(path), PRODUCTION_WIDTH, PRODUCTION_HEIGHT, Fraction(24, 1)
+                ),
+            )
+
+            supervisor._finalize_qc_result(job, selection)
+
+            self.assertIsNone(store.qc_finalization_plan(job.job_id))
+            self.assertEqual(len(assembler.calls), 1)
+            self.assertEqual(mail.requests, [(job.job_id, True)])
+            self.assertEqual(store.snapshot().state, PipelineState.WAITING_FOR_GROK)
+
+    def test_qc_finalization_resumes_each_crash_boundary_without_duplicate_side_effects(self) -> None:
+        crash_points = (
+            "plan_committed",
+            "after_scene_delivery:1",
+            "deliveries_completed",
+            "after_stitch_artifact",
+            "after_job_success",
+            "after_next_request",
+        )
+        for crash_point in crash_points:
+            with self.subTest(crash_point=crash_point), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                raw = payload()
+                if crash_point == "after_scene_delivery:1":
+                    second = copy.deepcopy(raw["scenes"][0])
+                    second["id"] = 2
+                    second["title"] = "Second accepted scene"
+                    second["t2i"]["seed"] += 1
+                    second["i2v"]["seed"] += 1
+                    raw["scenes"].append(second)
+                job = parse_job_payload(raw)
+                storage = StorageLayout(root / "storage")
+                storage.ensure()
+                store = PipelineStateStore(storage.database_path)
+                store.claim_job(job)
+                selection = self._accept_qc_scenes(store, job, root)
+                assembler = FakeAssembler(root / "final.mp4")
+                mail = FakeMailClient()
+
+                class IdempotentRenderer:
+                    def __init__(self):
+                        self.actual_sends = 0
+                        self.sent = set()
+
+                    def deliver_existing_scene(self, _job, scene, _path, **_kwargs):
+                        if scene.scene_id not in self.sent:
+                            self.sent.add(scene.scene_id)
+                            self.actual_sends += 1
+                        return SimpleNamespace(
+                            status="sent", prompt_id=f"prompt-{scene.scene_id}"
+                        )
+
+                renderer = IdempotentRenderer()
+                fired = []
+
+                def crash_hook(point):
+                    if point == crash_point and not fired:
+                        fired.append(point)
+                        raise RuntimeError(f"crash at {point}")
+
+                def build(hook=None):
+                    supervisor = PipelineSupervisor(
+                        store=store,
+                        mail_client=mail,
+                        asset_manager=FakeAssetManager(),
+                        comfy=FakeComfy(root / "unused.png"),
+                        assembler=assembler,
+                        settings=SupervisorSettings(),
+                        storage=storage,
+                        delivery=DiscordDeliverySettings(
+                            "https://discord.com/api/webhooks/123456789/test-token"
+                        ),
+                        video_probe=lambda path: VideoStreamInfo(
+                            Path(path), PRODUCTION_WIDTH, PRODUCTION_HEIGHT, Fraction(24, 1)
+                        ),
+                        qc_finalization_checkpoint_hook=hook,
+                    )
+                    supervisor.continuation_renderer = renderer
+                    return supervisor
+
+                with self.assertRaisesRegex(RuntimeError, "crash at"):
+                    build(crash_hook)._finalize_qc_job(job, selection)
+
+                build().tick()
+
+                self.assertEqual(renderer.actual_sends, len(job.scenes))
+                self.assertEqual(len(assembler.calls), 1)
+                self.assertEqual(mail.actual_send_count, 1)
+                self.assertEqual(store.snapshot().state, PipelineState.WAITING_FOR_GROK)
+                self.assertEqual(store.list_jobs()[0].status.value, "succeeded")
+                plan = store.qc_finalization_plan(job.job_id)
+                self.assertEqual(plan.state, "COMPLETED")
+                self.assertEqual(
+                    plan.final_sha256,
+                    hashlib.sha256(b"final").hexdigest(),
+                )
+                delivery_steps = [
+                    item
+                    for item in store.qc_finalization_steps(job.job_id)
+                    if item.kind == "SCENE_DELIVERY"
+                ]
+                self.assertEqual(len(delivery_steps), len(job.scenes))
+                self.assertTrue(
+                    all(item.receipt["prompt_id"] for item in delivery_steps)
+                )
 
     def test_qc_enabled_inserts_epoch_after_complete_i2v_batch_and_blocks_stitch(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

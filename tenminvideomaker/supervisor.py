@@ -129,6 +129,7 @@ class PipelineSupervisor:
         storage: StorageLayout | None = None,
         chunk_assembler: SceneChunkAssembler | None = None,
         qc_controller: Any | None = None,
+        qc_finalization_checkpoint_hook: Callable[[str], None] | None = None,
     ):
         self.store = store
         self.mail_client = mail_client
@@ -145,6 +146,9 @@ class PipelineSupervisor:
         self.storage = storage
         self.chunk_assembler = chunk_assembler or SceneChunkAssembler()
         self.qc_controller = qc_controller
+        self._qc_finalization_checkpoint_hook = (
+            qc_finalization_checkpoint_hook or (lambda _point: None)
+        )
         self.continuation_renderer = (
             ContinuationRenderer(
                 store=self.store,
@@ -220,6 +224,14 @@ class PipelineSupervisor:
                 snapshot.error or "incomplete pre-QC scene set",
             )
             return
+        if snapshot.state == PipelineState.STITCHING and snapshot.job_id:
+            plan = self.store.qc_finalization_plan(snapshot.job_id)
+            if plan is not None:
+                self._finalize_qc_job(
+                    self.store.load_job(snapshot.job_id),
+                    (),
+                )
+                return
         if snapshot.state in {
             PipelineState.RUNNING_QC,
             PipelineState.AWAITING_QC_REVIEW,
@@ -235,7 +247,7 @@ class PipelineSupervisor:
             job = self.store.load_job(snapshot.job_id)
             result = self.qc_controller.run_epoch(job, self)
             if result.ready_for_finalization:
-                self._finalize_qc_job(job, result.selection)
+                self._finalize_qc_result(job, result.selection)
             return
         if not snapshot.job_id:
             raise FatalPipelineError(f"Pipeline state {snapshot.state} has no active job id.")
@@ -464,7 +476,7 @@ class PipelineSupervisor:
             self.store.transition(PipelineState.RUNNING_QC, job_id=job.job_id)
             result = self.qc_controller.run_epoch(job, self)
             if result.ready_for_finalization:
-                self._finalize_qc_job(job, result.selection)
+                self._finalize_qc_result(job, result.selection)
             return
 
         try:
@@ -635,18 +647,260 @@ class PipelineSupervisor:
         job: JobPayload,
         selection: Sequence[ManualFinalSceneSelection],
     ) -> None:
-        """Deliver and assemble only the controller's deterministic selection."""
+        """Resume the accepted-selection plan without replaying external effects."""
+        required = tuple(sorted(scene.scene_id for scene in job.scenes))
+        existing_plan = self.store.qc_finalization_plan(job.job_id)
+        if existing_plan is None:
+            if tuple(item.scene_id for item in selection) != required:
+                raise FatalPipelineError(
+                    "QC finalization selection does not contain every required scene."
+                )
+            try:
+                final_path = str(self.assembler.final_path(job.job_id))
+            except (AttributeError, AssemblyError) as error:
+                raise FatalPipelineError(
+                    "QC finalization requires a deterministic final artifact path."
+                ) from error
+        else:
+            final_path = existing_plan.final_path
+        plan = self.store.ensure_qc_finalization_plan(
+            job.job_id,
+            required,
+            final_path=final_path,
+        )
+        planned_selection = tuple(
+            ManualFinalSceneSelection(
+                int(item["scene_id"]),
+                int(item["revision"]),
+                str(item["artifact_path"]),
+            )
+            for item in plan.selection
+        )
+        if selection and tuple(selection) != planned_selection:
+            raise FatalPipelineError(
+                "QC finalization selection differs from its durable committed plan."
+            )
+        if plan.state == "COMPLETED":
+            self.store.transition(PipelineState.WAITING_FOR_GROK, job_id=job.job_id)
+            return
+        self.store.transition(PipelineState.STITCHING, job_id=job.job_id)
+        self._qc_finalization_checkpoint_hook("plan_committed")
+        self.store.advance_qc_finalization_plan(job.job_id, "DELIVERING")
+        for item, selected in zip(plan.selection, planned_selection, strict=True):
+            step_key = f"deliver-scene-{selected.scene_id}"
+            step = self.store.begin_qc_finalization_step(
+                job.job_id,
+                step_key,
+                kind="SCENE_DELIVERY",
+                evidence={
+                    "candidate_id": item["candidate_id"],
+                    "scene_id": selected.scene_id,
+                    "revision": selected.revision,
+                    "artifact_path": selected.video_path,
+                    "artifact_sha256": item["artifact_sha256"],
+                },
+            )
+            if step.state == "COMPLETED":
+                continue
+            delivery_result: Any = False
+            if self.delivery is not None:
+                candidate_revision = next(
+                    revision
+                    for revision in self.store.scene_revisions(
+                        job.job_id, selected.scene_id
+                    )
+                    if revision.revision == selected.revision
+                )
+                validated = validate_scene_edit(
+                    job, selected.scene_id, candidate_revision.parameters
+                )
+                delivery_result = self.deliver_scene_video(
+                    job=validated.job,
+                    scene=validated.scene,
+                    scene_path=selected.video_path,
+                    revision=selected.revision,
+                    overrides=validated.workflow,
+                )
+                self._release_memory()
+            self._qc_finalization_checkpoint_hook(
+                f"after_scene_delivery:{selected.scene_id}"
+            )
+            self.store.complete_qc_finalization_step(
+                job.job_id,
+                step_key,
+                receipt={
+                    "status": (
+                        str(getattr(delivery_result, "status", "sent_or_reconciled"))
+                        if delivery_result
+                        else "not_configured_or_failed"
+                    ),
+                    "prompt_id": getattr(delivery_result, "prompt_id", None),
+                    "reused_prompt": getattr(delivery_result, "reused_prompt", None),
+                    "delivery_marker_owned_by": "continuation_renderer",
+                },
+            )
+        self.store.advance_qc_finalization_plan(job.job_id, "DELIVERED")
+        self._qc_finalization_checkpoint_hook("deliveries_completed")
+
+        stitch_step = self.store.begin_qc_finalization_step(
+            job.job_id,
+            "assemble-final",
+            kind="ASSEMBLY",
+            evidence={
+                "plan_sha256": plan.plan_sha256,
+                "ordered_artifact_sha256": [
+                    item["artifact_sha256"] for item in plan.selection
+                ],
+                "final_path": plan.final_path,
+            },
+        )
+        self.store.advance_qc_finalization_plan(job.job_id, "STITCHING")
+        try:
+            if stitch_step.state == "COMPLETED":
+                receipt = stitch_step.receipt or {}
+                assembled_path = Path(str(receipt["final_path"]))
+                if (
+                    not assembled_path.is_file()
+                    or self._sha256_path(assembled_path) != receipt["final_sha256"]
+                ):
+                    raise AssemblyError(
+                        "Durably checkpointed QC final artifact changed."
+                    )
+            else:
+                streams = [
+                    self._video_probe(item.video_path) for item in planned_selection
+                ]
+                validate_video_profile(streams)
+                assembled_path = self.assembler.stitch_qc_plan(
+                    job.job_id,
+                    [item.video_path for item in planned_selection],
+                    self.store.database_path.parent / "concat",
+                    checkpoint_directory=(
+                        self.store.database_path.parent / "qc-finalization"
+                    ),
+                    plan_sha256=plan.plan_sha256,
+                )
+                self._qc_finalization_checkpoint_hook("after_stitch_artifact")
+                final_sha256 = self._sha256_path(assembled_path)
+                stitch_step = self.store.complete_qc_finalization_step(
+                    job.job_id,
+                    "assemble-final",
+                    receipt={
+                        "final_path": str(Path(assembled_path).resolve()),
+                        "final_sha256": final_sha256,
+                        "plan_sha256": plan.plan_sha256,
+                    },
+                )
+        except AssemblyError as error:
+            message = f"Assembly failed for QC job {job.job_id}: {error}"
+            self.store.transition(PipelineState.ERROR, job_id=job.job_id, error=message)
+            self.store.set_job_status(job.job_id, JobState.FAILED)
+            self._release_memory()
+            return
+        final_sha256 = str((stitch_step.receipt or {})["final_sha256"])
+        plan = self.store.advance_qc_finalization_plan(
+            job.job_id,
+            "STITCHED",
+            final_sha256=final_sha256,
+        )
+        self.store.set_job_status(
+            job.job_id, JobState.SUCCEEDED, final_path=str(assembled_path)
+        )
+        plan = self.store.advance_qc_finalization_plan(
+            job.job_id,
+            "JOB_COMMITTED",
+            final_sha256=final_sha256,
+        )
+        self._release_memory()
+        self._qc_finalization_checkpoint_hook("after_job_success")
+
+        request_id = f"qc-finalization-{plan.plan_sha256}"
+        request_step = self.store.begin_qc_finalization_step(
+            job.job_id,
+            "request-next-job",
+            kind="NEXT_JOB_REQUEST",
+            evidence={
+                "request_id": request_id,
+                "previous_job_id": job.job_id,
+                "succeeded": True,
+            },
+        )
+        plan = self.store.advance_qc_finalization_plan(
+            job.job_id,
+            "NEXT_REQUEST_INTENT",
+            next_request_id=request_id,
+        )
+        if request_step.state != "COMPLETED":
+            already_sent = self.mail_client.request_was_sent(request_id)
+            if already_sent:
+                message_id = self.mail_client.request_message_id(request_id)
+            elif request_step.state == "DISPATCHING":
+                LOGGER.warning(
+                    "QC next-job request %s is dispatch-ambiguous and is not yet "
+                    "observable in Gmail; refusing an automatic resend.",
+                    request_id,
+                )
+                return
+            else:
+                self.store.mark_qc_finalization_step_dispatching(
+                    job.job_id,
+                    "request-next-job",
+                )
+                message_id = self.mail_client.send_request(
+                    previous_job_id=job.job_id,
+                    succeeded=True,
+                    request_id=request_id,
+                )
+                self._qc_finalization_checkpoint_hook("after_next_request")
+            request_step = self.store.complete_qc_finalization_step(
+                job.job_id,
+                "request-next-job",
+                receipt={
+                    "request_id": request_id,
+                    "message_id": message_id,
+                },
+            )
+        message_id = str((request_step.receipt or {})["message_id"])
+        self.store.advance_qc_finalization_plan(
+            job.job_id,
+            "COMPLETED",
+            final_sha256=final_sha256,
+            next_request_id=request_id,
+            next_request_receipt=message_id,
+        )
+        self.store.transition(PipelineState.WAITING_FOR_GROK, job_id=job.job_id)
+
+    def _finalize_qc_result(
+        self,
+        job: JobPayload,
+        selection: Sequence[ManualFinalSceneSelection],
+    ) -> None:
+        if (
+            self.qc_controller is not None
+            and not self.qc_controller.settings.quality_control_enabled
+        ):
+            self._finalize_qc_disabled_selection(job, selection)
+            return
+        self._finalize_qc_job(job, selection)
+
+    def _finalize_qc_disabled_selection(
+        self,
+        job: JobPayload,
+        selection: Sequence[ManualFinalSceneSelection],
+    ) -> None:
+        """Preserve the pre-QC finalization path for the snapshotted baseline."""
         required = tuple(sorted(scene.scene_id for scene in job.scenes))
         if tuple(item.scene_id for item in selection) != required:
             raise FatalPipelineError(
-                "QC finalization selection does not contain every required scene."
+                "QC kill-switch selection does not contain every required scene."
             )
-        scene_by_id = {scene.scene_id: scene for scene in job.scenes}
         if self.delivery is not None:
             for item in selection:
                 candidate_revision = next(
                     revision
-                    for revision in self.store.scene_revisions(job.job_id, item.scene_id)
+                    for revision in self.store.scene_revisions(
+                        job.job_id, item.scene_id
+                    )
                     if revision.revision == item.revision
                 )
                 validated = validate_scene_edit(
@@ -670,13 +924,15 @@ class PipelineSupervisor:
                 self.store.database_path.parent / "concat",
             )
         except AssemblyError as error:
-            message = f"Assembly failed for QC job {job.job_id}: {error}"
+            message = f"Assembly failed for kill-switched QC job {job.job_id}: {error}"
             self.store.transition(PipelineState.ERROR, job_id=job.job_id, error=message)
             self.store.set_job_status(job.job_id, JobState.FAILED)
             self._release_memory()
             return
         self.store.set_job_status(
-            job.job_id, JobState.SUCCEEDED, final_path=str(assembled_path)
+            job.job_id,
+            JobState.SUCCEEDED,
+            final_path=str(assembled_path),
         )
         self._release_memory()
         self._request_next_job(previous_job_id=job.job_id, succeeded=True)
@@ -686,7 +942,7 @@ class PipelineSupervisor:
         job: JobPayload,
         scene_by_id: Mapping[int, SceneSpec],
         resolved_lora_filenames: Mapping[str, str],
-    ) -> bool:
+    ) -> Any:
         LOGGER.info(
             "Job %s: generating all required T2I frames before loading LTX.",
             job.job_id,
@@ -1232,7 +1488,7 @@ class PipelineSupervisor:
             )
         for delivery_attempt in range(1, 3):
             try:
-                self.continuation_renderer.deliver_existing_scene(
+                result = self.continuation_renderer.deliver_existing_scene(
                     job,
                     scene,
                     scene_path,
@@ -1240,7 +1496,7 @@ class PipelineSupervisor:
                     overrides=overrides,
                     prompt_id_callback=prompt_id_callback,
                 )
-                return True
+                return result or True
             except ContinuationDeliveryError as error:
                 if delivery_attempt < 2:
                     LOGGER.warning(

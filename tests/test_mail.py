@@ -189,6 +189,57 @@ class MailTests(unittest.TestCase):
         self.assertIn(f"exact subject {PIPELINE_RESPONSE_SUBJECT}", message.get_content())
         self.assertIn("Do not reply", message.get_content())
 
+    def test_qc_request_id_produces_stable_message_id(self) -> None:
+        first = build_pipeline_request(
+            self.settings,
+            previous_job_id="job-1",
+            succeeded=True,
+            request_id="qc-finalization-plan-123",
+        )
+        second = build_pipeline_request(
+            self.settings,
+            previous_job_id="job-1",
+            succeeded=True,
+            request_id="qc-finalization-plan-123",
+        )
+
+        self.assertEqual(first["Message-ID"], second["Message-ID"])
+        self.assertIn("tenmin-qc-", first["Message-ID"])
+
+    def test_qc_sent_reconciliation_searches_all_mail_by_stable_message_id(self) -> None:
+        calls = []
+
+        class FakeImap:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def login(self, _username, _secret):
+                return "OK", [b"authenticated"]
+
+            def select(self, mailbox, readonly=False):
+                calls.append(("SELECT", mailbox, readonly))
+                return "OK", [b"1"]
+
+            def uid(self, command, *arguments):
+                calls.append((command, *arguments))
+                return "OK", [b"91"]
+
+        with patch("tenminvideomaker.mail.imaplib.IMAP4_SSL", FakeImap):
+            found = GmailClient(self.settings).request_was_sent(
+                "qc-finalization-plan-123"
+            )
+
+        self.assertTrue(found)
+        self.assertEqual(calls[0], ("SELECT", "[Gmail]/All Mail", True))
+        self.assertEqual(calls[1][0], "SEARCH")
+        self.assertIn("Message-ID", calls[1])
+
     def test_imap_searches_for_unread_exact_completion_subject(self) -> None:
         exact = EmailMessage()
         exact["From"] = "owner@example.com"

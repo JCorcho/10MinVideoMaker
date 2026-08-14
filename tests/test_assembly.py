@@ -45,6 +45,39 @@ class AssemblyTests(unittest.TestCase):
         self.assertEqual(output, output_root / "job-1_final.mp4")
         self.assertTrue(output.is_file())
 
+    def test_qc_plan_stitch_reuses_checkpointed_artifact_after_restart(self) -> None:
+        output_root = self.root / "finals"
+        runs = []
+
+        def runner(command, **_kwargs):
+            runs.append(command)
+            Path(command[-1]).write_bytes(b"stable-qc-final")
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        first = FfmpegAssembler(output_root, runner=runner)
+        output = first.stitch_qc_plan(
+            "job-1",
+            [self.clip],
+            self.root / "runtime",
+            checkpoint_directory=self.root / "qc-finalization",
+            plan_sha256="a" * 64,
+        )
+        expected_bytes = output.read_bytes()
+        restarted = FfmpegAssembler(output_root, runner=runner)
+        replay = restarted.stitch_qc_plan(
+            "job-1",
+            [self.clip],
+            self.root / "runtime",
+            checkpoint_directory=self.root / "qc-finalization",
+            plan_sha256="a" * 64,
+        )
+
+        self.assertEqual(replay, output)
+        self.assertEqual(output.read_bytes(), expected_bytes)
+        self.assertEqual(len(runs), 1)
+        receipt = self.root / "qc-finalization" / "job-1" / ("a" * 64) / "assembly.json"
+        self.assertTrue(receipt.is_file())
+
     def test_final_path_rejects_traversal(self) -> None:
         with self.assertRaises(AssemblyError):
             FfmpegAssembler(self.root).final_path("../job")

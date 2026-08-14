@@ -2189,6 +2189,94 @@ class StateStoreTests(unittest.TestCase):
         with self.assertRaisesRegex(StateTransitionError, "hash"):
             self.store.qc_final_selection(candidate.job_id, [candidate.scene_id])
 
+    def test_qc_finalization_plan_snapshots_accepted_candidate_and_artifact(self) -> None:
+        candidate = self._create_qc_candidate()
+        self._complete_pass_for_candidate(candidate.candidate_id)
+        self._await_qc_review()
+        self.store.decide_qc_candidate(
+            job_id=candidate.job_id,
+            scene_id=candidate.scene_id,
+            candidate_id=candidate.candidate_id,
+            decision=QcHumanDecision.APPROVE,
+            note=None,
+        )
+        final_path = Path(self.temporary_directory.name) / "final.mp4"
+
+        plan = self.store.ensure_qc_finalization_plan(
+            candidate.job_id,
+            [candidate.scene_id],
+            final_path=str(final_path),
+        )
+        restarted = PipelineStateStore(self.store.database_path)
+        replay = restarted.ensure_qc_finalization_plan(
+            candidate.job_id,
+            [candidate.scene_id],
+            final_path=str(final_path),
+        )
+
+        self.assertEqual(plan, replay)
+        self.assertEqual(plan.state, "PLAN_COMMITTED")
+        self.assertEqual(plan.selection[0]["candidate_id"], candidate.candidate_id)
+        self.assertEqual(plan.selection[0]["revision"], candidate.revision)
+        self.assertEqual(
+            plan.selection[0]["artifact_sha256"],
+            candidate.source_video_sha256,
+        )
+        self.assertEqual(plan.final_path, str(final_path))
+
+    def test_qc_finalization_steps_are_idempotent_and_evidence_locked(self) -> None:
+        candidate = self._create_qc_candidate()
+        self._complete_pass_for_candidate(candidate.candidate_id)
+        self._await_qc_review()
+        self.store.decide_qc_candidate(
+            job_id=candidate.job_id,
+            scene_id=candidate.scene_id,
+            candidate_id=candidate.candidate_id,
+            decision=QcHumanDecision.APPROVE,
+            note=None,
+        )
+        self.store.ensure_qc_finalization_plan(
+            candidate.job_id,
+            [candidate.scene_id],
+            final_path=str(Path(self.temporary_directory.name) / "final.mp4"),
+        )
+        evidence = {"candidate_id": candidate.candidate_id, "scene_id": 1}
+
+        intent = self.store.begin_qc_finalization_step(
+            candidate.job_id,
+            "deliver-scene-1",
+            kind="SCENE_DELIVERY",
+            evidence=evidence,
+        )
+        replay = self.store.begin_qc_finalization_step(
+            candidate.job_id,
+            "deliver-scene-1",
+            kind="SCENE_DELIVERY",
+            evidence=evidence,
+        )
+        complete = self.store.complete_qc_finalization_step(
+            candidate.job_id,
+            "deliver-scene-1",
+            receipt={"status": "sent", "prompt_id": "owned-prompt"},
+        )
+        complete_replay = self.store.complete_qc_finalization_step(
+            candidate.job_id,
+            "deliver-scene-1",
+            receipt={"status": "sent", "prompt_id": "owned-prompt"},
+        )
+
+        self.assertEqual(intent, replay)
+        self.assertEqual(intent.state, "INTENT")
+        self.assertEqual(complete, complete_replay)
+        self.assertEqual(complete.state, "COMPLETED")
+        with self.assertRaisesRegex(StateTransitionError, "immutable"):
+            self.store.begin_qc_finalization_step(
+                candidate.job_id,
+                "deliver-scene-1",
+                kind="SCENE_DELIVERY",
+                evidence={"candidate_id": "changed"},
+            )
+
     def test_cancel_terminalizes_pending_qc_and_rejects_stale_approval(self) -> None:
         candidate = self._create_qc_candidate()
         self._complete_pass_for_candidate(candidate.candidate_id)
