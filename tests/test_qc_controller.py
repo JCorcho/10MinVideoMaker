@@ -350,6 +350,110 @@ class Phase1QcControllerRoutingTests(unittest.TestCase):
         self.assertEqual(original.revision, selected_revision)
         self.assertEqual(original.source_video_path, str(selected_video))
 
+    def test_selector_matrix_keeps_baseline_accepted_and_plan_identities_distinct(self) -> None:
+        baseline_revision, baseline_video, baseline_document = self._successful_remake(
+            name="legacy-baseline",
+            prompt="Operator-selected pre-QC continuation prompt.",
+            seed=808,
+        )
+        original = self.controller().register_original_candidates(self.job)[0]
+        a1_revision, a1_video, a1_document = self._successful_remake(
+            name="a1-candidate",
+            prompt=baseline_document["i2v"]["prompt"],
+            seed=809,
+        )
+        a1 = self.store.ensure_qc_candidate(
+            candidate_id="matrix-a1",
+            job_id=self.job.job_id,
+            scene_id=1,
+            revision=a1_revision,
+            tier=QcTier.A1,
+            parent_candidate_id=original.candidate_id,
+            source_video_path=str(a1_video),
+            source_video_sha256=hashlib.sha256(a1_video.read_bytes()).hexdigest(),
+            original_prompt=baseline_document["i2v"]["prompt"],
+            current_prompt=a1_document["i2v"]["prompt"],
+            original_seed=808,
+            current_seed=809,
+            negative_prompt=a1_document["i2v"]["negative"],
+            negative_prompt_sha256=hashlib.sha256(
+                a1_document["i2v"]["negative"].encode()
+            ).hexdigest(),
+            state=QcCandidateState.ACCEPTED,
+            next_action=None,
+        )
+        b1_revision, b1_video, b1_document = self._successful_remake(
+            name="b1-candidate",
+            prompt="B1 normalized repair prompt.",
+            seed=810,
+        )
+        b1 = self.store.ensure_qc_candidate(
+            candidate_id="matrix-b1",
+            job_id=self.job.job_id,
+            scene_id=1,
+            revision=b1_revision,
+            tier=QcTier.B1,
+            parent_candidate_id=a1.candidate_id,
+            source_video_path=str(b1_video),
+            source_video_sha256=hashlib.sha256(b1_video.read_bytes()).hexdigest(),
+            original_prompt=baseline_document["i2v"]["prompt"],
+            current_prompt=b1_document["i2v"]["prompt"],
+            original_seed=808,
+            current_seed=810,
+            negative_prompt=b1_document["i2v"]["negative"],
+            negative_prompt_sha256=hashlib.sha256(
+                b1_document["i2v"]["negative"].encode()
+            ).hexdigest(),
+            state=QcCandidateState.HOLD_FOR_REVIEW,
+            next_action="hold_for_review",
+        )
+
+        legacy_baseline = self.store.original_final_selection(self.job.job_id, [1])
+        accepted_a1 = self.store.qc_final_selection(self.job.job_id, [1])
+        kill_switch = self.store.queue_manual_final(
+            self.job.job_id,
+            quality_control_enabled=False,
+        )
+        plan = self.store.ensure_qc_finalization_plan(
+            self.job.job_id,
+            [1],
+            final_path=str(self.root / "matrix-final.mp4"),
+        )
+        self.store.set_qc_candidate_state(
+            a1.candidate_id,
+            QcCandidateState.SUPERSEDED,
+            next_action=None,
+        )
+        self.store.set_qc_candidate_state(
+            b1.candidate_id,
+            QcCandidateState.ACCEPTED,
+            next_action=None,
+        )
+        self.store.promote_accepted_qc_candidate(b1.candidate_id)
+
+        self.assertEqual(baseline_revision, 2)
+        self.assertEqual(legacy_baseline[0].revision, baseline_revision)
+        self.assertEqual(legacy_baseline[0].video_path, str(baseline_video))
+        self.assertEqual(accepted_a1[0].revision, a1_revision)
+        self.assertEqual(
+            self.store.manual_final_selection(kill_switch.request_id)[0],
+            legacy_baseline[0],
+        )
+        self.assertEqual(self.store.qc_final_selection(self.job.job_id, [1])[0].revision, b1_revision)
+        self.assertEqual(plan.selection[0]["candidate_id"], a1.candidate_id)
+        self.assertEqual(
+            self.store.ensure_qc_finalization_plan(
+                self.job.job_id,
+                [1],
+                final_path=str(self.root / "matrix-final.mp4"),
+            ).selection[0]["candidate_id"],
+            a1.candidate_id,
+        )
+        self.assertEqual(
+            self.store.original_final_selection(self.job.job_id, [1])[0].revision,
+            baseline_revision,
+        )
+
     def _evaluation(
         self,
         candidate_id: str,
