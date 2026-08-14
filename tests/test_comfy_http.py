@@ -7,7 +7,6 @@ from tenminvideomaker.comfy_http import (
     ComfyHttpClient,
     ComfyHttpError,
     ComfyPromptDispatchAmbiguousError,
-    ComfyPromptRejectedError,
     find_video_output,
 )
 
@@ -22,14 +21,20 @@ class ComfyHttpTests(unittest.TestCase):
             with self.assertRaises(ComfyPromptDispatchAmbiguousError):
                 client.queue_prompt({"1": {"class_type": "Test", "inputs": {}}})
 
-    def test_prompt_response_without_id_is_definitively_rejected(self) -> None:
+    def test_prompt_response_without_id_is_acceptance_ambiguous(self) -> None:
         client = ComfyHttpClient()
         with patch.object(
             client,
             "_json_request",
             return_value={"node_errors": {"1": "invalid input"}},
         ):
-            with self.assertRaises(ComfyPromptRejectedError):
+            with self.assertRaises(ComfyPromptDispatchAmbiguousError):
+                client.queue_prompt({"1": {"class_type": "Test", "inputs": {}}})
+
+    def test_empty_prompt_response_is_acceptance_ambiguous(self) -> None:
+        client = ComfyHttpClient()
+        with patch.object(client, "_json_request", return_value={}):
+            with self.assertRaises(ComfyPromptDispatchAmbiguousError):
                 client.queue_prompt({"1": {"class_type": "Test", "inputs": {}}})
 
     def test_finds_nested_vhs_video_metadata(self) -> None:

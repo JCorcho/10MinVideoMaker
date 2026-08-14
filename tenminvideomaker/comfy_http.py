@@ -119,9 +119,9 @@ class ComfyHttpClient:
         )
         prompt_id = response.get("prompt_id")
         if not isinstance(prompt_id, str) or not prompt_id:
-            node_errors = response.get("node_errors")
-            raise ComfyPromptRejectedError(
-                f"ComfyUI did not accept the prompt: {node_errors or response}"
+            raise ComfyPromptDispatchAmbiguousError(
+                "ComfyUI POST /prompt returned without an authoritative prompt ID; "
+                "acceptance cannot be disproved."
             )
         return prompt_id
 
