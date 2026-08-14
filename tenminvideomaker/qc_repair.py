@@ -88,6 +88,17 @@ def _exact_keys(value: Mapping[str, Any], expected: set[str], field: str) -> Non
         )
 
 
+def _parsed_patch_evidence(raw_text: str) -> Mapping[str, Any]:
+    try:
+        value = _strict_json_object(raw_text)
+    except B1PatchValidationError:
+        return {}
+    patch = value.get("patch")
+    if not isinstance(patch, Mapping):
+        return {}
+    return json.loads(canonical_json(patch))
+
+
 def parse_and_validate_b1_patch(
     raw_text: str,
     *,
@@ -413,6 +424,7 @@ def schedule_b1_retry(
         manifest_path = layout.qc_repair_manifest_path(
             source.job_id, source.scene_id, source.revision, repair_id
         )
+        parsed_model_patch = _parsed_patch_evidence(raw_output)
         try:
             if planner_failure_reason is not None:
                 raise B1PatchValidationError(planner_failure_reason)
@@ -453,7 +465,7 @@ def schedule_b1_retry(
             validated = None
             result_revision = 0
             result_candidate_id = ""
-            proposed_patch = {}
+            proposed_patch = parsed_model_patch
             status = "REJECTED"
             reason = str(error)
         manifest = {
@@ -465,7 +477,8 @@ def schedule_b1_retry(
             "source_candidate_sha256": source.source_video_sha256,
             "evaluation_id": evaluation_id,
             "raw_response": raw_output,
-            "parsed_patch": proposed_patch,
+            "parsed_patch": parsed_model_patch,
+            "validated_patch": proposed_patch if status == "ACCEPTED" else None,
             "validation_status": status,
             "rejection_reason": reason,
             "derived_seed": str(seed),

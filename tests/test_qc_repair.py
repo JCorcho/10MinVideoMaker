@@ -457,6 +457,54 @@ class B1DurabilityTests(A1RetryTests):
             1,
         )
 
+    def test_rejected_b1_persists_the_parsed_forbidden_patch(self) -> None:
+        a1, document = self._completed_a1_failure()
+        input_hash = "9" * 64
+        parsed_patch = {
+            "i2v": {
+                "prompt": "A minimal corrected hand transition.",
+                "seed": 123,
+            }
+        }
+        raw_output = json.dumps(
+            {
+                "schema_version": 1,
+                "source": {
+                    "candidate_id": a1.candidate_id,
+                    "candidate_sha256": a1.source_video_sha256,
+                    "evaluation_id": "evaluation-a1",
+                    "repair_input_sha256": input_hash,
+                    "source_revision": a1.revision,
+                    "source_document_sha256": hashlib.sha256(
+                        canonical_json(document).encode("utf-8")
+                    ).hexdigest(),
+                },
+                "patch": parsed_patch,
+                "summary": "Invalid model-owned seed proposal.",
+            }
+        )
+
+        result = schedule_b1_retry(
+            self.store,
+            self.layout,
+            original_job=self.job,
+            source_candidate_id=a1.candidate_id,
+            evaluation_id="evaluation-a1",
+            source_document=document,
+            raw_output=raw_output,
+            planner_identity={"backend": "fake"},
+            repair_input_hash=input_hash,
+        )
+
+        self.assertIsNone(result.candidate)
+        self.assertEqual(result.repair.status, "REJECTED")
+        self.assertEqual(result.repair.proposed_patch, parsed_patch)
+        manifest = json.loads(
+            Path(result.repair.evidence_manifest_path).read_text(encoding="utf-8")
+        )
+        self.assertEqual(manifest["parsed_patch"], parsed_patch)
+        self.assertIsNone(manifest["validated_patch"])
+
 
 if __name__ == "__main__":
     unittest.main()
