@@ -7,11 +7,20 @@ from pathlib import Path
 import time
 from typing import Any, Callable, Mapping
 from urllib.parse import urlencode
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 
 class ComfyHttpError(RuntimeError):
     """Raised when ComfyUI rejects, fails, or times out a project prompt."""
+
+
+class ComfyPromptRejectedError(ComfyHttpError):
+    """The /prompt response proves that ComfyUI did not accept the workflow."""
+
+
+class ComfyPromptDispatchAmbiguousError(ComfyHttpError):
+    """Transport failed without proving whether /prompt accepted the workflow."""
 
 
 class ComfyHttpClient:
@@ -44,13 +53,31 @@ class ComfyHttpClient:
         try:
             with urlopen(request, timeout=timeout) as response:
                 content = response.read()
+        except HTTPError as error:
+            if method == "POST" and path == "/prompt" and 400 <= error.code < 500:
+                raise ComfyPromptRejectedError(
+                    f"ComfyUI rejected POST /prompt with HTTP {error.code}."
+                ) from error
+            if method == "POST" and path == "/prompt":
+                raise ComfyPromptDispatchAmbiguousError(
+                    f"ComfyUI POST /prompt may have been accepted: {error}"
+                ) from error
+            raise ComfyHttpError(f"ComfyUI {method} {path} failed: {error}") from error
         except OSError as error:
+            if method == "POST" and path == "/prompt":
+                raise ComfyPromptDispatchAmbiguousError(
+                    f"ComfyUI POST /prompt may have been accepted: {error}"
+                ) from error
             raise ComfyHttpError(f"ComfyUI {method} {path} failed: {error}") from error
         if not content:
             return {}
         try:
             return json.loads(content)
         except json.JSONDecodeError as error:
+            if method == "POST" and path == "/prompt":
+                raise ComfyPromptDispatchAmbiguousError(
+                    "ComfyUI POST /prompt returned invalid JSON after dispatch."
+                ) from error
             raise ComfyHttpError(f"ComfyUI returned invalid JSON for {path}.") from error
 
     def alive(self) -> bool:
@@ -88,14 +115,14 @@ class ComfyHttpClient:
 
     def queue_prompt(self, workflow: Mapping[str, Any]) -> str:
         response = self._json_request(
-            "POST",
-            "/prompt",
-            {"prompt": workflow, "client_id": self.client_id},
+            "POST", "/prompt", {"prompt": workflow, "client_id": self.client_id}
         )
         prompt_id = response.get("prompt_id")
         if not isinstance(prompt_id, str) or not prompt_id:
             node_errors = response.get("node_errors")
-            raise ComfyHttpError(f"ComfyUI did not accept the prompt: {node_errors or response}")
+            raise ComfyPromptRejectedError(
+                f"ComfyUI did not accept the prompt: {node_errors or response}"
+            )
         return prompt_id
 
     def wait_for_prompt(

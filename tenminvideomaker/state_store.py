@@ -3871,7 +3871,7 @@ class PipelineStateStore:
         *,
         receipt: Mapping[str, Any],
     ) -> QcFinalizationStepRecord:
-        receipt_json = _canonical_json(dict(receipt))
+        requested_receipt = dict(receipt)
         self.initialize()
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -3888,6 +3888,14 @@ class PipelineStateStore:
                     "QC finalization step must have durable intent before completion."
                 )
             record = self._qc_finalization_step_record(existing)
+            merged_receipt = dict(record.receipt or {})
+            for key, value in requested_receipt.items():
+                if key in merged_receipt and merged_receipt[key] != value:
+                    raise StateTransitionError(
+                        "Durable QC finalization receipt fields are immutable."
+                    )
+                merged_receipt[key] = value
+            receipt_json = _canonical_json(merged_receipt)
             if record.state == "COMPLETED":
                 if _canonical_json(record.receipt) != receipt_json:
                     raise StateTransitionError(
@@ -3916,8 +3924,28 @@ class PipelineStateStore:
         self,
         job_id: str,
         step_key: str,
+        *,
+        receipt: Mapping[str, Any] | None = None,
     ) -> QcFinalizationStepRecord:
         """Persist the ambiguity boundary immediately before an external send."""
+        return self.set_qc_finalization_step_dispatch_state(
+            job_id,
+            step_key,
+            state="DISPATCHING",
+            receipt=receipt,
+        )
+
+    def set_qc_finalization_step_dispatch_state(
+        self,
+        job_id: str,
+        step_key: str,
+        *,
+        state: str,
+        receipt: Mapping[str, Any] | None = None,
+    ) -> QcFinalizationStepRecord:
+        """Persist prompt binding or a terminal external-dispatch outcome."""
+        if state not in {"DISPATCHING", "AMBIGUOUS", "FAILED"}:
+            raise StateTransitionError("Unknown finalization dispatch state.")
         self.initialize()
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -3932,26 +3960,90 @@ class PipelineStateStore:
             if row is None:
                 raise StateTransitionError("QC finalization dispatch has no intent.")
             record = self._qc_finalization_step_record(row)
-            if record.state == "INTENT":
-                connection.execute(
-                    """
-                    UPDATE qc_finalization_steps
-                    SET state = 'DISPATCHING', updated_at = ?
-                    WHERE job_id = ? AND step_key = ? AND state = 'INTENT'
-                    """,
-                    (_utc_now(), job_id, step_key),
-                )
-                row = connection.execute(
-                    """
-                    SELECT * FROM qc_finalization_steps
-                    WHERE job_id = ? AND step_key = ?
-                    """,
-                    (job_id, step_key),
-                ).fetchone()
-                return self._qc_finalization_step_record(row)
-            if record.state in {"DISPATCHING", "COMPLETED"}:
+            if record.state == "COMPLETED":
                 return record
-            raise StateTransitionError("QC finalization dispatch state is invalid.")
+            if record.state in {"AMBIGUOUS", "FAILED"}:
+                if record.state != state:
+                    raise StateTransitionError(
+                        "Terminal finalization dispatch state is immutable."
+                    )
+            elif record.state == "INTENT" and state != "DISPATCHING":
+                raise StateTransitionError(
+                    "Finalization dispatch must enter DISPATCHING before termination."
+                )
+            elif record.state not in {"INTENT", "DISPATCHING"}:
+                raise StateTransitionError("QC finalization dispatch state is invalid.")
+            merged_receipt = dict(record.receipt or {})
+            for key, value in dict(receipt or {}).items():
+                if key in merged_receipt and merged_receipt[key] != value:
+                    raise StateTransitionError(
+                        "Durable finalization dispatch receipt fields are immutable."
+                    )
+                merged_receipt[key] = value
+            connection.execute(
+                """
+                UPDATE qc_finalization_steps
+                SET state = ?, receipt_json = ?, updated_at = ?
+                WHERE job_id = ? AND step_key = ?
+                """,
+                (
+                    state,
+                    _canonical_json(merged_receipt) if merged_receipt else None,
+                    _utc_now(),
+                    job_id,
+                    step_key,
+                ),
+            )
+            row = connection.execute(
+                """
+                SELECT * FROM qc_finalization_steps
+                WHERE job_id = ? AND step_key = ?
+                """,
+                (job_id, step_key),
+            ).fetchone()
+            return self._qc_finalization_step_record(row)
+
+    def bind_qc_finalization_step_prompt_id(
+        self,
+        job_id: str,
+        step_key: str,
+        prompt_id: str,
+    ) -> QcFinalizationStepRecord:
+        """Append one authoritative ComfyUI prompt ID to a dispatch intent."""
+        prompt_id = _required_text(prompt_id, "prompt_id")
+        self.initialize()
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._assert_active_automatic_job_connection(connection, job_id)
+            row = connection.execute(
+                "SELECT * FROM qc_finalization_steps WHERE job_id = ? AND step_key = ?",
+                (job_id, step_key),
+            ).fetchone()
+            if row is None:
+                raise StateTransitionError("QC finalization dispatch has no intent.")
+            record = self._qc_finalization_step_record(row)
+            if record.state != "DISPATCHING":
+                raise StateTransitionError(
+                    "A prompt ID can bind only to a DISPATCHING finalization step."
+                )
+            receipt = dict(record.receipt or {})
+            prompt_ids = list(receipt.get("prompt_ids") or [])
+            if prompt_id not in prompt_ids:
+                prompt_ids.append(prompt_id)
+            receipt["prompt_ids"] = prompt_ids
+            connection.execute(
+                """
+                UPDATE qc_finalization_steps
+                SET receipt_json = ?, updated_at = ?
+                WHERE job_id = ? AND step_key = ? AND state = 'DISPATCHING'
+                """,
+                (_canonical_json(receipt), _utc_now(), job_id, step_key),
+            )
+            updated = connection.execute(
+                "SELECT * FROM qc_finalization_steps WHERE job_id = ? AND step_key = ?",
+                (job_id, step_key),
+            ).fetchone()
+        return self._qc_finalization_step_record(updated)
 
     def qc_finalization_steps(
         self,

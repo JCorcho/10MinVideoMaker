@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import gc
+import hashlib
 import logging
 import os
 from pathlib import Path
@@ -748,6 +749,12 @@ class PipelineSupervisor:
         self.store.advance_qc_finalization_plan(job.job_id, "DELIVERING")
         for item, selected in zip(plan.selection, planned_selection, strict=True):
             step_key = f"deliver-scene-{selected.scene_id}"
+            operation_id = hashlib.sha256(
+                (
+                    f"{plan.plan_sha256}|SCENE_DELIVERY|{selected.scene_id}|"
+                    f"{selected.revision}|{item['artifact_sha256']}"
+                ).encode("utf-8")
+            ).hexdigest()
             step = self.store.begin_qc_finalization_step(
                 job.job_id,
                 step_key,
@@ -758,30 +765,109 @@ class PipelineSupervisor:
                     "revision": selected.revision,
                     "artifact_path": selected.video_path,
                     "artifact_sha256": item["artifact_sha256"],
+                    "operation_id": operation_id,
                 },
             )
             if step.state == "COMPLETED":
-                continue
-            delivery_result: Any = False
-            if self.delivery is not None:
-                candidate_revision = next(
-                    revision
-                    for revision in self.store.scene_revisions(
-                        job.job_id, selected.scene_id
+                if (step.receipt or {}).get("status") not in {
+                    "CONFIRMED",
+                    "NOT_CONFIGURED",
+                }:
+                    raise FatalPipelineError(
+                        "Completed scene delivery lacks an authoritative receipt."
                     )
-                    if revision.revision == selected.revision
+                continue
+            if step.state in {"AMBIGUOUS", "FAILED"}:
+                message = (
+                    f"Scene {selected.scene_id} delivery is {step.state}; "
+                    "manual reconciliation is required before finalization."
                 )
-                validated = validate_scene_edit(
-                    job, selected.scene_id, candidate_revision.parameters
+                self.store.transition(
+                    PipelineState.QC_BLOCKED, job_id=job.job_id, error=message
                 )
+                return
+            if self.delivery is None:
+                self.store.complete_qc_finalization_step(
+                    job.job_id,
+                    step_key,
+                    receipt={
+                        "status": "NOT_CONFIGURED",
+                        "operation_id": operation_id,
+                    },
+                )
+                continue
+            step = self.store.mark_qc_finalization_step_dispatching(
+                job.job_id,
+                step_key,
+                receipt={"operation_id": operation_id},
+            )
+            prompt_ids = (step.receipt or {}).get("prompt_ids") or []
+            existing_prompt_id = prompt_ids[-1] if prompt_ids else None
+            candidate_revision = next(
+                revision
+                for revision in self.store.scene_revisions(
+                    job.job_id, selected.scene_id
+                )
+                if revision.revision == selected.revision
+            )
+            validated = validate_scene_edit(
+                job, selected.scene_id, candidate_revision.parameters
+            )
+            try:
                 delivery_result = self.deliver_scene_video(
                     job=validated.job,
                     scene=validated.scene,
                     scene_path=selected.video_path,
                     revision=selected.revision,
                     overrides=validated.workflow,
+                    existing_prompt_id=(
+                        str(existing_prompt_id) if existing_prompt_id else None
+                    ),
+                    require_authoritative=True,
+                    prompt_id_callback=lambda prompt_id, step_key=step_key: (
+                        self.store.bind_qc_finalization_step_prompt_id(
+                            job.job_id,
+                            step_key,
+                            prompt_id,
+                        )
+                    ),
+                )
+            except ContinuationDeliveryError as error:
+                self.store.set_qc_finalization_step_dispatch_state(
+                    job.job_id,
+                    step_key,
+                    state=error.state,
+                    receipt={
+                        "operation_id": operation_id,
+                        "failure_reason": str(error),
+                    },
+                )
+                message = (
+                    f"Scene {selected.scene_id} delivery is {error.state}; "
+                    "assembly and mail are blocked pending manual reconciliation."
+                )
+                self.store.transition(
+                    PipelineState.QC_BLOCKED, job_id=job.job_id, error=message
                 )
                 self._release_memory()
+                return
+            self._release_memory()
+            if not delivery_result or not getattr(delivery_result, "prompt_id", None):
+                self.store.set_qc_finalization_step_dispatch_state(
+                    job.job_id,
+                    step_key,
+                    state="FAILED",
+                    receipt={
+                        "operation_id": operation_id,
+                        "failure_reason": "missing_authoritative_delivery_receipt",
+                    },
+                )
+                self.store.transition(
+                    PipelineState.QC_BLOCKED,
+                    job_id=job.job_id,
+                    error="Configured scene delivery returned no authoritative receipt.",
+                )
+                return
             self._qc_finalization_checkpoint_hook(
                 f"after_scene_delivery:{selected.scene_id}"
             )
@@ -789,11 +875,8 @@ class PipelineSupervisor:
                 job.job_id,
                 step_key,
                 receipt={
-                    "status": (
-                        str(getattr(delivery_result, "status", "sent_or_reconciled"))
-                        if delivery_result
-                        else "not_configured_or_failed"
-                    ),
+                    "status": "CONFIRMED",
+                    "operation_id": operation_id,
                     "prompt_id": getattr(delivery_result, "prompt_id", None),
                     "reused_prompt": getattr(delivery_result, "reused_prompt", None),
                     "delivery_marker_owned_by": "continuation_renderer",
@@ -1538,27 +1621,36 @@ class PipelineSupervisor:
         revision: int,
         overrides: SceneWorkflowOverrides | None = None,
         prompt_id_callback: Callable[[str], None] | None = None,
+        existing_prompt_id: str | None = None,
+        require_authoritative: bool = False,
     ) -> bool:
         """Send a Discord-only copy after generation models have been released."""
         if self.delivery is None:
             return True
         if self.continuation_renderer is None:
+            if require_authoritative:
+                raise ContinuationDeliveryError(
+                    "Configured Discord delivery has no continuation renderer.",
+                    state="FAILED",
+                )
             raise ComfyHttpError(
                 "Discord scene delivery requires configured D-drive storage."
             )
         for delivery_attempt in range(1, 3):
             try:
+                delivery_kwargs: dict[str, Any] = {
+                    "revision": revision,
+                    "overrides": overrides,
+                    "prompt_id_callback": prompt_id_callback,
+                }
+                if existing_prompt_id is not None:
+                    delivery_kwargs["existing_prompt_id"] = existing_prompt_id
                 result = self.continuation_renderer.deliver_existing_scene(
-                    job,
-                    scene,
-                    scene_path,
-                    revision=revision,
-                    overrides=overrides,
-                    prompt_id_callback=prompt_id_callback,
+                    job, scene, scene_path, **delivery_kwargs
                 )
                 return result or True
             except ContinuationDeliveryError as error:
-                if delivery_attempt < 2:
+                if error.state == "FAILED" and delivery_attempt < 2:
                     LOGGER.warning(
                         "Discord delivery failed for job %s scene %s revision %s; "
                         "reclaiming/retrying once: %s",
@@ -1568,6 +1660,8 @@ class PipelineSupervisor:
                         error,
                     )
                     continue
+                if require_authoritative:
+                    raise
                 LOGGER.error(
                     "Discord delivery failed twice for job %s scene %s revision %s. "
                     "The raw unwatermarked scene remains valid and final assembly "

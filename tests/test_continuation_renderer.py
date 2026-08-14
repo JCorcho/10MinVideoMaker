@@ -8,7 +8,10 @@ import unittest
 from unittest.mock import patch
 
 from tenminvideomaker.chunk_assembly import SceneChunkAssemblyError
-from tenminvideomaker.comfy_http import ComfyHttpError
+from tenminvideomaker.comfy_http import (
+    ComfyHttpError,
+    ComfyPromptDispatchAmbiguousError,
+)
 from tenminvideomaker.continuation_renderer import (
     CONTINUATION_CACHE_IMPLEMENTATION_PATHS,
     CONTINUATION_CONTRACT_NODE_TYPES,
@@ -1153,7 +1156,7 @@ class ContinuationRendererTests(unittest.TestCase):
             self.assertEqual(current["status"], "sent")
             self.assertNotEqual(current["workflow_sha256"], "0" * 64)
 
-    def test_delivery_marker_write_failure_cancels_owned_prompt(self) -> None:
+    def test_delivery_intent_write_failure_prevents_prompt_dispatch(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             job, scene, renderer, comfy, scene_path, marker = self._delivery_fixture(
                 Path(directory)
@@ -1171,7 +1174,7 @@ class ContinuationRendererTests(unittest.TestCase):
             ):
                 with self.assertRaisesRegex(
                     ContinuationDeliveryError,
-                    "durable marker",
+                    "dispatch intent",
                 ):
                     renderer.deliver_existing_scene(
                         job,
@@ -1180,7 +1183,8 @@ class ContinuationRendererTests(unittest.TestCase):
                         revision=1,
                     )
 
-            self.assertEqual(comfy.cancelled_prompt_ids, ["prompt-1"])
+            self.assertEqual(comfy.workflows, [])
+            self.assertEqual(comfy.cancelled_prompt_ids, [])
             self.assertFalse(marker.exists())
 
     def test_delivery_failure_is_dedicated_and_marks_failed_without_deleting_raw(self) -> None:
@@ -1222,3 +1226,81 @@ class ContinuationRendererTests(unittest.TestCase):
             self.assertEqual(document["status"], "failed")
             self.assertEqual(document["prompt_id"], "prompt-1")
             self.assertEqual(document["failure_reason"], "prompt_failed")
+
+    def test_delivery_dispatch_timeout_is_ambiguous_and_never_requeued(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            job, scene, renderer, comfy, scene_path, marker = self._delivery_fixture(
+                Path(directory)
+            )
+            with (
+                patch(
+                    "tenminvideomaker.continuation_renderer."
+                    "build_assembled_scene_delivery_workflow",
+                    side_effect=_delivery_build,
+                ),
+                patch.object(
+                    comfy,
+                    "queue_prompt",
+                    side_effect=ComfyPromptDispatchAmbiguousError("response timed out"),
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    ContinuationDeliveryError, "may have been accepted"
+                ) as raised:
+                    renderer.deliver_existing_scene(job, scene, scene_path, revision=1)
+                self.assertEqual(raised.exception.state, "AMBIGUOUS")
+
+            self.assertEqual(
+                json.loads(marker.read_text(encoding="utf-8"))["status"],
+                "ambiguous",
+            )
+            with patch(
+                "tenminvideomaker.continuation_renderer."
+                "build_assembled_scene_delivery_workflow",
+                side_effect=_delivery_build,
+            ):
+                with self.assertRaises(ContinuationDeliveryError):
+                    renderer.deliver_existing_scene(job, scene, scene_path, revision=1)
+            self.assertEqual(comfy.workflows, [])
+
+    def test_authoritative_prompt_id_reconciles_after_pre_marker_crash(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            job, scene, renderer, comfy, scene_path, marker = self._delivery_fixture(
+                Path(directory)
+            )
+            bound = []
+
+            def crash_after_bind(prompt_id):
+                bound.append(prompt_id)
+                raise KeyboardInterrupt("crash after authoritative prompt id")
+
+            with patch(
+                "tenminvideomaker.continuation_renderer."
+                "build_assembled_scene_delivery_workflow",
+                side_effect=_delivery_build,
+            ):
+                with self.assertRaises(KeyboardInterrupt):
+                    renderer.deliver_existing_scene(
+                        job,
+                        scene,
+                        scene_path,
+                        revision=1,
+                        prompt_id_callback=crash_after_bind,
+                    )
+
+                self.assertEqual(bound, ["prompt-1"])
+                self.assertEqual(
+                    json.loads(marker.read_text(encoding="utf-8"))["status"],
+                    "dispatching",
+                )
+                result = renderer.deliver_existing_scene(
+                    job,
+                    scene,
+                    scene_path,
+                    revision=1,
+                    existing_prompt_id="prompt-1",
+                )
+
+            self.assertEqual(result.prompt_id, "prompt-1")
+            self.assertTrue(result.reused_prompt)
+            self.assertEqual(len(comfy.workflows), 1)

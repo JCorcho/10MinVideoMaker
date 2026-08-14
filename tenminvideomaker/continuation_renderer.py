@@ -16,7 +16,13 @@ from .chunk_artifacts import (
     sha256_file,
 )
 from .chunk_assembly import SceneChunkAssembler, SceneChunkAssemblyError
-from .comfy_http import ComfyHttpClient, ComfyHttpError, find_video_output
+from .comfy_http import (
+    ComfyHttpClient,
+    ComfyHttpError,
+    ComfyPromptDispatchAmbiguousError,
+    ComfyPromptRejectedError,
+    find_video_output,
+)
 from .constants import (
     I2V_BASE_HEIGHT,
     I2V_BASE_WIDTH,
@@ -58,7 +64,7 @@ from .workflow_builder import LTX_CHECKPOINT, LTX_TEXT_ENCODER
 LOGGER = logging.getLogger("10MinVideoMaker.continuation")
 
 CONTINUATION_ATTEMPT_SCHEMA_VERSION = 4
-CONTINUATION_DELIVERY_SCHEMA_VERSION = 1
+CONTINUATION_DELIVERY_SCHEMA_VERSION = 2
 
 CONTINUATION_CONTRACT_NODE_TYPES = (
     "10MinVideoMaker_LoadChunkLatent",
@@ -152,6 +158,12 @@ class ContinuationRenderError(ComfyHttpError):
 
 class ContinuationDeliveryError(ContinuationRenderError):
     """Raised when optional Discord delivery fails after raw scene completion."""
+
+    def __init__(self, message: str, *, state: str = "AMBIGUOUS") -> None:
+        super().__init__(message)
+        if state not in {"AMBIGUOUS", "FAILED"}:
+            raise ValueError("Delivery failure state must be AMBIGUOUS or FAILED.")
+        self.state = state
 
 
 @dataclass(frozen=True)
@@ -434,6 +446,7 @@ class ContinuationRenderer:
         revision: int,
         overrides: SceneWorkflowOverrides | None = None,
         prompt_id_callback: Callable[[str], None] | None = None,
+        existing_prompt_id: str | None = None,
     ) -> ContinuationDeliveryResult | None:
         """Send a raw scene only after the caller has released generation models."""
         if not self.webhook_url:
@@ -448,6 +461,7 @@ class ContinuationRenderer:
             plan,
             path,
             prompt_id_callback,
+            existing_prompt_id,
         )
 
     @staticmethod
@@ -1747,6 +1761,7 @@ class ContinuationRenderer:
         plan: SceneFramePlan,
         output_path: Path,
         prompt_id_callback: Callable[[str], None] | None,
+        existing_prompt_id: str | None,
     ) -> ContinuationDeliveryResult:
         self._require_active(job, scene, revision)
         delivery_marker = (
@@ -1772,6 +1787,9 @@ class ContinuationRenderer:
             "plan_hash": plan_hash,
             "workflow_sha256": workflow_hash,
         }
+        signature["operation_id"] = hashlib.sha256(
+            _canonical_json(signature).encode("utf-8")
+        ).hexdigest()
         marker: Mapping[str, Any] | None = None
         if delivery_marker.is_file():
             try:
@@ -1804,6 +1822,59 @@ class ContinuationRenderer:
                     "longer has authoritative queue/history state. Automatic resend "
                     "is blocked to prevent a duplicate post; raw scene remains valid."
                 )
+            if status == "dispatching":
+                marker_prompt_id = marker.get("prompt_id")
+                authoritative_prompt_id = (
+                    marker_prompt_id
+                    if isinstance(marker_prompt_id, str) and marker_prompt_id
+                    else existing_prompt_id
+                )
+                if authoritative_prompt_id:
+                    write_json_atomic(
+                        delivery_marker,
+                        self._delivery_marker_document(
+                            signature,
+                            status="queued",
+                            prompt_id=authoritative_prompt_id,
+                        ),
+                    )
+                    return self._reclaim_delivery_prompt(
+                        job,
+                        scene,
+                        revision,
+                        delivery_marker,
+                        signature,
+                        authoritative_prompt_id,
+                        prompt_id_callback,
+                    )
+                self._write_delivery_marker_best_effort(
+                    delivery_marker,
+                    signature,
+                    status="ambiguous",
+                    prompt_id=None,
+                    failure_reason="dispatch_acceptance_unknown",
+                )
+                raise ContinuationDeliveryError(
+                    "Discord /prompt dispatch may have been accepted without an "
+                    "authoritative prompt ID; automatic resend is blocked."
+                )
+
+        if existing_prompt_id:
+            write_json_atomic(
+                delivery_marker,
+                self._delivery_marker_document(
+                    signature, status="queued", prompt_id=existing_prompt_id
+                ),
+            )
+            return self._reclaim_delivery_prompt(
+                job,
+                scene,
+                revision,
+                delivery_marker,
+                signature,
+                existing_prompt_id,
+                prompt_id_callback,
+            )
 
         if (
             marker is not None
@@ -1824,8 +1895,20 @@ class ContinuationRenderer:
         )
         self._require_active(job, scene, revision)
         try:
+            write_json_atomic(
+                delivery_marker,
+                self._delivery_marker_document(
+                    signature, status="dispatching", prompt_id=None
+                ),
+            )
+        except Exception as error:
+            raise ContinuationDeliveryError(
+                "Discord delivery dispatch intent could not be persisted.",
+                state="FAILED",
+            ) from error
+        try:
             prompt_id = self.comfy.queue_prompt(delivery.api)
-        except ComfyHttpError as error:
+        except ComfyPromptRejectedError as error:
             self._write_delivery_marker_best_effort(
                 delivery_marker,
                 signature,
@@ -1834,7 +1917,20 @@ class ContinuationRenderer:
                 failure_reason="queue_rejected",
             )
             raise ContinuationDeliveryError(
-                "Discord delivery could not be queued; raw scene output remains valid."
+                "Discord delivery could not be queued; raw scene output remains valid.",
+                state="FAILED",
+            ) from error
+        except (ComfyPromptDispatchAmbiguousError, ComfyHttpError) as error:
+            self._write_delivery_marker_best_effort(
+                delivery_marker,
+                signature,
+                status="ambiguous",
+                prompt_id=None,
+                failure_reason="dispatch_acceptance_unknown",
+            )
+            raise ContinuationDeliveryError(
+                "Discord /prompt dispatch may have been accepted, but no "
+                "authoritative prompt ID was returned; automatic resend is blocked."
             ) from error
 
         queued_marker = self._delivery_marker_document(
@@ -1843,33 +1939,24 @@ class ContinuationRenderer:
             prompt_id=prompt_id,
         )
         try:
-            # Persist immediately after /prompt returns. A restarted worker can
-            # now reclaim this exact side-effecting Discord prompt.
-            write_json_atomic(delivery_marker, queued_marker)
-        except Exception as error:
-            self._cancel_owned_prompt_best_effort(prompt_id)
-            raise ContinuationDeliveryError(
-                "Discord delivery was queued but its durable marker could not be "
-                "written; the owned prompt was cancelled best-effort."
-            ) from error
-
-        try:
             self._require_active(job, scene, revision)
             if prompt_id_callback is not None:
                 prompt_id_callback(prompt_id)
+            # The authoritative prompt ID is bound by the caller before the
+            # renderer's secondary marker is advanced from DISPATCHING.
+            write_json_atomic(delivery_marker, queued_marker)
             self._require_active(job, scene, revision)
         except Exception as error:
-            self._cancel_owned_prompt_best_effort(prompt_id)
             self._write_delivery_marker_best_effort(
                 delivery_marker,
                 signature,
-                status="ambiguous",
+                status="queued",
                 prompt_id=prompt_id,
-                failure_reason="ownership_changed_before_wait",
+                failure_reason="prompt_id_bound_before_wait",
             )
             raise ContinuationDeliveryError(
-                "Discord delivery ownership changed before wait; automatic resend "
-                "is blocked because completion is ambiguous."
+                "Discord delivery has an authoritative prompt ID but normal marker "
+                "commit did not finish; restart must reconcile that exact prompt."
             ) from error
 
         return self._wait_for_delivery_prompt(
@@ -1897,7 +1984,7 @@ class ContinuationRenderer:
         prompt_id: str | None,
         failure_reason: str | None = None,
     ) -> dict[str, Any]:
-        if status not in {"queued", "sent", "failed", "ambiguous"}:
+        if status not in {"dispatching", "queued", "sent", "failed", "ambiguous"}:
             raise ValueError("Unsupported Discord delivery marker status.")
         document = {
             **signature,
@@ -2056,7 +2143,8 @@ class ContinuationRenderer:
             failure_reason="prompt_failed",
         )
         raise ContinuationDeliveryError(
-            "Discord delivery failed; raw scene output remains valid."
+            "Discord delivery failed; raw scene output remains valid.",
+            state="FAILED",
         ) from error
 
     def _commit_sent_delivery(

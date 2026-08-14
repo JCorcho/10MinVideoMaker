@@ -368,6 +368,95 @@ class SupervisorTests(unittest.TestCase):
 
             self.assertEqual(assembler.calls[0][1], [str(item) for item in clips])
             self.assertEqual(mail.requests, [(job.job_id, True)])
+            delivery_step = next(
+                item
+                for item in store.qc_finalization_steps(job.job_id)
+                if item.kind == "SCENE_DELIVERY"
+            )
+            self.assertEqual(delivery_step.receipt["status"], "NOT_CONFIGURED")
+
+    def test_configured_qc_delivery_failure_blocks_assembly_and_mail(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            job = parse_job_payload(payload())
+            storage = StorageLayout(root / "storage")
+            storage.ensure()
+            store = PipelineStateStore(storage.database_path)
+            store.claim_job(job)
+            selection = self._accept_qc_scenes(store, job, root)
+            assembler = FakeAssembler(root / "final.mp4")
+            mail = FakeMailClient()
+            supervisor = PipelineSupervisor(
+                store=store,
+                mail_client=mail,
+                asset_manager=FakeAssetManager(),
+                comfy=FakeComfy(root / "unused.png"),
+                assembler=assembler,
+                settings=SupervisorSettings(),
+                storage=storage,
+                delivery=DiscordDeliverySettings(
+                    "https://discord.com/api/webhooks/123456789/test-token"
+                ),
+                video_probe=lambda path: VideoStreamInfo(
+                    Path(path), PRODUCTION_WIDTH, PRODUCTION_HEIGHT, Fraction(24, 1)
+                ),
+            )
+            renderer = Mock()
+            renderer.deliver_existing_scene.side_effect = ContinuationDeliveryError(
+                "definitively rejected", state="FAILED"
+            )
+            supervisor.continuation_renderer = renderer
+
+            supervisor._finalize_qc_job(job, selection)
+
+            self.assertEqual(renderer.deliver_existing_scene.call_count, 2)
+            self.assertEqual(assembler.calls, [])
+            self.assertEqual(mail.requests, [])
+            self.assertEqual(store.snapshot().state, PipelineState.QC_BLOCKED)
+            delivery_step = next(
+                item
+                for item in store.qc_finalization_steps(job.job_id)
+                if item.kind == "SCENE_DELIVERY"
+            )
+            self.assertEqual(delivery_step.state, "FAILED")
+
+    def test_ambiguous_qc_delivery_is_never_redispatched(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            job = parse_job_payload(payload())
+            storage = StorageLayout(root / "storage")
+            storage.ensure()
+            store = PipelineStateStore(storage.database_path)
+            store.claim_job(job)
+            selection = self._accept_qc_scenes(store, job, root)
+            assembler = FakeAssembler(root / "final.mp4")
+            supervisor = PipelineSupervisor(
+                store=store,
+                mail_client=FakeMailClient(),
+                asset_manager=FakeAssetManager(),
+                comfy=FakeComfy(root / "unused.png"),
+                assembler=assembler,
+                settings=SupervisorSettings(),
+                storage=storage,
+                delivery=DiscordDeliverySettings(
+                    "https://discord.com/api/webhooks/123456789/test-token"
+                ),
+                video_probe=lambda path: VideoStreamInfo(
+                    Path(path), PRODUCTION_WIDTH, PRODUCTION_HEIGHT, Fraction(24, 1)
+                ),
+            )
+            renderer = Mock()
+            renderer.deliver_existing_scene.side_effect = ContinuationDeliveryError(
+                "acceptance unknown", state="AMBIGUOUS"
+            )
+            supervisor.continuation_renderer = renderer
+
+            supervisor._finalize_qc_job(job, selection)
+            supervisor.tick()
+
+            self.assertEqual(renderer.deliver_existing_scene.call_count, 1)
+            self.assertEqual(assembler.calls, [])
+            self.assertEqual(store.snapshot().state, PipelineState.QC_BLOCKED)
 
     def test_qc_disabled_result_uses_baseline_without_committing_qc_plan(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1658,7 +1747,7 @@ class SupervisorTests(unittest.TestCase):
             )
             renderer = Mock()
             renderer.deliver_existing_scene.side_effect = ContinuationDeliveryError(
-                "Discord unavailable"
+                "Discord unavailable", state="FAILED"
             )
             supervisor.continuation_renderer = renderer
 

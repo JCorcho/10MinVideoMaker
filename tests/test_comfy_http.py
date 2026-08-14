@@ -3,10 +3,35 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from tenminvideomaker.comfy_http import ComfyHttpClient, ComfyHttpError, find_video_output
+from tenminvideomaker.comfy_http import (
+    ComfyHttpClient,
+    ComfyHttpError,
+    ComfyPromptDispatchAmbiguousError,
+    ComfyPromptRejectedError,
+    find_video_output,
+)
 
 
 class ComfyHttpTests(unittest.TestCase):
+    def test_prompt_transport_failure_is_acceptance_ambiguous(self) -> None:
+        client = ComfyHttpClient()
+        with patch(
+            "tenminvideomaker.comfy_http.urlopen",
+            side_effect=TimeoutError("response timeout"),
+        ):
+            with self.assertRaises(ComfyPromptDispatchAmbiguousError):
+                client.queue_prompt({"1": {"class_type": "Test", "inputs": {}}})
+
+    def test_prompt_response_without_id_is_definitively_rejected(self) -> None:
+        client = ComfyHttpClient()
+        with patch.object(
+            client,
+            "_json_request",
+            return_value={"node_errors": {"1": "invalid input"}},
+        ):
+            with self.assertRaises(ComfyPromptRejectedError):
+                client.queue_prompt({"1": {"class_type": "Test", "inputs": {}}})
+
     def test_finds_nested_vhs_video_metadata(self) -> None:
         metadata = {
             "filename": "scene_0001_00001-audio.mp4",
