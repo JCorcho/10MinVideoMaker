@@ -13,7 +13,10 @@ from unittest.mock import Mock, patch
 
 from tenminvideomaker.assembly import VideoStreamInfo
 from tenminvideomaker.assets import AssetResolution
-from tenminvideomaker.comfy_http import ComfyHttpError
+from tenminvideomaker.comfy_http import (
+    ComfyHttpError,
+    ComfyPromptDispatchAmbiguousError,
+)
 from tenminvideomaker.constants import PRODUCTION_HEIGHT, PRODUCTION_WIDTH
 from tenminvideomaker.continuation_renderer import (
     ContinuationDeliveryError,
@@ -1069,6 +1072,49 @@ class SupervisorTests(unittest.TestCase):
 
             self.assertEqual(comfy.workflows, [])
             self.assertTrue(raised.exception.retryable)
+
+    def test_qc_repair_ambiguous_prompt_acceptance_is_not_retried(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            job = parse_job_payload(payload())
+            frame = root / "frame.png"
+            frame.write_bytes(b"frame")
+            store = Mock()
+            store.scene_revisions.return_value = (
+                SimpleNamespace(revision=2, frame_path=str(frame)),
+            )
+            supervisor = PipelineSupervisor(
+                store=store,
+                mail_client=FakeMailClient(),
+                asset_manager=FakeAssetManager(),
+                comfy=FakeComfy(root / "unused.png"),
+                settings=SupervisorSettings(1, 10, 10, 2),
+            )
+            supervisor._resolve_assets = Mock(
+                return_value=SimpleNamespace(failures={}, resolved_filenames={})
+            )
+            supervisor._uses_continuation = Mock(return_value=False)
+            supervisor.render_i2v_scene = Mock(
+                side_effect=ComfyPromptDispatchAmbiguousError(
+                    "acceptance cannot be disproved"
+                )
+            )
+            candidate = SimpleNamespace(
+                candidate_id="candidate-a1-ambiguous",
+                scene_id=1,
+                revision=2,
+                state=QcCandidateState.PENDING_GENERATION,
+                generation_prompt_id=None,
+                source_video_path=str(root / "a1.mp4"),
+            )
+
+            with self.assertRaises(RepairGenerationError) as raised:
+                supervisor.render_qc_candidates(
+                    job,
+                    ((candidate, scene_review_document(job, job.scenes[0])),),
+                )
+
+            self.assertFalse(raised.exception.retryable)
 
     def test_fatal_restart_restores_qc_epoch_without_replaying_originals(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

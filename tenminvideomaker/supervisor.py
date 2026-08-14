@@ -16,7 +16,12 @@ from .artifacts import scene_clip_path, scene_frame_path
 from .assembly import AssemblyError, FfmpegAssembler, probe_video, validate_video_profile
 from .assets import AssetResolution, LocalLoraRequirement
 from .chunk_assembly import SceneChunkAssembler
-from .comfy_http import ComfyHttpClient, ComfyHttpError, find_video_output
+from .comfy_http import (
+    ComfyHttpClient,
+    ComfyHttpError,
+    ComfyPromptDispatchAmbiguousError,
+    find_video_output,
+)
 from .constants import I2V_DYNAMIC_BASE_MODEL, MANDATORY_I2V_LORAS
 from .continuation import (
     ContinuationPlanError,
@@ -692,6 +697,13 @@ class PipelineSupervisor:
                 self._video_probe(rendered)
             except RepairGenerationError:
                 raise
+            except ComfyPromptDispatchAmbiguousError as error:
+                raise RepairGenerationError(
+                    candidate.candidate_id,
+                    "QC repair prompt acceptance is ambiguous; automatic replay is "
+                    "blocked: " + str(error),
+                    retryable=False,
+                ) from error
             except Exception as error:
                 raise RepairGenerationError(
                     candidate.candidate_id,
