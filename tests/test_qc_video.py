@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 import hashlib
 import json
@@ -10,6 +11,7 @@ import unittest
 from tenminvideomaker.qc_video import (
     _benchmark_resize,
     _encode_benchmark_jpeg,
+    QcWindow,
     SampledFrame,
     SampledVideo,
     VideoMetadata,
@@ -174,12 +176,71 @@ class QcVideoTests(unittest.TestCase):
         self.assertEqual(shifted.confirmation_of_window, 2)
         self.assertNotEqual(shifted.source_frame_indices, windows[1].source_frame_indices)
 
+    def test_first_full_window_confirmation_is_boundary_aware(self) -> None:
+        video = sampled(12)
+        windows = chronological_windows(video, frame_count=4)
+
+        confirmation = shifted_confirmation_window(video, windows[0], frame_count=4)
+
+        self.assertIsNotNone(confirmation)
+        assert confirmation is not None
+        self.assertEqual(confirmation.source_frame_indices, (0, 12, 24, 48))
+        self.assertEqual(confirmation.confirmation_of_window, 1)
+        self.assertIs(confirmation.frames[0], windows[0].frames[0])
+        self.assertEqual(confirmation.timestamps_seconds, (0.0, 0.5, 1.0, 2.0))
+        self.assertTrue(
+            all(
+                earlier < later
+                for earlier, later in zip(
+                    confirmation.timestamps_seconds, confirmation.timestamps_seconds[1:]
+                )
+            )
+        )
+        self.assertEqual(
+            set(confirmation.source_frame_indices).difference(
+                windows[0].source_frame_indices
+            ),
+            {48},
+        )
+        self.assertTrue(
+            set(confirmation.image_sha256s).difference(windows[0].image_sha256s)
+        )
+
+    def test_forged_first_full_window_is_rejected_for_boundary_integrity(self) -> None:
+        video = sampled(5)
+        forged = QcWindow(
+            window_number=1,
+            frames=video.frames[1:5],
+        )
+
+        confirmation = shifted_confirmation_window(video, forged, frame_count=4)
+
+        self.assertIsNone(confirmation)
+
     def test_short_clip_cannot_fabricate_independent_confirmation(self) -> None:
         video = sampled(4)
         suspect = chronological_windows(video, frame_count=4)[0]
 
         self.assertIsNone(
             shifted_confirmation_window(video, suspect, frame_count=4)
+        )
+
+    def test_first_full_window_with_non_novel_following_sha_is_rejected(self) -> None:
+        video = sampled(5)
+        windows = chronological_windows(video, frame_count=4)
+        frozen = SampledVideo(
+            video.metadata,
+            video.target_fps,
+            tuple(
+                tuple_frame if index != 4 else replace(
+                    tuple_frame, image_bytes=video.frames[0].image_bytes
+                )
+                for index, tuple_frame in enumerate(video.frames)
+            ),
+        )
+
+        self.assertIsNone(
+            shifted_confirmation_window(frozen, windows[0], frame_count=4)
         )
 
     def test_frame_accounting_separates_unique_coverage_and_confirmation_exposure(self) -> None:

@@ -177,6 +177,33 @@ def shifted_confirmation_window(
     windows = chronological_windows(sampled, frame_count=frame_count)
     if suspect.window_number > len(windows):
         raise ValueError("The suspect window is outside the sampled video.")
+    if suspect.window_number == 1:
+        if len(suspect.frames) != frame_count:
+            return None
+        if suspect.source_frame_indices != windows[0].source_frame_indices:
+            return None
+        if suspect.image_sha256s != windows[0].image_sha256s:
+            return None
+        if len(sampled.frames) <= frame_count:
+            return None
+        candidate = suspect.frames[: frame_count - 1] + (sampled.frames[frame_count],)
+        candidate_indices = tuple(item.source_index for item in candidate)
+        if candidate_indices == suspect.source_frame_indices:
+            return None
+        if not set(item.content_sha256 for item in candidate).difference(
+            suspect.image_sha256s
+        ):
+            return None
+        if any(
+            left.timestamp_seconds >= right.timestamp_seconds
+            for left, right in zip(candidate, candidate[1:])
+        ):
+            return None
+        return QcWindow(
+            window_number=len(windows) + 1,
+            frames=candidate,
+            confirmation_of_window=suspect.window_number,
+        )
     suspect_offset = (suspect.window_number - 1) * frame_count
     confirmation_start = max(
         0,

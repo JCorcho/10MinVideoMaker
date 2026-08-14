@@ -68,6 +68,7 @@ class FakeBackend:
 class QcBackendTests(unittest.TestCase):
     def test_production_prompt_preserves_validated_lab_bytes(self) -> None:
         rubric = load_production_rubric(PROMPT_PATH)
+        self.assertEqual(QualityControlSettings().evaluator_version, "phase1-v3")
 
         self.assertEqual(rubric.version, "production_ltx_video_qc_v1")
         self.assertEqual(
@@ -372,6 +373,34 @@ class QcBackendTests(unittest.TestCase):
         self.assertTrue(backend.requests[-1].independent_confirmation)
         self.assertEqual(backend.requests[-1].window.confirmation_of_window, 2)
         self.assertEqual(result.frame_accounting["confirmation_frame_exposures"], 4)
+
+    def test_lone_strong_first_window_confirmation_can_confirm(self) -> None:
+        backend = FakeBackend(
+            [raw("FAIL", strong=True), raw("PASS"), raw("PASS"), raw("FAIL", strong=True)]
+        )
+        evaluator = HeadlessVideoEvaluator(backend, load_production_rubric(PROMPT_PATH))
+
+        result = evaluator.evaluate_sampled(sampled(12))
+
+        self.assertEqual(result.normalized.decision, QcDecision.FAIL)
+        self.assertEqual(result.normalized.strong_window_count, 2)
+        self.assertTrue(backend.requests[-1].independent_confirmation)
+        self.assertEqual(backend.requests[-1].window.confirmation_of_window, 1)
+        self.assertEqual(result.frame_accounting["confirmation_frame_exposures"], 4)
+
+    def test_lone_strong_first_window_pass_confirmation_remains_uncertain(self) -> None:
+        backend = FakeBackend(
+            [raw("FAIL", strong=True), raw("PASS"), raw("PASS"), raw("PASS")]
+        )
+        evaluator = HeadlessVideoEvaluator(backend, load_production_rubric(PROMPT_PATH))
+
+        result = evaluator.evaluate_sampled(sampled(12))
+
+        self.assertNotEqual(result.normalized.decision, QcDecision.PASS)
+        self.assertEqual(result.normalized.decision, QcDecision.UNCERTAIN)
+        self.assertEqual(result.normalized.strong_window_count, 1)
+        self.assertTrue(backend.requests[-1].independent_confirmation)
+        self.assertEqual(backend.requests[-1].window.confirmation_of_window, 1)
 
     def test_malformed_response_cannot_become_pass(self) -> None:
         backend = FakeBackend(["I refuse", raw("PASS")])
