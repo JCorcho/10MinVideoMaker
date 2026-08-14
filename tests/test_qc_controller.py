@@ -135,7 +135,12 @@ class Phase1QcControllerRoutingTests(unittest.TestCase):
             VideoMetadata(24.0, 4, 1.0),
             2.0,
             tuple(
-                SampledFrame(index, index / 2, self.root / f"{index}.jpg", b"jpeg")
+                SampledFrame(
+                    index,
+                    index / 2,
+                    self.root / f"{index}.jpg",
+                    f"jpeg-{index}".encode("ascii"),
+                )
                 for index in range(4)
             ),
             settings.effective_document()["sampling"]["preprocessing"],
@@ -1158,7 +1163,12 @@ class Phase1QcControllerRoutingTests(unittest.TestCase):
             VideoMetadata(24.0, 8, 4.0),
             2.0,
             tuple(
-                SampledFrame(index, index / 2, self.root / f"e2e-{index}.jpg", b"jpeg")
+                SampledFrame(
+                    index,
+                    index / 2,
+                    self.root / f"e2e-{index}.jpg",
+                    f"e2e-jpeg-{index}".encode("ascii"),
+                )
                 for index in range(8)
             ),
             settings.effective_document()["sampling"]["preprocessing"],
