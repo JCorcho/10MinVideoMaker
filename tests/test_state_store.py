@@ -15,6 +15,7 @@ from tenminvideomaker.qc_contracts import (
     QcTier,
     evaluation_idempotency_key,
 )
+from tenminvideomaker.review import scene_review_document
 from tenminvideomaker.state_store import (
     ChunkState,
     JobState,
@@ -109,10 +110,12 @@ class StateStoreTests(unittest.TestCase):
             frame_path=str(frame),
             video_path=str(video),
         )
+        document = scene_review_document(self.job, self.job.scenes[0])
+        document["i2v"]["seed"] = str(2**64 - 1)
         self.store.ensure_original_scene_revision(
             self.job.job_id,
             1,
-            parameters={"job_id": self.job.job_id, "scene_id": 1},
+            parameters=document,
             frame_path=str(frame),
             video_path=str(video),
         )
@@ -125,12 +128,14 @@ class StateStoreTests(unittest.TestCase):
             parent_candidate_id=None,
             source_video_path=str(video),
             source_video_sha256=hashlib.sha256(b"video").hexdigest(),
-            original_prompt="exact original prompt",
-            current_prompt="exact original prompt",
-            original_seed=2**64 - 1,
-            current_seed=2**64 - 1,
-            negative_prompt="locked negative",
-            negative_prompt_sha256="b" * 64,
+            original_prompt=document["i2v"]["prompt"],
+            current_prompt=document["i2v"]["prompt"],
+            original_seed=int(document["i2v"]["seed"]),
+            current_seed=int(document["i2v"]["seed"]),
+            negative_prompt=document["i2v"]["negative"],
+            negative_prompt_sha256=hashlib.sha256(
+                document["i2v"]["negative"].encode("utf-8")
+            ).hexdigest(),
             state=QcCandidateState.PENDING_QC,
             next_action="evaluate",
         )
@@ -1722,7 +1727,13 @@ class StateStoreTests(unittest.TestCase):
         finally:
             upgraded.close()
         self.assertTrue(
-            {"qc_candidates", "qc_evaluations", "qc_repairs", "qc_human_decisions"}
+            {
+                "qc_candidates",
+                "qc_candidate_source_identities",
+                "qc_evaluations",
+                "qc_repairs",
+                "qc_human_decisions",
+            }
             <= tables
         )
 

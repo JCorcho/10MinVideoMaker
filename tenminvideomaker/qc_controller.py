@@ -263,6 +263,11 @@ class Phase1QcController:
                     self.store.hold_incomplete_qc_job(job.job_id, missing)
                     return ()
                 raise StateTransitionError("The durable pre-QC baseline snapshot is invalid.")
+            for candidate in existing:
+                document = self._revision_document(self.store, candidate)
+                self.store.validate_qc_candidate_source_identity(
+                    candidate.candidate_id, document
+                )
             return existing
         try:
             baseline = self.store.legacy_final_selection(job.job_id, scene_ids)
@@ -291,6 +296,14 @@ class Phase1QcController:
             except (TypeError, ValueError) as error:
                 raise StateTransitionError("Original revision has an invalid I2V seed.") from error
             video_hash = _sha256_file(revision.video_path)
+            if not revision.frame_path:
+                raise StateTransitionError(
+                    "Original revision lacks its immutable starting frame."
+                )
+            frame_hash = _sha256_file(revision.frame_path)
+            document_hash = hashlib.sha256(
+                canonical_json(document).encode("utf-8")
+            ).hexdigest()
             identity = canonical_json(
                 {"job_id": job.job_id, "scene_id": scene.scene_id,
                  "revision": revision.revision, "video_sha256": video_hash}
@@ -312,6 +325,9 @@ class Phase1QcController:
                     "negative_prompt_sha256": hashlib.sha256(
                         negative.encode("utf-8")
                     ).hexdigest(),
+                    "revision_document_sha256": document_hash,
+                    "source_frame_path": revision.frame_path,
+                    "source_frame_sha256": frame_hash,
                 }
             )
         return self.store.ensure_original_qc_candidates(prepared)
@@ -363,6 +379,17 @@ class Phase1QcController:
             )
 
         source_document = self._revision_document(self.store, candidate)
+        try:
+            self.store.validate_qc_candidate_source_identity(
+                candidate.candidate_id,
+                source_document,
+            )
+        except StateTransitionError as error:
+            return self.store.set_qc_candidate_state(
+                candidate_id,
+                QcCandidateState.HOLD_FOR_REVIEW,
+                next_action="source_identity_failure:" + str(error),
+            )
         if candidate.tier == QcTier.ORIGINAL:
             retry = schedule_a1_retry(
                 self.store,

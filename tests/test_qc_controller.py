@@ -634,6 +634,21 @@ class Phase1QcControllerRoutingTests(unittest.TestCase):
         self.assertEqual([item.tier for item in candidates], [QcTier.ORIGINAL, QcTier.A1])
         self.assertEqual(first.state, QcCandidateState.PENDING_GENERATION)
 
+    def test_mutated_baseline_source_fails_closed_to_human_hold(self) -> None:
+        candidate = self._candidate()
+        self._evaluation(candidate.candidate_id, QcDecision.FAIL)
+        identity = self.store.qc_candidate_source_identity(candidate.candidate_id)
+        Path(identity["source_frame_path"]).write_bytes(b"mutated-after-snapshot")
+
+        routed = self.controller().route_completed_evaluation(
+            self.job, candidate.candidate_id
+        )
+
+        self.assertEqual(routed.state, QcCandidateState.HOLD_FOR_REVIEW)
+        self.assertIn("source_identity_failure", routed.next_action)
+        self.assertIn("starting frame changed", routed.next_action)
+        self.assertEqual(len(self.store.qc_candidates(self.job.job_id)), 1)
+
     def test_b1_never_loops_after_fail(self) -> None:
         candidate = self._candidate()
         self.store.set_qc_candidate_state(

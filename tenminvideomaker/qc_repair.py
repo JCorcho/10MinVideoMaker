@@ -372,6 +372,10 @@ def schedule_b1_retry(
         or _uint64(current_i2v.get("seed"), "i2v.seed") != source.current_seed
     ):
         raise StateTransitionError("B1 source document does not match candidate evidence.")
+    store.validate_qc_candidate_source_identity(
+        source.candidate_id,
+        source_document,
+    )
 
     existing_repairs = store.qc_repairs(source.candidate_id)
     if existing_repairs:
@@ -583,6 +587,10 @@ def schedule_a1_retry(
         raise StateTransitionError(
             "A1 source prompt/negative/seed does not match immutable candidate evidence."
         )
+    store.validate_qc_candidate_source_identity(
+        source.candidate_id,
+        source_document,
+    )
 
     existing = tuple(
         item

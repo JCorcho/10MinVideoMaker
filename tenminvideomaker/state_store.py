@@ -509,6 +509,27 @@ def _file_sha256(path: str | Path) -> str:
     return digest.hexdigest()
 
 
+def _qc_generation_config_sha256(document: Mapping[str, Any]) -> str:
+    i2v = document.get("i2v")
+    if not isinstance(i2v, Mapping):
+        raise StateTransitionError("QC source document lacks its I2V contract.")
+    stable_i2v = dict(i2v)
+    stable_i2v.pop("prompt", None)
+    stable_i2v.pop("negative", None)
+    identity = {
+        "t2i": document.get("t2i"),
+        "i2v": stable_i2v,
+        "production_profile": document.get("production_profile"),
+    }
+    return hashlib.sha256(_canonical_json(identity).encode("utf-8")).hexdigest()
+
+
+def _qc_document_seed(value: Any) -> int:
+    if isinstance(value, str) and value.strip().isdigit():
+        value = int(value.strip())
+    return _uint64_seed(value)
+
+
 def _required_text(value: object, field: str) -> str:
     if not isinstance(value, str) or not value:
         raise StateTransitionError(f"{field} must be non-empty text.")
@@ -757,6 +778,15 @@ class PipelineStateStore:
                     FOREIGN KEY (job_id, scene_id, revision)
                         REFERENCES scene_revisions(job_id, scene_id, revision),
                     FOREIGN KEY (parent_candidate_id) REFERENCES qc_candidates(candidate_id)
+                );
+                CREATE TABLE IF NOT EXISTS qc_candidate_source_identities (
+                    candidate_id TEXT PRIMARY KEY,
+                    revision_document_sha256 TEXT NOT NULL,
+                    source_frame_path TEXT NOT NULL,
+                    source_frame_sha256 TEXT NOT NULL,
+                    generation_config_sha256 TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (candidate_id) REFERENCES qc_candidates(candidate_id)
                 );
                 CREATE TABLE IF NOT EXISTS qc_evaluations (
                     evaluation_id TEXT PRIMARY KEY,
@@ -1956,7 +1986,7 @@ class PipelineStateStore:
             connection.execute("BEGIN IMMEDIATE")
             revision_row = connection.execute(
                 """
-                SELECT video_path FROM scene_revisions
+                SELECT video_path, frame_path, parameters_json FROM scene_revisions
                 WHERE job_id = ? AND scene_id = ? AND revision = ?
                 """,
                 (job_id, scene_id, revision),
@@ -2032,6 +2062,36 @@ class PipelineStateStore:
                 """,
                 (*immutable, state.value, next_action, now, now),
             )
+            if tier == QcTier.ORIGINAL:
+                try:
+                    source_document = json.loads(revision_row["parameters_json"])
+                except (TypeError, json.JSONDecodeError) as error:
+                    raise StateTransitionError(
+                        "Original QC source revision document is invalid."
+                    ) from error
+                frame_path = revision_row["frame_path"]
+                if not frame_path or not Path(frame_path).is_file():
+                    raise StateTransitionError(
+                        "Original QC source requires an immutable starting frame."
+                    )
+                connection.execute(
+                    """
+                    INSERT INTO qc_candidate_source_identities (
+                        candidate_id, revision_document_sha256, source_frame_path,
+                        source_frame_sha256, generation_config_sha256, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        candidate_id,
+                        hashlib.sha256(
+                            _canonical_json(source_document).encode("utf-8")
+                        ).hexdigest(),
+                        frame_path,
+                        _file_sha256(frame_path),
+                        _qc_generation_config_sha256(source_document),
+                        now,
+                    ),
+                )
             row = connection.execute(
                 "SELECT * FROM qc_candidates WHERE candidate_id = ?",
                 (candidate_id,),
@@ -2069,6 +2129,16 @@ class PipelineStateStore:
             negative_prompt_sha256 = _sha256(
                 item.get("negative_prompt_sha256"), "negative_prompt_sha256"
             )
+            revision_document_sha256 = _sha256(
+                item.get("revision_document_sha256"),
+                "revision_document_sha256",
+            )
+            source_frame_path = _required_text(
+                item.get("source_frame_path"), "source_frame_path"
+            )
+            source_frame_sha256 = _sha256(
+                item.get("source_frame_sha256"), "source_frame_sha256"
+            )
             job_ids.add(job_id)
             if scene_id in scene_ids:
                 raise StateTransitionError(
@@ -2091,6 +2161,9 @@ class PipelineStateStore:
                     str(original_seed),
                     negative_prompt,
                     negative_prompt_sha256,
+                    revision_document_sha256,
+                    source_frame_path,
+                    source_frame_sha256,
                 )
             )
         if len(job_ids) != 1:
@@ -2120,9 +2193,29 @@ class PipelineStateStore:
                     )
                     for row in existing
                 ]
-                if stored != prepared:
+                if stored != [values[:14] for values in prepared]:
                     raise StateTransitionError(
                         "The durable pre-QC baseline snapshot is immutable."
+                    )
+                for row, values in zip(existing, prepared):
+                    identity = connection.execute(
+                        """
+                        SELECT * FROM qc_candidate_source_identities
+                        WHERE candidate_id = ?
+                        """,
+                        (row["candidate_id"],),
+                    ).fetchone()
+                    if (
+                        identity is None
+                        or identity["revision_document_sha256"] != values[14]
+                        or identity["source_frame_path"] != values[15]
+                        or identity["source_frame_sha256"] != values[16]
+                    ):
+                        raise StateTransitionError(
+                            "The durable pre-QC source identity is immutable."
+                        )
+                    self._assert_qc_source_lineage_connection(
+                        connection, row["candidate_id"]
                     )
                 return tuple(self._qc_candidate_record(row) for row in existing)
 
@@ -2170,7 +2263,8 @@ class PipelineStateStore:
                     )
                 revision_row = connection.execute(
                     """
-                    SELECT state, video_path FROM scene_revisions
+                    SELECT state, video_path, frame_path, parameters_json
+                    FROM scene_revisions
                     WHERE job_id = ? AND scene_id = ? AND revision = ?
                     """,
                     (values[1], values[2], values[3]),
@@ -2182,6 +2276,33 @@ class PipelineStateStore:
                 ):
                     raise StateTransitionError(
                         "The pre-QC legacy selection changed before its baseline snapshot committed."
+                    )
+                try:
+                    revision_document = json.loads(revision_row["parameters_json"])
+                except (TypeError, json.JSONDecodeError) as error:
+                    raise StateTransitionError(
+                        "The pre-QC source revision document is invalid."
+                    ) from error
+                i2v = revision_document.get("i2v")
+                if (
+                    hashlib.sha256(
+                        _canonical_json(revision_document).encode("utf-8")
+                    ).hexdigest()
+                    != values[14]
+                    or revision_row["frame_path"] != values[15]
+                    or not Path(values[15]).is_file()
+                    or _file_sha256(values[15]) != values[16]
+                    or not Path(values[6]).is_file()
+                    or _file_sha256(values[6]) != values[7]
+                    or not isinstance(i2v, Mapping)
+                    or i2v.get("prompt") != values[8]
+                    or i2v.get("negative") != values[12]
+                    or hashlib.sha256(values[12].encode("utf-8")).hexdigest()
+                    != values[13]
+                    or _qc_document_seed(i2v.get("seed")) != int(values[10])
+                ):
+                    raise StateTransitionError(
+                        "The pre-QC source identity changed before its baseline snapshot committed."
                     )
             now = _utc_now()
             connection.executemany(
@@ -2196,7 +2317,33 @@ class PipelineStateStore:
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?)
                 """,
                 [
-                    (*values, QcCandidateState.PENDING_QC.value, "evaluate", now, now)
+                    (*values[:14], QcCandidateState.PENDING_QC.value, "evaluate", now, now)
+                    for values in prepared
+                ],
+            )
+            connection.executemany(
+                """
+                INSERT INTO qc_candidate_source_identities (
+                    candidate_id, revision_document_sha256, source_frame_path,
+                    source_frame_sha256, generation_config_sha256, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        values[0], values[14], values[15], values[16],
+                        _qc_generation_config_sha256(
+                            json.loads(
+                                connection.execute(
+                                    """
+                                    SELECT parameters_json FROM scene_revisions
+                                    WHERE job_id = ? AND scene_id = ? AND revision = ?
+                                    """,
+                                    (values[1], values[2], values[3]),
+                                ).fetchone()["parameters_json"]
+                            )
+                        ),
+                        now,
+                    )
                     for values in prepared
                 ],
             )
@@ -2208,6 +2355,139 @@ class PipelineStateStore:
                 (job_id, QcTier.ORIGINAL.value),
             ).fetchall()
         return tuple(self._qc_candidate_record(row) for row in rows)
+
+    def _assert_qc_source_lineage_connection(
+        self,
+        connection: sqlite3.Connection,
+        candidate_id: str,
+        *,
+        supplied_document: Mapping[str, Any] | None = None,
+    ) -> None:
+        current_id: str | None = candidate_id
+        first = True
+        while current_id is not None:
+            row = connection.execute(
+                """
+                SELECT c.*, i.revision_document_sha256, i.source_frame_path,
+                    i.source_frame_sha256, i.generation_config_sha256
+                FROM qc_candidates c
+                LEFT JOIN qc_candidate_source_identities i
+                    ON i.candidate_id = c.candidate_id
+                WHERE c.candidate_id = ?
+                """,
+                (current_id,),
+            ).fetchone()
+            if row is None or row["revision_document_sha256"] is None:
+                raise StateTransitionError(
+                    "QC candidate lacks its immutable source identity."
+                )
+            revision = connection.execute(
+                """
+                SELECT parameters_json, frame_path, video_path
+                FROM scene_revisions
+                WHERE job_id = ? AND scene_id = ? AND revision = ?
+                """,
+                (row["job_id"], row["scene_id"], row["revision"]),
+            ).fetchone()
+            if revision is None:
+                raise StateTransitionError("QC source revision no longer exists.")
+            try:
+                document = json.loads(revision["parameters_json"])
+            except (TypeError, json.JSONDecodeError) as error:
+                raise StateTransitionError(
+                    "QC source revision document is invalid."
+                ) from error
+            document_sha256 = hashlib.sha256(
+                _canonical_json(document).encode("utf-8")
+            ).hexdigest()
+            if document_sha256 != row["revision_document_sha256"]:
+                raise StateTransitionError(
+                    "QC source revision document changed after its immutable snapshot."
+                )
+            if first and supplied_document is not None:
+                supplied_sha256 = hashlib.sha256(
+                    _canonical_json(supplied_document).encode("utf-8")
+                ).hexdigest()
+                if supplied_sha256 != row["revision_document_sha256"]:
+                    raise StateTransitionError(
+                        "QC supplied source document does not match its immutable snapshot."
+                    )
+            if (
+                revision["frame_path"] != row["source_frame_path"]
+                or not Path(row["source_frame_path"]).is_file()
+                or _file_sha256(row["source_frame_path"])
+                != row["source_frame_sha256"]
+            ):
+                raise StateTransitionError(
+                    "QC immutable starting frame changed after its source snapshot."
+                )
+            if _qc_generation_config_sha256(document) != row["generation_config_sha256"]:
+                raise StateTransitionError(
+                    "QC generation configuration changed after its source snapshot."
+                )
+            i2v = document.get("i2v")
+            if not isinstance(i2v, Mapping):
+                raise StateTransitionError("QC source document lacks its I2V contract.")
+            try:
+                document_seed = _qc_document_seed(i2v.get("seed"))
+            except StateTransitionError as error:
+                raise StateTransitionError("QC source document seed is invalid.") from error
+            if (
+                i2v.get("prompt") != row["current_prompt"]
+                or i2v.get("negative") != row["negative_prompt"]
+                or hashlib.sha256(
+                    str(i2v.get("negative", "")).encode("utf-8")
+                ).hexdigest()
+                != row["negative_prompt_sha256"]
+                or document_seed != int(row["current_seed"])
+            ):
+                raise StateTransitionError(
+                    "QC source prompt identity changed after its immutable snapshot."
+                )
+            if row["source_video_sha256"] is not None and (
+                revision["video_path"] != row["source_video_path"]
+                or not Path(row["source_video_path"]).is_file()
+                or _file_sha256(row["source_video_path"])
+                != row["source_video_sha256"]
+            ):
+                raise StateTransitionError(
+                    "QC source video changed after its immutable snapshot."
+                )
+            current_id = row["parent_candidate_id"]
+            first = False
+
+    def validate_qc_candidate_source_identity(
+        self,
+        candidate_id: str,
+        source_document: Mapping[str, Any],
+    ) -> Mapping[str, str]:
+        """Revalidate the candidate and every ancestor against immutable bytes."""
+        candidate_id = _evidence_id(candidate_id, "candidate_id")
+        self.initialize()
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._assert_qc_source_lineage_connection(
+                connection,
+                candidate_id,
+                supplied_document=source_document,
+            )
+            row = connection.execute(
+                "SELECT * FROM qc_candidate_source_identities WHERE candidate_id = ?",
+                (candidate_id,),
+            ).fetchone()
+        return dict(row)
+
+    def qc_candidate_source_identity(self, candidate_id: str) -> Mapping[str, str]:
+        candidate_id = _evidence_id(candidate_id, "candidate_id")
+        self.initialize()
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM qc_candidate_source_identities WHERE candidate_id = ?",
+                (candidate_id,),
+            ).fetchone()
+        if row is None:
+            raise StateTransitionError("QC candidate lacks its immutable source identity.")
+        return dict(row)
 
     def qc_candidates(
         self, job_id: str, scene_id: int | None = None
@@ -2306,6 +2586,11 @@ class PipelineStateStore:
                     != parameters_json
                 ):
                     raise StateTransitionError("The persisted A1 revision is inconsistent.")
+                self._assert_qc_source_lineage_connection(
+                    connection,
+                    existing["candidate_id"],
+                    supplied_document=parameters,
+                )
                 return self._qc_candidate_record(existing)
             parent = connection.execute(
                 """
@@ -2321,6 +2606,21 @@ class PipelineStateStore:
             ):
                 raise StateTransitionError(
                     "A1 must descend from the ORIGINAL candidate for this scene."
+                )
+            self._assert_qc_source_lineage_connection(
+                connection,
+                parent_candidate_id,
+            )
+            parent_identity = connection.execute(
+                """
+                SELECT source_frame_path FROM qc_candidate_source_identities
+                WHERE candidate_id = ?
+                """,
+                (parent_candidate_id,),
+            ).fetchone()
+            if parent_identity is None or frame_path != parent_identity["source_frame_path"]:
+                raise StateTransitionError(
+                    "A1 must reuse the immutable baseline starting frame."
                 )
             next_row = connection.execute(
                 """
@@ -2413,6 +2713,22 @@ class PipelineStateStore:
                     now,
                 ),
             )
+            connection.execute(
+                """
+                INSERT INTO qc_candidate_source_identities (
+                    candidate_id, revision_document_sha256, source_frame_path,
+                    source_frame_sha256, generation_config_sha256, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    candidate_id,
+                    hashlib.sha256(parameters_json.encode("utf-8")).hexdigest(),
+                    frame_path,
+                    _file_sha256(frame_path),
+                    _qc_generation_config_sha256(parameters),
+                    now,
+                ),
+            )
             row = connection.execute(
                 "SELECT * FROM qc_candidates WHERE candidate_id = ?", (candidate_id,)
             ).fetchone()
@@ -2479,6 +2795,11 @@ class PipelineStateStore:
                     json.loads(revision_row["parameters_json"])
                 ) != parameters_json:
                     raise StateTransitionError("The persisted B1 revision is inconsistent.")
+                self._assert_qc_source_lineage_connection(
+                    connection,
+                    existing["candidate_id"],
+                    supplied_document=parameters,
+                )
                 return self._qc_candidate_record(existing)
             parent = connection.execute(
                 "SELECT * FROM qc_candidates WHERE candidate_id = ?",
@@ -2491,6 +2812,21 @@ class PipelineStateStore:
                 or QcTier(parent["tier"]) != QcTier.A1
             ):
                 raise StateTransitionError("B1 must descend from this scene's A1 candidate.")
+            self._assert_qc_source_lineage_connection(
+                connection,
+                parent_candidate_id,
+            )
+            parent_identity = connection.execute(
+                """
+                SELECT source_frame_path FROM qc_candidate_source_identities
+                WHERE candidate_id = ?
+                """,
+                (parent_candidate_id,),
+            ).fetchone()
+            if parent_identity is None or frame_path != parent_identity["source_frame_path"]:
+                raise StateTransitionError(
+                    "B1 must reuse the immutable baseline starting frame."
+                )
             next_row = connection.execute(
                 "SELECT COALESCE(MAX(revision), 0) + 1 AS revision FROM scene_revisions WHERE job_id = ? AND scene_id = ?",
                 (job_id, scene_id),
@@ -2534,6 +2870,22 @@ class PipelineStateStore:
                     current_prompt, str(original_seed), str(current_seed), negative_prompt,
                     negative_prompt_sha256, QcCandidateState.PENDING_GENERATION.value,
                     "render_b1", now, now,
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO qc_candidate_source_identities (
+                    candidate_id, revision_document_sha256, source_frame_path,
+                    source_frame_sha256, generation_config_sha256, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    candidate_id,
+                    hashlib.sha256(parameters_json.encode("utf-8")).hexdigest(),
+                    frame_path,
+                    _file_sha256(frame_path),
+                    _qc_generation_config_sha256(parameters),
+                    now,
                 ),
             )
             row = connection.execute(

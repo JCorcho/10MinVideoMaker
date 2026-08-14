@@ -4,6 +4,7 @@ from copy import deepcopy
 import hashlib
 import json
 from pathlib import Path
+import sqlite3
 import tempfile
 import unittest
 
@@ -72,13 +73,15 @@ class A1RetryTests(unittest.TestCase):
             tier=QcTier.ORIGINAL,
             parent_candidate_id=None,
             source_video_path=str(video),
-            source_video_sha256="a" * 64,
+            source_video_sha256=hashlib.sha256(b"video").hexdigest(),
             original_prompt=self.document["i2v"]["prompt"],
             current_prompt=self.document["i2v"]["prompt"],
             original_seed=int(self.document["i2v"]["seed"]),
             current_seed=int(self.document["i2v"]["seed"]),
             negative_prompt=self.document["i2v"]["negative"],
-            negative_prompt_sha256="b" * 64,
+            negative_prompt_sha256=hashlib.sha256(
+                self.document["i2v"]["negative"].encode("utf-8")
+            ).hexdigest(),
             state=QcCandidateState.PENDING_QC,
             next_action="create_a1",
         )
@@ -201,12 +204,74 @@ class A1RetryTests(unittest.TestCase):
 
         self.assertEqual(completed.state, QcCandidateState.PENDING_QC)
         self.assertEqual(completed.source_video_sha256, a1_hash)
-        self.assertEqual(self.original.source_video_sha256, "a" * 64)
+        self.assertEqual(
+            self.original.source_video_sha256,
+            hashlib.sha256(b"video").hexdigest(),
+        )
         with self.assertRaises(StateTransitionError):
             self.store.complete_qc_candidate_generation(
                 retry.candidate.candidate_id,
                 source_video_path=retry.candidate.source_video_path,
                 source_video_sha256="d" * 64,
+            )
+
+    def test_changed_baseline_starting_frame_blocks_a1_without_candidate(self) -> None:
+        identity = self.store.qc_candidate_source_identity(
+            self.original.candidate_id
+        )
+        Path(identity["source_frame_path"]).write_bytes(b"mutated-frame")
+
+        with self.assertRaisesRegex(StateTransitionError, "starting frame changed"):
+            schedule_a1_retry(
+                self.store,
+                self.layout,
+                original_job=self.job,
+                source_candidate_id=self.original.candidate_id,
+                source_document=self.document,
+            )
+
+        self.assertFalse(
+            any(
+                item.tier == QcTier.A1
+                for item in self.store.qc_candidates(self.job.job_id, 1)
+            )
+        )
+
+    def test_changed_baseline_revision_document_blocks_a1(self) -> None:
+        mutated = deepcopy(self.document)
+        mutated["t2i"]["prompt"] += " out-of-band mutation"
+        connection = sqlite3.connect(self.layout.database_path)
+        try:
+            connection.execute(
+                """
+                UPDATE scene_revisions SET parameters_json = ?
+                WHERE job_id = ? AND scene_id = 1 AND revision = 1
+                """,
+                (canonical_json(mutated), self.job.job_id),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        with self.assertRaisesRegex(StateTransitionError, "document changed"):
+            schedule_a1_retry(
+                self.store,
+                self.layout,
+                original_job=self.job,
+                source_candidate_id=self.original.candidate_id,
+                source_document=mutated,
+            )
+
+    def test_changed_baseline_video_bytes_still_block_a1(self) -> None:
+        Path(self.original.source_video_path).write_bytes(b"mutated-video")
+
+        with self.assertRaisesRegex(StateTransitionError, "source video changed"):
+            schedule_a1_retry(
+                self.store,
+                self.layout,
+                original_job=self.job,
+                source_candidate_id=self.original.candidate_id,
+                source_document=self.document,
             )
 
 
@@ -449,6 +514,12 @@ class B1DurabilityTests(A1RetryTests):
 
         self.assertEqual(second.candidate, first.candidate)
         self.assertEqual(first.candidate.tier, QcTier.B1)
+        self.assertEqual(
+            self.store.qc_candidate_source_identity(first.candidate.candidate_id),
+            PipelineStateStore(self.layout.database_path).qc_candidate_source_identity(
+                first.candidate.candidate_id
+            ),
+        )
         self.assertEqual(first.candidate.state, QcCandidateState.PENDING_GENERATION)
         self.assertNotEqual(first.seed, a1.current_seed)
         self.assertEqual(len(self.store.qc_repairs(a1.candidate_id)), 1)
@@ -457,6 +528,35 @@ class B1DurabilityTests(A1RetryTests):
             1,
         )
 
+    def test_changed_baseline_locked_document_blocks_b1_descendant(self) -> None:
+        a1, document = self._completed_a1_failure()
+        mutated = deepcopy(self.document)
+        mutated["character"]["name"] = "out-of-band mutation"
+        connection = sqlite3.connect(self.layout.database_path)
+        try:
+            connection.execute(
+                """
+                UPDATE scene_revisions SET parameters_json = ?
+                WHERE job_id = ? AND scene_id = 1 AND revision = 1
+                """,
+                (canonical_json(mutated), self.job.job_id),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        with self.assertRaisesRegex(StateTransitionError, "document changed"):
+            schedule_b1_retry(
+                self.store,
+                self.layout,
+                original_job=self.job,
+                source_candidate_id=a1.candidate_id,
+                evaluation_id="evaluation-a1",
+                source_document=document,
+                raw_output="",
+                planner_identity={"backend": "test"},
+                repair_input_hash="7" * 64,
+            )
     def test_rejected_b1_persists_the_parsed_forbidden_patch(self) -> None:
         a1, document = self._completed_a1_failure()
         input_hash = "9" * 64
