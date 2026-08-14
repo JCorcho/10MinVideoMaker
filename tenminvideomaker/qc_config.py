@@ -162,6 +162,7 @@ class QualityControlSettings:
             "quantization": (self.quantization, "IQ3_M GGUF"),
             "projector_precision": (self.projector_precision, "FP16"),
             "prompt_version": (self.prompt_version, "production_ltx_video_qc_v1"),
+            "context_length": (self.context_length, 16384),
             "parallel_slots": (self.parallel_slots, 1),
             "image_min_tokens": (self.image_min_tokens, 1024),
             "sampling_fps": (self.sampling_fps, 2.0),

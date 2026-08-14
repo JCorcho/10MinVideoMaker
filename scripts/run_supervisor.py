@@ -29,6 +29,10 @@ from tenminvideomaker.ownership import (
     SupervisorInstanceLock,
     legacy_supervisor_process_ids,
 )
+from tenminvideomaker.qc_backend import LlamaCppHttpBackend
+from tenminvideomaker.qc_config import QualityControlSettings
+from tenminvideomaker.qc_controller import Phase1QcController
+from tenminvideomaker.qc_llama import LlamaCppProcess
 from tenminvideomaker.state_store import PipelineStateStore
 from tenminvideomaker.storage import StorageLayout, migrate_legacy_storage
 from tenminvideomaker.supervisor import PipelineSupervisor, SupervisorSettings
@@ -110,8 +114,22 @@ def build_supervisor(
             settings,
             require_human_review=require_human_review,
         )
+    store = PipelineStateStore(storage.database_path)
+    qc_settings = QualityControlSettings.from_environment(configured_environment)
+    qc_controller = Phase1QcController(
+        store=store,
+        layout=storage,
+        settings=qc_settings,
+        backend_factory=lambda: LlamaCppHttpBackend(
+            qc_settings,
+            LlamaCppProcess(qc_settings, storage),
+        ),
+        prompt_root=PROJECT_ROOT / "prompts",
+        ffmpeg_command=ffmpeg,
+        ffprobe_command=ffprobe,
+    )
     supervisor = PipelineSupervisor(
-        store=PipelineStateStore(storage.database_path),
+        store=store,
         mail_client=GmailClient(GmailSettings.from_environment()),
         asset_manager=ComfyLoraAssetClient(comfy),
         comfy=comfy,
@@ -128,6 +146,7 @@ def build_supervisor(
             ffmpeg_executable=ffmpeg,
             ffprobe_executable=ffprobe,
         ),
+        qc_controller=qc_controller,
     )
     _require_auto_continuation_approval(supervisor, storage)
     return supervisor

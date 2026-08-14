@@ -116,6 +116,8 @@ class QualityControlSettingsTests(unittest.TestCase):
 
             with self.assertRaises(QualityControlConfigurationError):
                 replace(settings, sampling_fps=1.0).validate_for_start()
+            with self.assertRaises(QualityControlConfigurationError):
+                replace(settings, context_length=8192).validate_for_start()
 
 
 if __name__ == "__main__":

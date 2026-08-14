@@ -239,6 +239,78 @@ class StageRecordingComfy(FakeComfy):
 
 
 class SupervisorTests(unittest.TestCase):
+    def test_qc_enabled_inserts_epoch_after_complete_i2v_batch_and_blocks_stitch(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            job = parse_job_payload(payload())
+            store = PipelineStateStore(root / "pipeline.sqlite3")
+            store.claim_job(job)
+            frame = root / "frame.png"
+            clip = root / "clip.mp4"
+            comfy = FakeComfy(frame)
+            assembler = FakeAssembler(root / "final.mp4")
+            calls: list[str] = []
+
+            class FakeQcController:
+                settings = SimpleNamespace(quality_control_enabled=True)
+
+                def register_original_candidates(self, _job):
+                    calls.append("register")
+
+                def run_epoch(self, _job, _supervisor):
+                    calls.append("epoch")
+                    return SimpleNamespace(ready_for_finalization=False, selection=())
+
+            supervisor = PipelineSupervisor(
+                store=store,
+                mail_client=FakeMailClient(),
+                asset_manager=FakeAssetManager(),
+                comfy=comfy,
+                assembler=assembler,
+                settings=SupervisorSettings(1, 10, 10, 2),
+                frame_path_factory=lambda _job, _scene: frame,
+                clip_path_factory=lambda _job, _scene: clip,
+                qc_controller=FakeQcController(),
+            )
+
+            supervisor.process_job(job)
+
+            self.assertEqual(calls, ["register", "epoch"])
+            self.assertEqual(store.snapshot().state, PipelineState.RUNNING_QC)
+            self.assertEqual(assembler.calls, [])
+            self.assertEqual(len(comfy.workflows), 2)
+
+    def test_qc_restart_state_delegates_without_replaying_generation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            job = parse_job_payload(payload())
+            store = PipelineStateStore(root / "pipeline.sqlite3")
+            store.claim_job(job)
+            store.transition(PipelineState.AWAITING_QC_REVIEW, job_id=job.job_id)
+            calls = []
+
+            class FakeQcController:
+                settings = SimpleNamespace(quality_control_enabled=False)
+
+                def run_epoch(self, _job, _supervisor):
+                    calls.append("epoch")
+                    return SimpleNamespace(ready_for_finalization=False, selection=())
+
+            comfy = FakeComfy(root / "unused.png")
+            supervisor = PipelineSupervisor(
+                store=store,
+                mail_client=FakeMailClient(),
+                asset_manager=FakeAssetManager(),
+                comfy=comfy,
+                settings=SupervisorSettings(1, 10, 10, 2),
+                qc_controller=FakeQcController(),
+            )
+
+            supervisor.tick()
+
+            self.assertEqual(calls, ["epoch"])
+            self.assertEqual(comfy.workflows, [])
+
     def test_fatal_restart_resumes_only_active_automatic_job(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()

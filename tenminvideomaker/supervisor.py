@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 import threading
 import time
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 from .artifacts import scene_clip_path, scene_frame_path
 from .assembly import AssemblyError, FfmpegAssembler, probe_video, validate_video_profile
@@ -37,8 +37,15 @@ from .contracts import (
 )
 from .delivery import DiscordDeliverySettings
 from .mail import GmailClient, GmailPollingService
-from .review import SceneWorkflowOverrides, scene_review_document
-from .state_store import JobState, PipelineState, PipelineStateStore, SceneState
+from .review import SceneWorkflowOverrides, scene_review_document, validate_scene_edit
+from .state_store import (
+    JobState,
+    ManualFinalSceneSelection,
+    PipelineState,
+    PipelineStateStore,
+    QcCandidateRecord,
+    SceneState,
+)
 from .workflow_builder import build_i2v_api_workflow, build_t2i_api_workflow
 from .storage import StorageLayout, write_json_atomic
 
@@ -121,6 +128,7 @@ class PipelineSupervisor:
         delivery: DiscordDeliverySettings | None = None,
         storage: StorageLayout | None = None,
         chunk_assembler: SceneChunkAssembler | None = None,
+        qc_controller: Any | None = None,
     ):
         self.store = store
         self.mail_client = mail_client
@@ -136,6 +144,7 @@ class PipelineSupervisor:
         self.delivery = delivery
         self.storage = storage
         self.chunk_assembler = chunk_assembler or SceneChunkAssembler()
+        self.qc_controller = qc_controller
         self.continuation_renderer = (
             ContinuationRenderer(
                 store=self.store,
@@ -204,6 +213,23 @@ class PipelineSupervisor:
                 snapshot.job_id or "unknown",
             )
             return
+        if snapshot.state in {
+            PipelineState.RUNNING_QC,
+            PipelineState.AWAITING_QC_REVIEW,
+        }:
+            if not snapshot.job_id:
+                raise FatalPipelineError(
+                    f"Pipeline state {snapshot.state} has no active job id."
+                )
+            if self.qc_controller is None:
+                raise FatalPipelineError(
+                    "A durable QC job cannot resume without the Phase-1 controller."
+                )
+            job = self.store.load_job(snapshot.job_id)
+            result = self.qc_controller.run_epoch(job, self)
+            if result.ready_for_finalization:
+                self._finalize_qc_job(job, result.selection)
+            return
         if not snapshot.job_id:
             raise FatalPipelineError(f"Pipeline state {snapshot.state} has no active job id.")
         if snapshot.state == PipelineState.ERROR:
@@ -251,6 +277,12 @@ class PipelineSupervisor:
         finally:
             stop_status.set()
             status_thread.join(timeout=1.0)
+            self.shutdown()
+
+    def shutdown(self) -> None:
+        """Release only resources explicitly owned by this supervisor."""
+        if self.qc_controller is not None:
+            self.qc_controller.close()
 
     def _status_loop(self, stop_status: threading.Event) -> None:
         self._log_status()
@@ -415,6 +447,17 @@ class PipelineSupervisor:
             # complete video stage has finished.
             self._release_memory()
 
+        if (
+            self.qc_controller is not None
+            and self.qc_controller.settings.quality_control_enabled
+        ):
+            self.qc_controller.register_original_candidates(job)
+            self.store.transition(PipelineState.RUNNING_QC, job_id=job.job_id)
+            result = self.qc_controller.run_epoch(job, self)
+            if result.ready_for_finalization:
+                self._finalize_qc_job(job, result.selection)
+            return
+
         try:
             if not self._deliver_i2v_batch(job, scene_by_id):
                 return
@@ -473,6 +516,157 @@ class PipelineSupervisor:
         )
         self._release_memory()
         self._request_next_job(previous_job_id=job.job_id, succeeded=complete_success)
+
+    def render_qc_candidates(
+        self,
+        job: JobPayload,
+        candidates: Sequence[tuple[QcCandidateRecord, Mapping[str, Any]]],
+    ) -> None:
+        """Render a whole repair batch while ComfyUI owns the generation epoch."""
+        if not candidates:
+            return
+        scene_ids = {candidate.scene_id for candidate, _ in candidates}
+        preparation = self._resolve_assets(job, scene_ids=scene_ids)
+        if preparation.failures:
+            raise ComfyHttpError(
+                "QC repair asset resolution failed: "
+                + "; ".join(
+                    error
+                    for errors in preparation.failures.values()
+                    for error in errors
+                )
+            )
+        for candidate, document in candidates:
+            revision = next(
+                item
+                for item in self.store.scene_revisions(job.job_id, candidate.scene_id)
+                if item.revision == candidate.revision
+            )
+            if not revision.frame_path or not Path(revision.frame_path).is_file():
+                raise ComfyHttpError("QC repair lost its immutable starting frame.")
+            validated = validate_scene_edit(job, candidate.scene_id, document)
+            use_continuation = self._uses_continuation(
+                validated.scene, validated.workflow
+            )
+            route = "continuation" if use_continuation else "legacy"
+            destination = Path(candidate.source_video_path)
+            if (
+                candidate.state == candidate.state.GENERATING
+                and destination.is_file()
+            ):
+                self._video_probe(destination)
+                self.store.complete_qc_candidate_generation(
+                    candidate.candidate_id,
+                    source_video_path=str(destination),
+                    source_video_sha256=self._sha256_path(destination),
+                )
+                continue
+            self.store.update_scene_revision(
+                job.job_id,
+                candidate.scene_id,
+                candidate.revision,
+                state=SceneState.RUNNING,
+            )
+            self.store.set_qc_generation_owner(
+                candidate.candidate_id,
+                prompt_id=candidate.generation_prompt_id,
+                prompt_stage=(
+                    "i2v_continuation" if use_continuation else "i2v_legacy"
+                ),
+                route=route,
+            )
+            rendered = self.render_i2v_scene(
+                job=validated.job,
+                scene=validated.scene,
+                frame_path=revision.frame_path,
+                destination=destination,
+                resolved_lora_filenames=preparation.resolved_filenames,
+                revision=candidate.revision,
+                overrides=validated.workflow,
+                prompt_id_callback=lambda prompt_id, candidate_id=candidate.candidate_id,
+                    route=route, use_continuation=use_continuation: (
+                    self.store.set_qc_generation_owner(
+                        candidate_id,
+                        prompt_id=prompt_id,
+                        prompt_stage=(
+                            "i2v_continuation" if use_continuation else "i2v_legacy"
+                        ),
+                        route=route,
+                    )
+                ),
+                existing_prompt_id=(
+                    candidate.generation_prompt_id if not use_continuation else None
+                ),
+                deliver_to_discord=False,
+                continuation_route=use_continuation,
+            )
+            self._video_probe(rendered)
+            self.store.complete_qc_candidate_generation(
+                candidate.candidate_id,
+                source_video_path=str(rendered),
+                source_video_sha256=self._sha256_path(rendered),
+            )
+
+    @staticmethod
+    def _sha256_path(path: str | Path) -> str:
+        import hashlib
+
+        digest = hashlib.sha256()
+        with Path(path).open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    def _finalize_qc_job(
+        self,
+        job: JobPayload,
+        selection: Sequence[ManualFinalSceneSelection],
+    ) -> None:
+        """Deliver and assemble only the controller's deterministic selection."""
+        required = tuple(scene.scene_id for scene in job.scenes)
+        if tuple(item.scene_id for item in selection) != required:
+            raise FatalPipelineError(
+                "QC finalization selection does not contain every required scene."
+            )
+        scene_by_id = {scene.scene_id: scene for scene in job.scenes}
+        if self.delivery is not None:
+            for item in selection:
+                candidate_revision = next(
+                    revision
+                    for revision in self.store.scene_revisions(job.job_id, item.scene_id)
+                    if revision.revision == item.revision
+                )
+                validated = validate_scene_edit(
+                    job, item.scene_id, candidate_revision.parameters
+                )
+                self.deliver_scene_video(
+                    job=validated.job,
+                    scene=validated.scene,
+                    scene_path=item.video_path,
+                    revision=item.revision,
+                    overrides=validated.workflow,
+                )
+                self._release_memory()
+        self.store.transition(PipelineState.STITCHING, job_id=job.job_id)
+        try:
+            streams = [self._video_probe(item.video_path) for item in selection]
+            validate_video_profile(streams)
+            assembled_path = self.assembler.stitch(
+                job.job_id,
+                [item.video_path for item in selection],
+                self.store.database_path.parent / "concat",
+            )
+        except AssemblyError as error:
+            message = f"Assembly failed for QC job {job.job_id}: {error}"
+            self.store.transition(PipelineState.ERROR, job_id=job.job_id, error=message)
+            self.store.set_job_status(job.job_id, JobState.FAILED)
+            self._release_memory()
+            return
+        self.store.set_job_status(
+            job.job_id, JobState.SUCCEEDED, final_path=str(assembled_path)
+        )
+        self._release_memory()
+        self._request_next_job(previous_job_id=job.job_id, succeeded=True)
 
     def _process_t2i_batch(
         self,

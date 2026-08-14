@@ -2030,6 +2030,165 @@ class StateStoreTests(unittest.TestCase):
             candidate.source_video_path,
         )
 
+    def _complete_pass_for_candidate(self, candidate_id: str) -> None:
+        candidate = self.store.qc_candidate(candidate_id)
+        identity = {
+            "evaluator_id": "production-qc",
+            "evaluator_version": "phase1-v1",
+            "backend_family": "llama.cpp",
+            "backend_version": "2.28.2",
+            "executable_path": "C:/llama-server.exe",
+            "executable_sha256": "1" * 64,
+            "model_id": "Qwen3.6 27B",
+            "model_path": "C:/model.gguf",
+            "model_sha256": "2" * 64,
+            "quantization": "IQ3_M GGUF",
+            "projector_path": "C:/mmproj.gguf",
+            "projector_sha256": "3" * 64,
+            "projector_precision": "FP16",
+            "gpu_uuid": "GPU-stable",
+            "gpu_name": "NVIDIA GeForce RTX 4080 SUPER",
+        }
+        key = evaluation_idempotency_key(
+            source_video_sha256=candidate.source_video_sha256,
+            evaluator_id=identity["evaluator_id"],
+            evaluator_version=identity["evaluator_version"],
+            backend_version=identity["backend_version"],
+            executable_sha256=identity["executable_sha256"],
+            model_sha256=identity["model_sha256"],
+            projector_sha256=identity["projector_sha256"],
+            effective_config_sha256="4" * 64,
+            prompt_sha256="5" * 64,
+        )
+        evaluation = self.store.begin_qc_evaluation(
+            evaluation_id="evaluation-pass-" + candidate_id,
+            idempotency_key=key,
+            candidate_id=candidate_id,
+            source_video_path=candidate.source_video_path,
+            source_video_sha256=candidate.source_video_sha256,
+            evaluator_identity=identity,
+            effective_config={},
+            effective_config_sha256="4" * 64,
+            prompt_version="production_ltx_video_qc_v1",
+            prompt_sha256="5" * 64,
+            sampling_config={"fps": 2.0},
+            window_config={"frames": 4},
+        )
+        self.store.complete_qc_evaluation(
+            evaluation.evaluation_id,
+            raw_result='{"decision":"PASS"}',
+            normalized_decision=QcDecision.PASS,
+            suspect_windows=[],
+            strong_window_count=0,
+            frame_accounting={"unique_selected_frames_inspected": 4},
+            evidence_manifest_path=str(
+                Path(candidate.source_video_path).parent
+                / "qc" / "evaluations" / evaluation.evaluation_id / "result.json"
+            ),
+            evidence_manifest_sha256="6" * 64,
+            next_action="pass_pending_human",
+        )
+        self.store.set_qc_candidate_state(
+            candidate_id,
+            QcCandidateState.PASS_PENDING_HUMAN,
+            next_action="await_human",
+        )
+
+    def test_human_qc_decision_is_atomic_idempotent_and_rejects_conflicts(self) -> None:
+        candidate = self._create_qc_candidate()
+        self._complete_pass_for_candidate(candidate.candidate_id)
+
+        approved = self.store.decide_qc_candidate(
+            job_id=candidate.job_id,
+            scene_id=candidate.scene_id,
+            candidate_id=candidate.candidate_id,
+            decision=QcHumanDecision.APPROVE,
+            note="checked",
+        )
+        replay = self.store.decide_qc_candidate(
+            job_id=candidate.job_id,
+            scene_id=candidate.scene_id,
+            candidate_id=candidate.candidate_id,
+            decision=QcHumanDecision.APPROVE,
+            note="checked",
+        )
+
+        self.assertEqual(approved.candidate.state, QcCandidateState.ACCEPTED)
+        self.assertFalse(approved.replayed)
+        self.assertTrue(replay.replayed)
+        with self.assertRaisesRegex(StateTransitionError, "cannot be overwritten"):
+            self.store.decide_qc_candidate(
+                job_id=candidate.job_id,
+                scene_id=candidate.scene_id,
+                candidate_id=candidate.candidate_id,
+                decision=QcHumanDecision.REJECT,
+                note="changed",
+            )
+        with self.assertRaisesRegex(StateTransitionError, "route identity"):
+            self.store.decide_qc_candidate(
+                job_id=candidate.job_id,
+                scene_id=99,
+                candidate_id=candidate.candidate_id,
+                decision=QcHumanDecision.APPROVE,
+                note="checked",
+            )
+
+    def test_qc_final_selection_requires_durable_acceptance_and_kill_switch_uses_original(self) -> None:
+        candidate = self._create_qc_candidate()
+        self._complete_pass_for_candidate(candidate.candidate_id)
+        with self.assertRaisesRegex(StateTransitionError, "ACCEPTED"):
+            self.store.qc_final_selection(candidate.job_id, [candidate.scene_id])
+
+        accepted = self.store.decide_qc_candidate(
+            job_id=candidate.job_id,
+            scene_id=candidate.scene_id,
+            candidate_id=candidate.candidate_id,
+            decision=QcHumanDecision.APPROVE,
+            note=None,
+        )
+        selected = self.store.qc_final_selection(candidate.job_id, [candidate.scene_id])
+        original = self.store.original_final_selection(candidate.job_id, [candidate.scene_id])
+
+        self.assertEqual(selected[0].revision, accepted.candidate.revision)
+        self.assertEqual(original[0].revision, 1)
+        self.store.set_qc_candidate_state(
+            candidate.candidate_id,
+            QcCandidateState.HOLD_FOR_REVIEW,
+            next_action="hold_for_review",
+        )
+        with self.assertRaisesRegex(StateTransitionError, "ACCEPTED"):
+            self.store.qc_final_selection(candidate.job_id, [candidate.scene_id])
+        self.assertEqual(
+            self.store.original_final_selection(candidate.job_id, [candidate.scene_id]),
+            original,
+        )
+
+    def test_manual_final_cannot_select_latest_unapproved_qc_revision(self) -> None:
+        candidate = self._create_qc_candidate()
+        latest_video = Path(self.temporary_directory.name) / "latest-unapproved.mp4"
+        latest_video.write_bytes(b"retry")
+        revision = self.store.create_scene_revision(
+            candidate.job_id,
+            candidate.scene_id,
+            remake_mode=RemakeMode.VIDEO_ONLY,
+            parameters={"job_id": candidate.job_id, "scene_id": candidate.scene_id},
+            state=SceneState.SUCCEEDED,
+            frame_path=str(Path(self.temporary_directory.name) / "frame.png"),
+            video_path=str(latest_video),
+        )
+        self.assertEqual(revision, 2)
+
+        with self.assertRaisesRegex(StateTransitionError, "no successful video revision"):
+            self.store.queue_manual_final(
+                candidate.job_id, quality_control_enabled=True
+            )
+        kill_switch = self.store.queue_manual_final(
+            candidate.job_id, quality_control_enabled=False
+        )
+        selection = self.store.manual_final_selection(kill_switch.request_id)
+        self.assertEqual(selection[0].revision, 1)
+        self.assertEqual(selection[0].video_path, candidate.source_video_path)
+
     def test_qc_tests_use_only_the_temporary_database(self) -> None:
         self._create_qc_candidate()
         self.assertNotIn(

@@ -30,6 +30,8 @@ class PipelineState(StrEnum):
     DOWNLOADING_ASSETS = "downloading_assets"
     RUNNING_T2I = "running_t2i"
     RUNNING_I2V = "running_i2v"
+    RUNNING_QC = "running_qc"
+    AWAITING_QC_REVIEW = "awaiting_qc_review"
     STITCHING = "stitching"
     ERROR = "error"
 
@@ -281,6 +283,9 @@ class QcCandidateRecord:
     next_action: str | None
     infrastructure_failure_count: int
     last_failure: Mapping[str, Any] | None
+    generation_prompt_id: str | None
+    generation_prompt_stage: str | None
+    generation_route: str | None
     created_at: str
     updated_at: str
 
@@ -339,6 +344,13 @@ class QcHumanDecisionRecord:
     result_sha256: str
     evidence_sha256: str
     created_at: str
+
+
+@dataclass(frozen=True)
+class QcHumanDecisionResult:
+    decision: QcHumanDecisionRecord
+    candidate: QcCandidateRecord
+    replayed: bool
 
 
 _ACTIVE_CHUNK_STATES = frozenset(
@@ -668,6 +680,9 @@ class PipelineStateStore:
                     infrastructure_failure_count INTEGER NOT NULL DEFAULT 0
                         CHECK (infrastructure_failure_count >= 0),
                     last_failure_json TEXT,
+                    generation_prompt_id TEXT,
+                    generation_prompt_stage TEXT,
+                    generation_route TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     UNIQUE (job_id, scene_id, tier),
@@ -755,6 +770,21 @@ class PipelineStateStore:
                     ON qc_repairs(candidate_id);
                 """
             )
+            qc_candidate_columns = {
+                row["name"]
+                for row in connection.execute(
+                    "PRAGMA table_info(qc_candidates)"
+                ).fetchall()
+            }
+            for column in (
+                "generation_prompt_id",
+                "generation_prompt_stage",
+                "generation_route",
+            ):
+                if column not in qc_candidate_columns:
+                    connection.execute(
+                        f"ALTER TABLE qc_candidates ADD COLUMN {column} TEXT"
+                    )
             scene_columns = {
                 row["name"] for row in connection.execute("PRAGMA table_info(scenes)").fetchall()
             }
@@ -1713,6 +1743,9 @@ class PipelineStateStore:
             next_action=row["next_action"],
             infrastructure_failure_count=int(row["infrastructure_failure_count"]),
             last_failure=_json_load(row["last_failure_json"], None),
+            generation_prompt_id=row["generation_prompt_id"],
+            generation_prompt_stage=row["generation_prompt_stage"],
+            generation_route=row["generation_route"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
@@ -2309,6 +2342,46 @@ class PipelineStateStore:
             ).fetchone()
         return self._qc_candidate_record(row)
 
+    def set_qc_generation_owner(
+        self,
+        candidate_id: str,
+        *,
+        prompt_id: str | None,
+        prompt_stage: str | None,
+        route: str,
+    ) -> QcCandidateRecord:
+        if route not in {"legacy", "continuation"}:
+            raise StateTransitionError("QC generation route must be legacy or continuation.")
+        if prompt_id is not None:
+            prompt_id = _required_text(prompt_id, "prompt_id")
+        if prompt_stage is not None:
+            prompt_stage = _required_text(prompt_stage, "prompt_stage")
+        self.initialize()
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM qc_candidates WHERE candidate_id = ?", (candidate_id,)
+            ).fetchone()
+            if row is None:
+                raise StateTransitionError(f"Unknown QC candidate {candidate_id}.")
+            if row["generation_route"] not in {None, route}:
+                raise StateTransitionError("QC generation route is immutable after launch.")
+            connection.execute(
+                """
+                UPDATE qc_candidates SET generation_prompt_id = ?,
+                    generation_prompt_stage = ?, generation_route = ?, state = ?,
+                    updated_at = ? WHERE candidate_id = ?
+                """,
+                (
+                    prompt_id, prompt_stage, route,
+                    QcCandidateState.GENERATING.value, _utc_now(), candidate_id,
+                ),
+            )
+            updated = connection.execute(
+                "SELECT * FROM qc_candidates WHERE candidate_id = ?", (candidate_id,)
+            ).fetchone()
+        return self._qc_candidate_record(updated)
+
     def record_qc_infrastructure_failure(
         self,
         candidate_id: str,
@@ -2813,6 +2886,228 @@ class PipelineStateStore:
             ).fetchone()
         return self._qc_human_decision_record(row) if row is not None else None
 
+    def decide_qc_candidate(
+        self,
+        *,
+        job_id: str,
+        scene_id: int,
+        candidate_id: str,
+        decision: QcHumanDecision,
+        note: str | None,
+        actor: str = "local-operator",
+    ) -> QcHumanDecisionResult:
+        """Atomically record one terminal human action and route/promote it."""
+        candidate_id = _evidence_id(candidate_id, "candidate_id")
+        actor = _required_text(actor, "actor")
+        if note is not None and not isinstance(note, str):
+            raise StateTransitionError("Human decision note must be text or null.")
+        decision_id = "decision-qc-" + hashlib.sha256(
+            candidate_id.encode("utf-8")
+        ).hexdigest()[:32]
+        self.initialize()
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            candidate = connection.execute(
+                "SELECT * FROM qc_candidates WHERE candidate_id = ?",
+                (candidate_id,),
+            ).fetchone()
+            if (
+                candidate is None
+                or candidate["job_id"] != job_id
+                or int(candidate["scene_id"]) != scene_id
+            ):
+                raise StateTransitionError("QC candidate does not match the route identity.")
+            existing = connection.execute(
+                "SELECT * FROM qc_human_decisions WHERE candidate_id = ?",
+                (candidate_id,),
+            ).fetchone()
+            if existing is not None:
+                if (
+                    existing["decision"] != decision.value
+                    or existing["note"] != note
+                    or existing["actor"] != actor
+                ):
+                    raise StateTransitionError(
+                        "A terminal human QC decision cannot be overwritten."
+                    )
+                return QcHumanDecisionResult(
+                    self._qc_human_decision_record(existing),
+                    self._qc_candidate_record(candidate),
+                    True,
+                )
+            if QcCandidateState(candidate["state"]) != QcCandidateState.PASS_PENDING_HUMAN:
+                raise StateTransitionError(
+                    "Only the current PASS_PENDING_HUMAN candidate may be decided."
+                )
+            evaluation = connection.execute(
+                """
+                SELECT * FROM qc_evaluations
+                WHERE candidate_id = ? AND state = 'COMPLETE'
+                ORDER BY completed_at DESC, evaluation_id DESC LIMIT 1
+                """,
+                (candidate_id,),
+            ).fetchone()
+            if (
+                evaluation is None
+                or evaluation["normalized_decision"] != QcDecision.PASS.value
+                or not evaluation["evidence_manifest_sha256"]
+                or not candidate["source_video_sha256"]
+            ):
+                raise StateTransitionError(
+                    "Human approval requires durable completed PASS evidence."
+                )
+            now = _utc_now()
+            connection.execute(
+                """
+                INSERT INTO qc_human_decisions (
+                    decision_id, candidate_id, decision, note, actor,
+                    result_sha256, evidence_sha256, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    decision_id, candidate_id, decision.value, note, actor,
+                    candidate["source_video_sha256"],
+                    evaluation["evidence_manifest_sha256"], now,
+                ),
+            )
+            if decision == QcHumanDecision.APPROVE:
+                revision = connection.execute(
+                    """
+                    SELECT frame_path, video_path, state FROM scene_revisions
+                    WHERE job_id = ? AND scene_id = ? AND revision = ?
+                    """,
+                    (job_id, scene_id, candidate["revision"]),
+                ).fetchone()
+                if (
+                    revision is None
+                    or revision["state"] != SceneState.SUCCEEDED.value
+                    or revision["video_path"] != candidate["source_video_path"]
+                ):
+                    raise StateTransitionError(
+                        "Approved candidate no longer matches a successful revision."
+                    )
+                connection.execute(
+                    "UPDATE qc_candidates SET state = ?, next_action = NULL, updated_at = ? WHERE candidate_id = ?",
+                    (QcCandidateState.ACCEPTED.value, now, candidate_id),
+                )
+                connection.execute(
+                    """
+                    UPDATE qc_candidates SET state = ?, next_action = NULL, updated_at = ?
+                    WHERE job_id = ? AND scene_id = ? AND candidate_id != ?
+                    """,
+                    (
+                        QcCandidateState.SUPERSEDED.value, now,
+                        job_id, scene_id, candidate_id,
+                    ),
+                )
+                connection.execute(
+                    """
+                    UPDATE scenes SET state = ?, frame_path = COALESCE(?, frame_path),
+                        video_path = ?, error = NULL, updated_at = ?
+                    WHERE job_id = ? AND scene_id = ?
+                    """,
+                    (
+                        SceneState.SUCCEEDED.value, revision["frame_path"],
+                        candidate["source_video_path"], now, job_id, scene_id,
+                    ),
+                )
+            else:
+                connection.execute(
+                    "UPDATE qc_candidates SET state = ?, next_action = ?, updated_at = ? WHERE candidate_id = ?",
+                    (
+                        QcCandidateState.HOLD_FOR_REVIEW.value,
+                        "hold_for_review", now, candidate_id,
+                    ),
+                )
+            stored_decision = connection.execute(
+                "SELECT * FROM qc_human_decisions WHERE decision_id = ?",
+                (decision_id,),
+            ).fetchone()
+            stored_candidate = connection.execute(
+                "SELECT * FROM qc_candidates WHERE candidate_id = ?",
+                (candidate_id,),
+            ).fetchone()
+        return QcHumanDecisionResult(
+            self._qc_human_decision_record(stored_decision),
+            self._qc_candidate_record(stored_candidate),
+            False,
+        )
+
+    def qc_final_selection(
+        self,
+        job_id: str,
+        scene_ids: Sequence[int],
+    ) -> tuple[ManualFinalSceneSelection, ...]:
+        """Resolve exactly one durable ACCEPTED candidate for every scene."""
+        required = tuple(sorted(set(scene_ids)))
+        self.initialize()
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT c.scene_id, c.revision, c.source_video_path,
+                       r.video_path, r.state
+                FROM qc_candidates c
+                JOIN scene_revisions r ON r.job_id = c.job_id
+                    AND r.scene_id = c.scene_id AND r.revision = c.revision
+                WHERE c.job_id = ? AND c.state = ?
+                ORDER BY c.scene_id
+                """,
+                (job_id, QcCandidateState.ACCEPTED.value),
+            ).fetchall()
+        if tuple(int(row["scene_id"]) for row in rows) != required:
+            raise StateTransitionError(
+                "QC finalization requires one ACCEPTED candidate for every required scene."
+            )
+        result = []
+        for row in rows:
+            if (
+                row["state"] != SceneState.SUCCEEDED.value
+                or row["video_path"] != row["source_video_path"]
+                or not Path(row["source_video_path"]).is_file()
+            ):
+                raise StateTransitionError(
+                    "An ACCEPTED candidate is missing its bound successful video."
+                )
+            result.append(
+                ManualFinalSceneSelection(
+                    scene_id=int(row["scene_id"]),
+                    revision=int(row["revision"]),
+                    video_path=row["source_video_path"],
+                )
+            )
+        return tuple(result)
+
+    def original_final_selection(
+        self, job_id: str, scene_ids: Sequence[int]
+    ) -> tuple[ManualFinalSceneSelection, ...]:
+        """Kill-switch resolver: use revision 1, never a promoted retry pointer."""
+        required = tuple(sorted(set(scene_ids)))
+        self.initialize()
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT scene_id, revision, video_path, state FROM scene_revisions
+                WHERE job_id = ? AND revision = 1 ORDER BY scene_id
+                """,
+                (job_id,),
+            ).fetchall()
+        selected = tuple(
+            ManualFinalSceneSelection(
+                scene_id=int(row["scene_id"]),
+                revision=1,
+                video_path=row["video_path"],
+            )
+            for row in rows
+            if row["state"] == SceneState.SUCCEEDED.value
+            and row["video_path"]
+            and Path(row["video_path"]).is_file()
+        )
+        if tuple(item.scene_id for item in selected) != required:
+            raise StateTransitionError(
+                "Kill-switch finalization requires every original revision-1 video."
+            )
+        return selected
+
     def promote_accepted_qc_candidate(self, candidate_id: str) -> None:
         self.initialize()
         with self._connection() as connection:
@@ -3301,7 +3596,12 @@ class PipelineStateStore:
             if cursor.rowcount != 1:
                 raise StateTransitionError(f"Unknown scene {scene_id} for job {job_id}.")
 
-    def queue_manual_final(self, job_id: str) -> ManualFinalRecord:
+    def queue_manual_final(
+        self,
+        job_id: str,
+        *,
+        quality_control_enabled: bool = False,
+    ) -> ManualFinalRecord:
         """Snapshot current manual-final choices without changing automatic job assembly."""
         self.initialize()
         with self._connection() as connection:
@@ -3323,7 +3623,11 @@ class PipelineStateStore:
             if active is not None:
                 return self._manual_final_record(active)
 
-            selection = self._manual_final_selection(connection, job_id)
+            selection = self._manual_final_selection(
+                connection,
+                job_id,
+                quality_control_enabled=quality_control_enabled,
+            )
             request_id = uuid4().hex
             now = _utc_now()
             connection.execute(
@@ -3466,6 +3770,8 @@ class PipelineStateStore:
     def _manual_final_selection(
         connection: sqlite3.Connection,
         job_id: str,
+        *,
+        quality_control_enabled: bool = False,
     ) -> list[dict[str, Any]]:
         scenes = connection.execute(
             """
@@ -3482,17 +3788,47 @@ class PipelineStateStore:
             )
         selected: list[dict[str, Any]] = []
         unavailable: list[int] = []
+        has_qc = connection.execute(
+            "SELECT 1 FROM qc_candidates WHERE job_id = ? LIMIT 1", (job_id,)
+        ).fetchone() is not None
         for scene in scenes:
-            revision = connection.execute(
-                """
-                SELECT revision, video_path
-                FROM scene_revisions
-                WHERE job_id = ? AND scene_id = ? AND state = ? AND video_path IS NOT NULL
-                ORDER BY revision DESC LIMIT 1
-                """,
-                (job_id, scene["scene_id"], SceneState.SUCCEEDED),
-            ).fetchone()
-            if revision is None and (
+            if quality_control_enabled:
+                revision = connection.execute(
+                    """
+                    SELECT r.revision, r.video_path
+                    FROM qc_candidates c
+                    JOIN scene_revisions r ON r.job_id = c.job_id
+                        AND r.scene_id = c.scene_id AND r.revision = c.revision
+                    WHERE c.job_id = ? AND c.scene_id = ? AND c.state = ?
+                        AND r.state = ? AND r.video_path = c.source_video_path
+                    """,
+                    (
+                        job_id, scene["scene_id"], QcCandidateState.ACCEPTED.value,
+                        SceneState.SUCCEEDED.value,
+                    ),
+                ).fetchone()
+            elif has_qc:
+                # Kill switch: never let a newer unapproved retry become the
+                # baseline merely because it is the latest successful revision.
+                revision = connection.execute(
+                    """
+                    SELECT revision, video_path FROM scene_revisions
+                    WHERE job_id = ? AND scene_id = ? AND revision = 1
+                        AND state = ? AND video_path IS NOT NULL
+                    """,
+                    (job_id, scene["scene_id"], SceneState.SUCCEEDED.value),
+                ).fetchone()
+            else:
+                revision = connection.execute(
+                    """
+                    SELECT revision, video_path
+                    FROM scene_revisions
+                    WHERE job_id = ? AND scene_id = ? AND state = ? AND video_path IS NOT NULL
+                    ORDER BY revision DESC LIMIT 1
+                    """,
+                    (job_id, scene["scene_id"], SceneState.SUCCEEDED),
+                ).fetchone()
+            if revision is None and not (quality_control_enabled or has_qc) and (
                 SceneState(scene["state"]) == SceneState.SUCCEEDED
                 and scene["video_path"]
             ):
