@@ -56,6 +56,7 @@ CANCELLABLE_PROJECT_STATES = frozenset(
         PipelineState.ERROR,
         PipelineState.AWAITING_REVIEW,
         PipelineState.AWAITING_QC_REVIEW,
+        PipelineState.QC_BLOCKED,
     }
 )
 
@@ -723,6 +724,7 @@ class SupervisorController:
             PipelineState.WAITING_FOR_GROK,
             PipelineState.AWAITING_REVIEW,
             PipelineState.ERROR,
+            PipelineState.QC_BLOCKED,
         }:
             return self.supervisor.settings.poll_interval_seconds
         return self.idle_wait_seconds

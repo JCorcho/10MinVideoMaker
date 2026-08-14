@@ -360,6 +360,45 @@ class SupervisorTests(unittest.TestCase):
             self.assertEqual(calls, ["epoch"])
             self.assertEqual(comfy.workflows, [])
 
+    def test_qc_blocked_ticks_do_not_repeat_registration_or_controller_work(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            job = parse_job_payload(payload())
+            store = PipelineStateStore(root / "pipeline.sqlite3")
+            store.claim_job(job)
+            store.transition(
+                PipelineState.QC_BLOCKED,
+                job_id=job.job_id,
+                error="QC blocked: pre-QC selection is missing scene(s) 02",
+            )
+            calls: list[str] = []
+
+            class FakeQcController:
+                settings = SimpleNamespace(quality_control_enabled=True)
+
+                def run_epoch(self, *_args):
+                    calls.append("epoch")
+                    raise AssertionError("blocked QC must not run")
+
+                def register_original_candidates(self, *_args):
+                    calls.append("register")
+                    raise AssertionError("blocked QC must not register")
+
+            supervisor = PipelineSupervisor(
+                store=store,
+                mail_client=FakeMailClient(),
+                asset_manager=FakeAssetManager(),
+                comfy=FakeComfy(root / "unused.png"),
+                settings=SupervisorSettings(1, 10, 10, 2),
+                qc_controller=FakeQcController(),
+            )
+
+            supervisor.tick()
+            supervisor.tick()
+
+            self.assertEqual(calls, [])
+            self.assertEqual(store.snapshot().state, PipelineState.QC_BLOCKED)
+
     def test_fatal_restart_resumes_only_active_automatic_job(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()

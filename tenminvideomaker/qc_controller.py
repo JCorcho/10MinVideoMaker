@@ -33,6 +33,7 @@ from .qc_repair import schedule_a1_retry, schedule_b1_retry
 from .qc_video import sample_video_frames
 from .review import scene_review_document
 from .state_store import (
+    IncompleteLegacySelectionError,
     ManualFinalSceneSelection,
     PipelineState,
     PipelineStateStore,
@@ -139,11 +140,17 @@ class Phase1QcController:
         )
         if existing:
             if tuple(item.scene_id for item in existing) != tuple(sorted(scene_ids)):
-                raise StateTransitionError(
-                    "The durable pre-QC baseline snapshot is incomplete."
-                )
+                missing = tuple(sorted(set(scene_ids) - {item.scene_id for item in existing}))
+                if missing:
+                    self.store.hold_incomplete_qc_job(job.job_id, missing)
+                    return ()
+                raise StateTransitionError("The durable pre-QC baseline snapshot is invalid.")
             return existing
-        baseline = self.store.legacy_final_selection(job.job_id, scene_ids)
+        try:
+            baseline = self.store.legacy_final_selection(job.job_id, scene_ids)
+        except IncompleteLegacySelectionError as error:
+            self.store.hold_incomplete_qc_job(job.job_id, error.missing_scene_ids)
+            return ()
         selected = {item.scene_id: item for item in baseline}
         prepared: list[dict[str, Any]] = []
         for scene in job.scenes:
@@ -637,7 +644,9 @@ class Phase1QcController:
                 self.store.original_final_selection(job.job_id, scene_ids),
                 False,
             )
-        self.register_original_candidates(job)
+        originals = self.register_original_candidates(job)
+        if not originals:
+            return QcEpochResult(False, (), True)
         generated = 0
         evaluated = 0
         for _epoch in range(4):

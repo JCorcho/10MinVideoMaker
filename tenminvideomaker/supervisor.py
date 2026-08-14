@@ -213,6 +213,13 @@ class PipelineSupervisor:
                 snapshot.job_id or "unknown",
             )
             return
+        if snapshot.state == PipelineState.QC_BLOCKED:
+            LOGGER.debug(
+                "Job %s is on a durable QC hold: %s",
+                snapshot.job_id or "unknown",
+                snapshot.error or "incomplete pre-QC scene set",
+            )
+            return
         if snapshot.state in {
             PipelineState.RUNNING_QC,
             PipelineState.AWAITING_QC_REVIEW,
@@ -451,7 +458,9 @@ class PipelineSupervisor:
             self.qc_controller is not None
             and self.qc_controller.settings.quality_control_enabled
         ):
-            self.qc_controller.register_original_candidates(job)
+            originals = self.qc_controller.register_original_candidates(job)
+            if originals == ():
+                return
             self.store.transition(PipelineState.RUNNING_QC, job_id=job.job_id)
             result = self.qc_controller.run_epoch(job, self)
             if result.ready_for_finalization:
@@ -1601,6 +1610,7 @@ class PipelineSupervisor:
                 PipelineState.IDLE,
                 PipelineState.WAITING_FOR_GROK,
                 PipelineState.AWAITING_REVIEW,
+                PipelineState.QC_BLOCKED,
             }:
                 self.store.transition(
                     snapshot.state,

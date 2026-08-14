@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import copy
 import hashlib
 from pathlib import Path
 import tempfile
@@ -26,6 +27,8 @@ from tenminvideomaker.qc_video import SampledFrame, SampledVideo, VideoMetadata
 from tenminvideomaker.qc_controller import Phase1QcController, QcControllerError
 from tenminvideomaker.review import scene_review_document
 from tenminvideomaker.state_store import (
+    JobState,
+    PipelineState,
     PipelineStateStore,
     RemakeMode,
     SceneState,
@@ -205,6 +208,88 @@ class Phase1QcControllerRoutingTests(unittest.TestCase):
                     video_path=str(video),
                 ),
             ),
+        )
+
+    def test_incomplete_original_scene_set_enters_one_durable_recoverable_hold(self) -> None:
+        raw = copy.deepcopy(payload())
+        raw["job_id"] = "partial-qc-job"
+        second = copy.deepcopy(raw["scenes"][0])
+        second["id"] = 2
+        second["title"] = "Missing continuation"
+        raw["scenes"].append(second)
+        job = parse_job_payload(raw)
+        partial_root = self.root / "partial"
+        layout = StorageLayout(partial_root)
+        store = PipelineStateStore(layout.database_path)
+        store.claim_job(job)
+        store.set_job_status(job.job_id, JobState.RUNNING)
+        frame = partial_root / "scene-01.png"
+        video = partial_root / "scene-01.mp4"
+        frame.parent.mkdir(parents=True, exist_ok=True)
+        frame.write_bytes(b"frame")
+        video.write_bytes(b"one successful scene")
+        store.set_scene_state(
+            job.job_id,
+            1,
+            SceneState.SUCCEEDED,
+            frame_path=str(frame),
+            video_path=str(video),
+        )
+        store.ensure_original_scene_revision(
+            job.job_id,
+            1,
+            parameters=scene_review_document(job, job.scenes[0]),
+            frame_path=str(frame),
+            video_path=str(video),
+        )
+        store.set_scene_state(
+            job.job_id,
+            2,
+            SceneState.FAILED,
+            error="I2V attempts exhausted",
+        )
+        store.ensure_original_scene_revision(
+            job.job_id,
+            2,
+            parameters=scene_review_document(job, job.scenes[1]),
+        )
+        store.update_scene_revision(
+            job.job_id,
+            2,
+            1,
+            state=SceneState.FAILED,
+            error="I2V attempts exhausted",
+        )
+        controller = Phase1QcController(
+            store=store,
+            layout=layout,
+            settings=replace(
+                QualityControlSettings(), quality_control_enabled=True
+            ),
+            backend_factory=lambda: None,
+            prompt_root=Path(__file__).parents[1] / "prompts",
+        )
+
+        first = controller.register_original_candidates(job)
+        first_hold = store.qc_job_hold(job.job_id)
+        second_result = controller.register_original_candidates(job)
+        second_hold = store.qc_job_hold(job.job_id)
+
+        self.assertEqual(first, ())
+        self.assertEqual(second_result, ())
+        self.assertEqual(store.snapshot().state, PipelineState.QC_BLOCKED)
+        self.assertEqual(store.list_jobs()[0].status, JobState.RUNNING)
+        self.assertEqual(store.qc_candidates(job.job_id), ())
+        self.assertEqual(first_hold, second_hold)
+        self.assertEqual(first_hold.missing_scene_ids, (2,))
+        self.assertEqual(first_hold.evidence["missing_scenes"][0]["scene_id"], 2)
+        self.assertEqual(
+            first_hold.evidence["missing_scenes"][0]["title"],
+            "Missing continuation",
+        )
+        self.assertIn(
+            "I2V attempts exhausted",
+            first_hold.evidence["missing_scenes"][0]["error"],
         )
 
     def test_failed_revision_one_uses_later_success_and_a1_descends_from_it(self) -> None:
@@ -800,6 +885,7 @@ class Phase1QcControllerRoutingTests(unittest.TestCase):
         self.assertLess(close_positions[1], render_positions[1])
 
         restarted_store = PipelineStateStore(self.layout.database_path)
+        restarted_store.set_job_status(self.job.job_id, JobState.RUNNING)
         restarted_store.decide_qc_candidate(
             job_id=self.job.job_id,
             scene_id=1,

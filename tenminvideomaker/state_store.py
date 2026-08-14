@@ -32,6 +32,7 @@ class PipelineState(StrEnum):
     RUNNING_I2V = "running_i2v"
     RUNNING_QC = "running_qc"
     AWAITING_QC_REVIEW = "awaiting_qc_review"
+    QC_BLOCKED = "qc_blocked"
     STITCHING = "stitching"
     ERROR = "error"
 
@@ -101,12 +102,30 @@ class StateTransitionError(RuntimeError):
     """Raised when an operation would violate the single-job state machine."""
 
 
+class IncompleteLegacySelectionError(StateTransitionError):
+    """Raised with exact scene identities when pre-QC selection is incomplete."""
+
+    def __init__(self, missing_scene_ids: Sequence[int], message: str):
+        super().__init__(message)
+        self.missing_scene_ids = tuple(sorted(set(int(item) for item in missing_scene_ids)))
+
+
 @dataclass(frozen=True)
 class PipelineSnapshot:
     state: PipelineState
     job_id: str | None
     active_scene_id: int | None
     error: str | None
+
+
+@dataclass(frozen=True)
+class QcJobHoldRecord:
+    job_id: str
+    kind: str
+    missing_scene_ids: tuple[int, ...]
+    evidence: Mapping[str, Any]
+    evidence_sha256: str
+    created_at: str
 
 
 @dataclass(frozen=True)
@@ -789,6 +808,15 @@ class PipelineStateStore:
                     evidence_sha256 TEXT NOT NULL,
                     created_at TEXT NOT NULL,
                     FOREIGN KEY (candidate_id) REFERENCES qc_candidates(candidate_id)
+                );
+                CREATE TABLE IF NOT EXISTS qc_job_holds (
+                    job_id TEXT PRIMARY KEY,
+                    kind TEXT NOT NULL,
+                    missing_scene_ids_json TEXT NOT NULL,
+                    evidence_json TEXT NOT NULL,
+                    evidence_sha256 TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (job_id) REFERENCES jobs(job_id)
                 );
                 CREATE INDEX IF NOT EXISTS idx_scene_chunks_state
                     ON scene_chunks(job_id, scene_id, revision, state, chunk_index);
@@ -3429,6 +3457,159 @@ class PipelineStateStore:
             )
         return tuple(result)
 
+    @staticmethod
+    def _qc_job_hold_record(row: sqlite3.Row) -> QcJobHoldRecord:
+        return QcJobHoldRecord(
+            job_id=row["job_id"],
+            kind=row["kind"],
+            missing_scene_ids=tuple(
+                int(item) for item in json.loads(row["missing_scene_ids_json"])
+            ),
+            evidence=json.loads(row["evidence_json"]),
+            evidence_sha256=row["evidence_sha256"],
+            created_at=row["created_at"],
+        )
+
+    def hold_incomplete_qc_job(
+        self,
+        job_id: str,
+        missing_scene_ids: Sequence[int],
+    ) -> QcJobHoldRecord:
+        """Persist one immutable missing-scene incident and enter a stable hold."""
+        missing = tuple(sorted(set(int(item) for item in missing_scene_ids)))
+        if not missing or any(item < 1 for item in missing):
+            raise StateTransitionError("A QC incomplete-scene hold needs scene identities.")
+        self.initialize()
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            current = connection.execute(
+                "SELECT state, job_id FROM pipeline_state WHERE singleton = 1"
+            ).fetchone()
+            job = connection.execute(
+                "SELECT status, payload_json FROM jobs WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+            if (
+                current is None
+                or current["job_id"] != job_id
+                or job is None
+                or JobState(job["status"]) != JobState.RUNNING
+            ):
+                raise StateTransitionError(
+                    "Only the active RUNNING job may enter a QC incomplete-scene hold."
+                )
+            existing = connection.execute(
+                "SELECT * FROM qc_job_holds WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+            if existing is None:
+                payload = json.loads(job["payload_json"])
+                titles = {
+                    int(item.get("id")): str(item.get("title", ""))
+                    for item in payload.get("scenes", [])
+                    if isinstance(item, Mapping) and isinstance(item.get("id"), int)
+                }
+                scene_rows = {
+                    int(row["scene_id"]): row
+                    for row in connection.execute(
+                        "SELECT scene_id, state, error FROM scenes WHERE job_id = ?",
+                        (job_id,),
+                    ).fetchall()
+                }
+                evidence_scenes: list[dict[str, Any]] = []
+                for scene_id in missing:
+                    scene = scene_rows.get(scene_id)
+                    revisions = connection.execute(
+                        """
+                        SELECT revision, state, video_path, error
+                        FROM scene_revisions
+                        WHERE job_id = ? AND scene_id = ?
+                        ORDER BY revision
+                        """,
+                        (job_id, scene_id),
+                    ).fetchall()
+                    revision_evidence = []
+                    for revision in revisions:
+                        video_path = revision["video_path"]
+                        try:
+                            path_exists = bool(video_path and Path(video_path).is_file())
+                        except OSError:
+                            path_exists = False
+                        revision_evidence.append(
+                            {
+                                "revision": int(revision["revision"]),
+                                "state": revision["state"],
+                                "video_path": video_path,
+                                "video_path_exists": path_exists,
+                                "error": revision["error"],
+                            }
+                        )
+                    evidence_scenes.append(
+                        {
+                            "scene_id": scene_id,
+                            "title": titles.get(scene_id, ""),
+                            "state": scene["state"] if scene is not None else "missing",
+                            "error": scene["error"] if scene is not None else "scene row missing",
+                            "revisions": revision_evidence,
+                        }
+                    )
+                evidence = {
+                    "schema_version": 1,
+                    "kind": "incomplete_pre_qc_scene_set",
+                    "job_id": job_id,
+                    "missing_scene_ids": list(missing),
+                    "missing_scenes": evidence_scenes,
+                }
+                evidence_json = _canonical_json(evidence)
+                now = _utc_now()
+                connection.execute(
+                    """
+                    INSERT INTO qc_job_holds (
+                        job_id, kind, missing_scene_ids_json, evidence_json,
+                        evidence_sha256, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        job_id,
+                        "incomplete_pre_qc_scene_set",
+                        _canonical_json(list(missing)),
+                        evidence_json,
+                        hashlib.sha256(evidence_json.encode("utf-8")).hexdigest(),
+                        now,
+                    ),
+                )
+                existing = connection.execute(
+                    "SELECT * FROM qc_job_holds WHERE job_id = ?",
+                    (job_id,),
+                ).fetchone()
+            held_missing = tuple(
+                int(item) for item in json.loads(existing["missing_scene_ids_json"])
+            )
+            rendered = ", ".join(f"{item:02d}" for item in held_missing)
+            connection.execute(
+                """
+                UPDATE pipeline_state
+                SET state = ?, active_scene_id = NULL, error = ?, updated_at = ?
+                WHERE singleton = 1 AND state != ?
+                """,
+                (
+                    PipelineState.QC_BLOCKED.value,
+                    "QC blocked: pre-QC selection is missing scene(s) " + rendered,
+                    _utc_now(),
+                    PipelineState.QC_BLOCKED.value,
+                ),
+            )
+        return self._qc_job_hold_record(existing)
+
+    def qc_job_hold(self, job_id: str) -> QcJobHoldRecord | None:
+        self.initialize()
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM qc_job_holds WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+        return None if row is None else self._qc_job_hold_record(row)
+
     def original_final_selection(
         self, job_id: str, scene_ids: Sequence[int]
     ) -> tuple[ManualFinalSceneSelection, ...]:
@@ -3512,11 +3693,16 @@ class PipelineStateStore:
                     raise StateTransitionError(
                         "The active legacy manual-final snapshot is invalid."
                     ) from error
-                if tuple(sorted(saved)) != required or any(
-                    not Path(item.video_path).is_file() for item in saved.values()
-                ):
-                    raise StateTransitionError(
-                        "The active legacy manual-final snapshot is incomplete."
+                missing_saved = tuple(
+                    scene_id
+                    for scene_id in required
+                    if scene_id not in saved
+                    or not Path(saved[scene_id].video_path).is_file()
+                )
+                if tuple(sorted(saved)) != required or missing_saved:
+                    raise IncompleteLegacySelectionError(
+                        missing_saved or required,
+                        "The active legacy manual-final snapshot is incomplete.",
                     )
                 return tuple(saved[scene_id] for scene_id in required)
             known = connection.execute(
@@ -3555,9 +3741,10 @@ class PipelineStateStore:
                 )
         if unavailable:
             rendered = ", ".join(f"{scene_id:02d}" for scene_id in unavailable)
-            raise StateTransitionError(
+            raise IncompleteLegacySelectionError(
+                unavailable,
                 "Legacy selection has no successful video revision for scene(s): "
-                f"{rendered}."
+                f"{rendered}.",
             )
         return tuple(selected)
 
