@@ -3414,6 +3414,20 @@ class PipelineStateStore:
                 or int(candidate["scene_id"]) != scene_id
             ):
                 raise StateTransitionError("QC candidate does not match the route identity.")
+            existing = connection.execute(
+                "SELECT * FROM qc_human_decisions WHERE candidate_id = ?",
+                (candidate_id,),
+            ).fetchone()
+            if existing is not None:
+                if existing["decision"] != decision.value:
+                    raise StateTransitionError(
+                        "A terminal human QC decision cannot be overwritten."
+                    )
+                return QcHumanDecisionResult(
+                    self._qc_human_decision_record(existing),
+                    self._qc_candidate_record(candidate),
+                    True,
+                )
             pipeline = connection.execute(
                 "SELECT state, job_id FROM pipeline_state WHERE singleton = 1"
             ).fetchone()
@@ -3430,24 +3444,6 @@ class PipelineStateStore:
             ):
                 raise StateTransitionError(
                     "Human QC decisions require the active QC review job to remain RUNNING."
-                )
-            existing = connection.execute(
-                "SELECT * FROM qc_human_decisions WHERE candidate_id = ?",
-                (candidate_id,),
-            ).fetchone()
-            if existing is not None:
-                if (
-                    existing["decision"] != decision.value
-                    or existing["note"] != note
-                    or existing["actor"] != actor
-                ):
-                    raise StateTransitionError(
-                        "A terminal human QC decision cannot be overwritten."
-                    )
-                return QcHumanDecisionResult(
-                    self._qc_human_decision_record(existing),
-                    self._qc_candidate_record(candidate),
-                    True,
                 )
             if QcCandidateState(candidate["state"]) != QcCandidateState.PASS_PENDING_HUMAN:
                 raise StateTransitionError(

@@ -2142,6 +2142,41 @@ class StateStoreTests(unittest.TestCase):
                 note="checked",
             )
 
+    def test_identical_human_decision_replays_after_pipeline_advances(self) -> None:
+        candidate = self._create_qc_candidate()
+        self._complete_pass_for_candidate(candidate.candidate_id)
+        self._await_qc_review()
+        approved = self.store.decide_qc_candidate(
+            job_id=candidate.job_id,
+            scene_id=candidate.scene_id,
+            candidate_id=candidate.candidate_id,
+            decision=QcHumanDecision.APPROVE,
+            note="response may be lost",
+        )
+        self.store.transition(PipelineState.STITCHING, job_id=candidate.job_id)
+        self.store.set_job_status(candidate.job_id, JobState.SUCCEEDED)
+
+        replay = self.store.decide_qc_candidate(
+            job_id=candidate.job_id,
+            scene_id=candidate.scene_id,
+            candidate_id=candidate.candidate_id,
+            decision=QcHumanDecision.APPROVE,
+            note="a retry cannot rewrite the stored note",
+        )
+
+        self.assertTrue(replay.replayed)
+        self.assertEqual(replay.decision, approved.decision)
+        self.assertEqual(replay.candidate.state, QcCandidateState.ACCEPTED)
+        self.assertEqual(self.store.snapshot().state, PipelineState.STITCHING)
+        with self.assertRaisesRegex(StateTransitionError, "cannot be overwritten"):
+            self.store.decide_qc_candidate(
+                job_id=candidate.job_id,
+                scene_id=candidate.scene_id,
+                candidate_id=candidate.candidate_id,
+                decision=QcHumanDecision.REJECT,
+                note=None,
+            )
+
     def test_qc_final_selection_requires_durable_acceptance_and_kill_switch_uses_original(self) -> None:
         candidate = self._create_qc_candidate()
         self._complete_pass_for_candidate(candidate.candidate_id)
@@ -2299,7 +2334,7 @@ class StateStoreTests(unittest.TestCase):
             )
         self.assertIsNone(self.store.qc_human_decision(candidate.candidate_id))
 
-    def test_stale_replay_after_cancel_cannot_promote(self) -> None:
+    def test_stale_replay_after_cancel_returns_prior_decision_without_promotion(self) -> None:
         candidate = self._create_qc_candidate()
         self._complete_pass_for_candidate(candidate.candidate_id)
         self._await_qc_review()
@@ -2312,14 +2347,17 @@ class StateStoreTests(unittest.TestCase):
         )
         self.store.abandon_job(candidate.job_id, reason="cancelled after approval")
 
-        with self.assertRaisesRegex(StateTransitionError, "active QC review"):
-            self.store.decide_qc_candidate(
-                job_id=candidate.job_id,
-                scene_id=candidate.scene_id,
-                candidate_id=candidate.candidate_id,
-                decision=QcHumanDecision.APPROVE,
-                note=None,
-            )
+        replay = self.store.decide_qc_candidate(
+            job_id=candidate.job_id,
+            scene_id=candidate.scene_id,
+            candidate_id=candidate.candidate_id,
+            decision=QcHumanDecision.APPROVE,
+            note=None,
+        )
+
+        self.assertTrue(replay.replayed)
+        self.assertEqual(replay.candidate.state, QcCandidateState.ACCEPTED)
+        self.assertEqual(self.store.list_jobs()[0].status, JobState.CANCELLED)
 
     def test_superseded_candidate_cannot_be_approved(self) -> None:
         candidate = self._create_qc_candidate()
