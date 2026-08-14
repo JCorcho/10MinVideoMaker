@@ -228,7 +228,7 @@ def run_context_isolation_probe(backend, prompt, sentinel: str) -> dict[str, obj
     }
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--evidence-root", type=Path, required=True)
     parser.add_argument("--media", type=Path, required=True)
@@ -247,11 +247,10 @@ def main() -> int:
         action="store_true",
         help="Required explicit authorization to launch the bounded worker.",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     evidence, media = ensure_nonproduction_smoke_paths(
         args.evidence_root, args.media
     )
-    evidence.mkdir(parents=True, exist_ok=True)
     settings = QualityControlSettings(
         quality_control_enabled=True,
         auto_advance_pass=False,
@@ -275,6 +274,7 @@ def main() -> int:
     if not args.execute:
         print(json.dumps({"preflight": preflight, "launched": False}, indent=2))
         return 0
+    evidence.mkdir(parents=True, exist_ok=True)
     result: dict[str, object] = {
         "schema_version": 1,
         "media": str(media),
@@ -308,7 +308,7 @@ def main() -> int:
             ffmpeg_command="ffmpeg",
             temporary_root=evidence / "frames",
         )
-        windows = chronological_windows(sampled, frames_per_window=4)
+        windows = chronological_windows(sampled, frame_count=4)
         if not windows:
             raise RuntimeError("Smoke media produced no judge window.")
         judged = backend.evaluate(
