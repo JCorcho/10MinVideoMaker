@@ -227,6 +227,32 @@ class PipelineSupervisor:
         if snapshot.state == PipelineState.STITCHING and snapshot.job_id:
             plan = self.store.qc_finalization_plan(snapshot.job_id)
             if plan is not None:
+                if (
+                    self.qc_controller is not None
+                    and not self.qc_controller.settings.quality_control_enabled
+                ):
+                    job = self.store.load_job(snapshot.job_id)
+                    steps = self.store.qc_finalization_steps(snapshot.job_id)
+                    if steps:
+                        message = (
+                            "QC was disabled after finalization side effects may have "
+                            "started. The accepted QC plan will not be resumed; manual "
+                            "reconciliation is required before restoring the immutable "
+                            "pre-QC baseline."
+                        )
+                        self.store.transition(
+                            PipelineState.QC_BLOCKED,
+                            job_id=snapshot.job_id,
+                            error=message,
+                        )
+                        LOGGER.error("Job %s: %s", snapshot.job_id, message)
+                        return
+                    baseline = self.store.original_final_selection(
+                        snapshot.job_id,
+                        [scene.scene_id for scene in job.scenes],
+                    )
+                    self._finalize_qc_disabled_selection(job, baseline)
+                    return
                 self._finalize_qc_job(
                     self.store.load_job(snapshot.job_id),
                     (),

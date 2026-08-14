@@ -399,6 +399,89 @@ class SupervisorTests(unittest.TestCase):
             self.assertEqual(mail.requests, [(job.job_id, True)])
             self.assertEqual(store.snapshot().state, PipelineState.WAITING_FOR_GROK)
 
+    def test_qc_disabled_restart_abandons_side_effect_free_plan_for_baseline(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            job = parse_job_payload(payload())
+            store = PipelineStateStore(root / "pipeline.sqlite3")
+            store.claim_job(job)
+            self._accept_qc_scenes(store, job, root)
+            assembler = FakeAssembler(root / "final.mp4")
+            mail = FakeMailClient()
+            store.ensure_qc_finalization_plan(
+                job.job_id,
+                [scene.scene_id for scene in job.scenes],
+                final_path=str(assembler.final_path(job.job_id)),
+            )
+            store.transition(PipelineState.STITCHING, job_id=job.job_id)
+            supervisor = PipelineSupervisor(
+                store=store,
+                mail_client=mail,
+                asset_manager=FakeAssetManager(),
+                comfy=FakeComfy(root / "unused.png"),
+                assembler=assembler,
+                settings=SupervisorSettings(),
+                qc_controller=SimpleNamespace(
+                    settings=SimpleNamespace(quality_control_enabled=False)
+                ),
+                video_probe=lambda path: VideoStreamInfo(
+                    Path(path), PRODUCTION_WIDTH, PRODUCTION_HEIGHT, Fraction(24, 1)
+                ),
+            )
+
+            supervisor.tick()
+
+            self.assertEqual(len(assembler.calls), 1)
+            self.assertEqual(mail.requests, [(job.job_id, True)])
+            self.assertEqual(store.qc_finalization_plan(job.job_id).state, "PLAN_COMMITTED")
+            self.assertEqual(store.snapshot().state, PipelineState.WAITING_FOR_GROK)
+
+    def test_qc_disabled_restart_holds_ambiguous_finalization_side_effect(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            job = parse_job_payload(payload())
+            store = PipelineStateStore(root / "pipeline.sqlite3")
+            store.claim_job(job)
+            selection = self._accept_qc_scenes(store, job, root)
+            assembler = FakeAssembler(root / "final.mp4")
+            mail = FakeMailClient()
+            store.ensure_qc_finalization_plan(
+                job.job_id,
+                [scene.scene_id for scene in job.scenes],
+                final_path=str(assembler.final_path(job.job_id)),
+            )
+            store.begin_qc_finalization_step(
+                job.job_id,
+                "deliver-scene-1",
+                kind="SCENE_DELIVERY",
+                evidence={
+                    "scene_id": selection[0].scene_id,
+                    "artifact_path": selection[0].video_path,
+                },
+            )
+            store.transition(PipelineState.STITCHING, job_id=job.job_id)
+            supervisor = PipelineSupervisor(
+                store=store,
+                mail_client=mail,
+                asset_manager=FakeAssetManager(),
+                comfy=FakeComfy(root / "unused.png"),
+                assembler=assembler,
+                settings=SupervisorSettings(),
+                qc_controller=SimpleNamespace(
+                    settings=SimpleNamespace(quality_control_enabled=False)
+                ),
+                video_probe=lambda path: VideoStreamInfo(
+                    Path(path), PRODUCTION_WIDTH, PRODUCTION_HEIGHT, Fraction(24, 1)
+                ),
+            )
+
+            supervisor.tick()
+
+            self.assertEqual(assembler.calls, [])
+            self.assertEqual(mail.requests, [])
+            self.assertEqual(store.snapshot().state, PipelineState.QC_BLOCKED)
+            self.assertIn("manual reconciliation", store.snapshot().error)
+
     def test_qc_finalization_resumes_each_crash_boundary_without_duplicate_side_effects(self) -> None:
         crash_points = (
             "plan_committed",
