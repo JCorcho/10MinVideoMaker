@@ -40,6 +40,18 @@ function renderQcReviewQueue() {
     `auto_advance_pass=${document.auto_advance_pass}`;
   $("#qc-review-queue").innerHTML = pending.map((item) => {
     const errors = qcErrorRows(item.suspect_windows);
+    const comparison = item.prompt_comparison;
+    const b1Review = comparison ? `
+      <section class="qc-b1-review" aria-label="B1 prompt comparison">
+        <h3>B1 repair prompt review</h3>
+        <p><strong>QC defect summary that motivated repair:</strong> ${escapeHtml(item.repair_motivation?.summary || "Prior A1 candidate did not pass QC.")}</p>
+        <div class="qc-prompt-comparison">
+          <div><h4>Original / baseline I2V prompt</h4><pre>${escapeHtml(comparison.baseline_prompt)}</pre></div>
+          <div><h4>B1 proposed / current I2V prompt</h4><pre>${escapeHtml(comparison.proposed_prompt)}</pre></div>
+        </div>
+        <details><summary>Unified prompt diff</summary><pre class="qc-prompt-diff">${escapeHtml(comparison.unified_diff)}</pre></details>
+        <p class="muted">Read-only comparison. This screen permits APPROVE / REJECT / HOLD only.</p>
+      </section>` : "";
     return `<article class="qc-review-card">
       <div class="qc-review-card-heading">
         <div>
@@ -56,6 +68,7 @@ function renderQcReviewQueue() {
         <div class="context-item"><dt>Prompt/config</dt><dd>${escapeHtml(item.prompt_version || "unknown")} · ${escapeHtml((item.effective_config_sha256 || "unknown").slice(0, 12))}</dd></div>
         <div class="context-item lineage-wide"><dt>Current I2V prompt</dt><dd>${escapeHtml(item.prompt)}</dd></div>
       </dl>
+      ${b1Review}
       ${errors ? `<table class="qc-errors"><thead><tr><th>Window</th><th>Category</th><th>Evidence</th></tr></thead><tbody>${errors}</tbody></table>` : ""}
       <details><summary>Prior candidate attempts (${item.history.length})</summary>
         <div>${item.history.map((prior) => `<p>${escapeHtml(prior.tier)} · revision ${escapeHtml(prior.revision)} · seed ${escapeHtml(prior.seed)} · ${escapeHtml(prior.state)}</p>`).join("")}</div>

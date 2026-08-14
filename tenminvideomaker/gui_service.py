@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import difflib
 import hashlib
 import json
 import logging
@@ -32,13 +33,78 @@ from .state_store import (
     StateTransitionError,
     QcHumanDecisionResult,
 )
-from .qc_contracts import QcCandidateState, QcHumanDecision
+from .qc_contracts import QcCandidateState, QcHumanDecision, QcTier
 from .storage import StorageLayout, write_json_atomic
 from .supervisor import FatalPipelineError, PipelineSupervisor
 from .workflow_builder import build_t2i_api_workflow
 
 
 LOGGER = logging.getLogger("10MinVideoMaker.gui")
+
+
+def _qc_windows_for_human_review(windows: Any) -> list[dict[str, Any]]:
+    """Expose normalized review fields without forwarding raw judge bytes."""
+    safe: list[dict[str, Any]] = []
+    for window in windows if isinstance(windows, (list, tuple)) else ():
+        if not isinstance(window, Mapping):
+            continue
+        response = window.get("response")
+        if not isinstance(response, Mapping):
+            continue
+        errors = []
+        for error in response.get("errors", []):
+            if not isinstance(error, Mapping):
+                continue
+            errors.append(
+                {
+                    key: error.get(key)
+                    for key in (
+                        "category",
+                        "severity",
+                        "confidence",
+                        "start_time_seconds",
+                        "end_time_seconds",
+                        "description",
+                        "evidence",
+                    )
+                }
+            )
+        safe.append(
+            {
+                "window_number": window.get("window_number"),
+                "source_frame_indices": list(window.get("source_frame_indices", [])),
+                "timestamps_seconds": list(window.get("timestamps_seconds", [])),
+                "confirmation_of_window": window.get("confirmation_of_window"),
+                "response": {
+                    "decision": response.get("decision"),
+                    "confidence": response.get("confidence"),
+                    "summary": response.get("summary"),
+                    "errors": errors,
+                },
+            }
+        )
+    return safe
+
+
+def _prompt_comparison(candidate: Any) -> dict[str, str] | None:
+    if candidate.tier != QcTier.B1:
+        return None
+    baseline = candidate.original_prompt
+    proposed = candidate.current_prompt
+    unified = "\n".join(
+        difflib.unified_diff(
+            baseline.splitlines(),
+            proposed.splitlines(),
+            fromfile="LEGACY_BASELINE",
+            tofile="B1_PROPOSED",
+            lineterm="",
+        )
+    )
+    return {
+        "baseline_prompt": baseline,
+        "proposed_prompt": proposed,
+        "unified_diff": unified,
+    }
 ACTIVE_RENDER_STATES = frozenset(
     {
         PipelineState.DOWNLOADING_ASSETS,
@@ -229,7 +295,9 @@ class SupervisorController:
                 if not evaluations:
                     continue
                 evaluation = evaluations[-1]
-                windows = list(evaluation.suspect_windows)
+                windows = _qc_windows_for_human_review(
+                    evaluation.suspect_windows
+                )
                 responses = [
                     item.get("response", {})
                     for item in windows
@@ -266,6 +334,46 @@ class SupervisorController:
                     )
                     if evaluation.evaluator_identity.get(key) is not None
                 }
+                repair_motivation = None
+                if candidate.tier == QcTier.B1 and candidate.parent_candidate_id:
+                    parent_evaluations = [
+                        item
+                        for item in self.store.qc_evaluations(
+                            candidate.parent_candidate_id
+                        )
+                        if item.state == "COMPLETE"
+                    ]
+                    if parent_evaluations:
+                        parent_evaluation = parent_evaluations[-1]
+                        parent_windows = _qc_windows_for_human_review(
+                            parent_evaluation.suspect_windows
+                        )
+                        parent_defects = [
+                            {
+                                **error,
+                                "window_number": window["window_number"],
+                                "window_timestamps_seconds": window[
+                                    "timestamps_seconds"
+                                ],
+                            }
+                            for window in parent_windows
+                            for error in window["response"]["errors"]
+                        ]
+                        repair_motivation = {
+                            "source_candidate_id": candidate.parent_candidate_id,
+                            "evaluation_id": parent_evaluation.evaluation_id,
+                            "decision": (
+                                None
+                                if parent_evaluation.normalized_decision is None
+                                else parent_evaluation.normalized_decision.value
+                            ),
+                            "summary": "; ".join(
+                                str(item.get("description") or item.get("evidence") or "")
+                                for item in parent_defects
+                                if item.get("description") or item.get("evidence")
+                            ) or "The prior A1 candidate did not pass QC.",
+                            "defects": parent_defects,
+                        }
                 pending.append(
                     {
                         "job_id": job.job_id,
@@ -279,6 +387,9 @@ class SupervisorController:
                             f"{candidate.revision}/video"
                         ),
                         "prompt": candidate.current_prompt,
+                        "prompt_comparison": _prompt_comparison(candidate),
+                        "repair_motivation": repair_motivation,
+                        "human_gate_required": True,
                         "seed": str(candidate.current_seed),
                         "decision": evaluation.normalized_decision.value,
                         "confidence": min(confidences) if confidences else None,
