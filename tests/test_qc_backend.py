@@ -8,17 +8,23 @@ import unittest
 
 from tenminvideomaker.qc_backend import (
     HeadlessVideoEvaluator,
+    LlamaCppHttpBackend,
+    RepairPlannerRequest,
     VisionJudgeEvaluation,
     VisionJudgeRequest,
+    build_repair_planner_payload,
     build_vision_judge_payload,
+    load_repair_planner_prompt,
     load_production_rubric,
 )
+from tenminvideomaker.qc_config import QualityControlSettings
 from tenminvideomaker.qc_contracts import QcDecision, parse_judge_response
 from tenminvideomaker.qc_video import chronological_windows
 from test_qc_video import sampled
 
 
 PROMPT_PATH = Path(__file__).resolve().parents[1] / "prompts" / "production_ltx_video_qc_v1.txt"
+REPAIR_PROMPT_PATH = Path(__file__).resolve().parents[1] / "prompts" / "production_i2v_repair_v1.txt"
 
 
 def raw(decision: str, *, strong: bool = False) -> str:
@@ -87,6 +93,102 @@ class QcBackendTests(unittest.TestCase):
             [item["type"] for item in payload["messages"][1]["content"]],
             ["text", "image_url", "image_url", "image_url", "image_url"],
         )
+
+    def test_repair_planner_payload_is_separate_text_only_fresh_and_tool_free(self) -> None:
+        prompt = load_repair_planner_prompt(REPAIR_PROMPT_PATH)
+        request = RepairPlannerRequest(
+            job_identity={"job_id": "job-1"},
+            scene_identity={"scene_id": 2},
+            source_identity={
+                "candidate_id": "candidate-a1",
+                "candidate_sha256": "a" * 64,
+                "evaluation_id": "evaluation-a1",
+            },
+            current_i2v_prompt="A woman turns toward camera.",
+            negative_prompt="no deformation",
+            fixed_scene_facts={"character": "Ava", "required_action": "turns"},
+            generation_config={"seed": "42", "width": 768, "height": 1344},
+            normalized_qc={"decision": "FAIL", "summary": "hand fusion"},
+            suspect_windows=({"start": 1.0, "end": 2.0},),
+            previous_repairs=({"summary": "none"},),
+            mutable_fields=("i2v.prompt",),
+            locked_fields=("i2v.negative", "t2i", "character", "duration"),
+            repair_input_sha256="b" * 64,
+            prompt=prompt,
+        )
+
+        payload = build_repair_planner_payload(request)
+        serialized = json.dumps(payload)
+
+        self.assertEqual(payload["temperature"], 0.0)
+        self.assertFalse(payload["cache_prompt"])
+        self.assertNotIn("tools", payload)
+        self.assertNotIn("tool_choice", payload)
+        self.assertNotIn("image_url", serialized)
+        self.assertNotIn("shell", serialized.casefold())
+        self.assertNotIn("sql", serialized.casefold())
+        self.assertIn("normalized_qc", serialized)
+        self.assertIn("mutable_fields", serialized)
+        self.assertIn("locked_fields", serialized)
+        self.assertNotEqual(
+            payload["messages"][0]["content"],
+            build_vision_judge_payload(
+                VisionJudgeRequest.from_window(
+                    chronological_windows(sampled(4))[0],
+                    rubric=load_production_rubric(PROMPT_PATH),
+                )
+            )["messages"][0]["content"],
+        )
+
+    def test_two_sequential_requests_are_self_contained_and_erase_slot_kv(self) -> None:
+        seen = []
+
+        class Response:
+            status = 200
+
+            def __init__(self, body: bytes = b"{}"):
+                self.body = body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return self.body
+
+        def fake_urlopen(request, timeout):
+            seen.append((request.full_url, request.data, timeout))
+            if "/slots/" in request.full_url:
+                return Response()
+            body = json.dumps({
+                "choices": [{"message": {"content": raw("PASS")}}],
+                "usage": {},
+            }).encode()
+            return Response(body)
+
+        backend = LlamaCppHttpBackend(
+            QualityControlSettings(), object(), urlopen_factory=fake_urlopen
+        )
+        rubric = load_production_rubric(PROMPT_PATH)
+        first = VisionJudgeRequest.from_window(
+            chronological_windows(sampled(4))[0], rubric=rubric
+        )
+        second = VisionJudgeRequest.from_window(
+            chronological_windows(sampled(5))[1], rubric=rubric
+        )
+        backend.evaluate(first)
+        backend.evaluate(second)
+
+        chats = [json.loads(data) for url, data, _ in seen if "/chat/completions" in url]
+        resets = [url for url, _, _ in seen if "/slots/0?action=erase" in url]
+        self.assertEqual(len(chats), 2)
+        self.assertEqual(len(resets), 2)
+        sentinel = "UNIQUE_SENTINEL_FROM_A"
+        chats[0]["messages"][1]["content"][0]["text"] += sentinel
+        self.assertNotIn(sentinel, json.dumps(chats[1]))
+        self.assertEqual(len(chats[1]["messages"]), 2)
 
     def test_two_strong_normal_windows_end_evaluation_early(self) -> None:
         backend = FakeBackend(

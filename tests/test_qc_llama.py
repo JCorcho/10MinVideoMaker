@@ -135,7 +135,9 @@ class QcLlamaTests(unittest.TestCase):
             self.assertIn("--parallel 1", joined)
             self.assertIn("--image-min-tokens 1024", joined)
             self.assertIn("--no-cache-prompt", command)
-            self.assertIn("--cache-ram", command)
+            self.assertIn("--no-cache-prompt", command)
+            self.assertEqual(command[command.index("--slot-prompt-similarity") + 1], "0")
+            self.assertEqual(command[command.index("--split-mode") + 1], "none")
             self.assertIn("--no-webui", command)
             self.assertNotIn("--main-gpu", command)
 

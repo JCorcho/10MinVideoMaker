@@ -256,7 +256,8 @@ class StorageLayout:
             self.revision_root(job_id, scene_id, revision)
             / "qc"
             / "repairs"
-            / f"{repair_id}.json"
+            / repair_id
+            / "result.json"
         )
 
     def chunk_root(

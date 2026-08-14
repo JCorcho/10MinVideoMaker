@@ -2,13 +2,27 @@ from __future__ import annotations
 
 from copy import deepcopy
 import hashlib
+import json
 from pathlib import Path
 import tempfile
 import unittest
 
 from tenminvideomaker.contracts import parse_job_payload
-from tenminvideomaker.qc_contracts import QcCandidateState, QcTier, derive_retry_seed
-from tenminvideomaker.qc_repair import build_a1_document, schedule_a1_retry
+from tenminvideomaker.qc_contracts import (
+    QcCandidateState,
+    QcDecision,
+    QcTier,
+    derive_retry_seed,
+    evaluation_idempotency_key,
+)
+from tenminvideomaker.qc_repair import (
+    B1PatchValidationError,
+    apply_b1_patch,
+    build_a1_document,
+    parse_and_validate_b1_patch,
+    schedule_a1_retry,
+    schedule_b1_retry,
+)
 from tenminvideomaker.review import scene_review_document
 from tenminvideomaker.state_store import (
     PipelineStateStore,
@@ -194,12 +208,233 @@ class A1RetryTests(unittest.TestCase):
                 source_video_sha256="d" * 64,
             )
 
-    def test_b1_is_not_reachable_in_this_tranche(self) -> None:
-        import tenminvideomaker.qc_repair as module
 
-        self.assertFalse(hasattr(module, "build_b1_document"))
-        self.assertFalse(hasattr(module, "parse_and_validate_b1_patch"))
-        self.assertFalse(hasattr(module, "apply_b1_patch"))
+class B1PatchTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.job = parse_job_payload(payload())
+        self.document = scene_review_document(self.job, self.job.scenes[0])
+        self.seed = 987654321
+        self.input_hash = "1" * 64
+        self.candidate_hash = "2" * 64
+        self.candidate_id = "candidate-a1"
+        self.evaluation_id = "evaluation-a1"
+
+    def raw(self, prompt: str | None = None, **extra: object) -> str:
+        value = {
+            "schema_version": 1,
+            "source": {
+                "candidate_id": self.candidate_id,
+                "candidate_sha256": self.candidate_hash,
+                "evaluation_id": self.evaluation_id,
+                "repair_input_sha256": self.input_hash,
+            },
+            "patch": {"i2v": {"prompt": (
+                "A smaller, defect-focused motion instruction."
+                if prompt is None
+                else prompt
+            )}},
+            "summary": "Tighten the visible hand transition without adding action.",
+        }
+        value.update(extra)
+        return json.dumps(value)
+
+    def parse(self, raw_text: str, **kwargs: object):
+        return parse_and_validate_b1_patch(
+            raw_text,
+            source_document=self.document,
+            required_seed=self.seed,
+            repair_input_hash=self.input_hash,
+            current_candidate_hash=self.candidate_hash,
+            current_candidate_id=self.candidate_id,
+            evaluation_id=self.evaluation_id,
+            **kwargs,
+        )
+
+    def test_valid_patch_changes_only_i2v_prompt_and_controller_seed(self) -> None:
+        patch = self.parse(self.raw())
+        result = apply_b1_patch(self.job, 1, self.document, patch)
+
+        expected = deepcopy(self.document)
+        expected["i2v"]["prompt"] = patch.prompt
+        expected["i2v"]["seed"] = str(self.seed)
+        self.assertEqual(result.document, expected)
+        self.assertEqual(result.document["i2v"]["negative"], self.document["i2v"]["negative"])
+        self.assertEqual(result.document["t2i"], self.document["t2i"])
+        self.assertEqual(result.document["character"], self.document["character"])
+        self.assertEqual(result.document["scene_context"], self.document["scene_context"])
+        self.assertEqual(result.document["job_context"], self.document["job_context"])
+
+    def test_seed_or_unknown_model_mutation_is_rejected(self) -> None:
+        value = json.loads(self.raw())
+        value["patch"]["i2v"]["seed"] = 123
+        with self.assertRaises(B1PatchValidationError):
+            self.parse(json.dumps(value))
+        value = json.loads(self.raw())
+        value["patch"]["negative"] = "changed"
+        with self.assertRaises(B1PatchValidationError):
+            self.parse(json.dumps(value))
+
+    def test_stale_source_identity_or_hash_is_rejected(self) -> None:
+        value = json.loads(self.raw())
+        value["source"]["candidate_sha256"] = "3" * 64
+        with self.assertRaises(B1PatchValidationError):
+            self.parse(json.dumps(value))
+        value = json.loads(self.raw())
+        value["source"]["candidate_id"] = "candidate-old"
+        with self.assertRaises(B1PatchValidationError):
+            self.parse(json.dumps(value))
+
+    def test_malformed_refusal_blank_and_unchanged_are_rejected(self) -> None:
+        for raw_text in (
+            "not json",
+            "I cannot help with that",
+            self.raw("   "),
+            self.raw(self.document["i2v"]["prompt"]),
+        ):
+            with self.subTest(raw_text=raw_text[:20]):
+                with self.assertRaises(B1PatchValidationError):
+                    self.parse(raw_text)
+
+    def test_duplicate_prompt_seed_config_attempt_is_rejected(self) -> None:
+        prompt = "A smaller, defect-focused motion instruction."
+        with self.assertRaises(B1PatchValidationError):
+            self.parse(
+                self.raw(prompt),
+                prior_attempts=((prompt, self.seed, "config-v1"),),
+                generation_config_hash="config-v1",
+            )
+
+    def test_required_fixed_prompt_content_cannot_be_lost(self) -> None:
+        with self.assertRaises(B1PatchValidationError):
+            self.parse(
+                self.raw("Only the camera moves gently."),
+                required_prompt_fragments=("keeps holding the red umbrella",),
+            )
+
+    def test_explicit_segment_prompt_scene_fails_closed_as_b1_inapplicable(self) -> None:
+        self.document["i2v"]["segments"] = [
+            {"start_seconds": 0.0, "end_seconds": 1.0, "positive_prompt": "locked"}
+        ]
+        with self.assertRaises(B1PatchValidationError):
+            self.parse(self.raw())
+
+
+class B1DurabilityTests(A1RetryTests):
+    def _completed_a1_failure(self):
+        retry = schedule_a1_retry(
+            self.store,
+            self.layout,
+            original_job=self.job,
+            source_candidate_id=self.original.candidate_id,
+            source_document=self.document,
+        )
+        path = Path(retry.candidate.source_video_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"a1-video")
+        a1 = self.store.complete_qc_candidate_generation(
+            retry.candidate.candidate_id,
+            source_video_path=str(path),
+            source_video_sha256=hashlib.sha256(b"a1-video").hexdigest(),
+        )
+        identity = {
+            "evaluator_id": "production-qc",
+            "evaluator_version": "phase1-v1",
+            "backend_family": "llama.cpp",
+            "backend_version": "2.28.2",
+            "executable_path": "C:/llama.exe",
+            "executable_sha256": "1" * 64,
+            "model_id": "Qwen",
+            "model_path": "C:/model.gguf",
+            "model_sha256": "2" * 64,
+            "quantization": "IQ3_M",
+            "projector_path": "C:/mmproj.gguf",
+            "projector_sha256": "3" * 64,
+            "projector_precision": "FP16",
+            "gpu_uuid": "GPU-test",
+            "gpu_name": "RTX 4080 SUPER",
+        }
+        key = evaluation_idempotency_key(
+            source_video_sha256=a1.source_video_sha256,
+            evaluator_id=identity["evaluator_id"],
+            evaluator_version=identity["evaluator_version"],
+            backend_version=identity["backend_version"],
+            executable_sha256=identity["executable_sha256"],
+            model_sha256=identity["model_sha256"],
+            projector_sha256=identity["projector_sha256"],
+            effective_config_sha256="4" * 64,
+            prompt_sha256="5" * 64,
+        )
+        self.store.begin_qc_evaluation(
+            evaluation_id="evaluation-a1",
+            idempotency_key=key,
+            candidate_id=a1.candidate_id,
+            source_video_path=a1.source_video_path,
+            source_video_sha256=a1.source_video_sha256,
+            evaluator_identity=identity,
+            effective_config={},
+            effective_config_sha256="4" * 64,
+            prompt_version="v1",
+            prompt_sha256="5" * 64,
+            sampling_config={},
+            window_config={},
+        )
+        manifest = self.layout.qc_evaluation_manifest_path(
+            self.job.job_id, 1, a1.revision, "evaluation-a1"
+        )
+        self.store.complete_qc_evaluation(
+            "evaluation-a1",
+            raw_result="fail",
+            normalized_decision=QcDecision.FAIL,
+            suspect_windows=[{"start": 1.0, "end": 2.0}],
+            strong_window_count=2,
+            frame_accounting={},
+            evidence_manifest_path=str(manifest),
+            evidence_manifest_sha256="6" * 64,
+            next_action="plan_b1",
+        )
+        revision = next(
+            item for item in self.store.scene_revisions(self.job.job_id, 1)
+            if item.revision == a1.revision
+        )
+        return a1, revision.parameters
+
+    def test_b1_plan_and_revision_are_durable_exactly_once(self) -> None:
+        a1, document = self._completed_a1_failure()
+        input_hash = "7" * 64
+        raw_output = json.dumps({
+            "schema_version": 1,
+            "source": {
+                "candidate_id": a1.candidate_id,
+                "candidate_sha256": a1.source_video_sha256,
+                "evaluation_id": "evaluation-a1",
+                "repair_input_sha256": input_hash,
+            },
+            "patch": {"i2v": {"prompt": "A minimal corrected hand transition."}},
+            "summary": "Correct the visible hand transition.",
+        })
+        kwargs = dict(
+            original_job=self.job,
+            source_candidate_id=a1.candidate_id,
+            evaluation_id="evaluation-a1",
+            source_document=document,
+            raw_output=raw_output,
+            planner_identity={"backend": "llama.cpp", "model": "Qwen", "prompt_version": "v1", "prompt_sha256": "8" * 64},
+            repair_input_hash=input_hash,
+        )
+        first = schedule_b1_retry(self.store, self.layout, **kwargs)
+        second = schedule_b1_retry(
+            PipelineStateStore(self.layout.database_path), self.layout, **kwargs
+        )
+
+        self.assertEqual(second.candidate, first.candidate)
+        self.assertEqual(first.candidate.tier, QcTier.B1)
+        self.assertEqual(first.candidate.state, QcCandidateState.PENDING_GENERATION)
+        self.assertNotEqual(first.seed, a1.current_seed)
+        self.assertEqual(len(self.store.qc_repairs(a1.candidate_id)), 1)
+        self.assertEqual(
+            len([c for c in self.store.qc_candidates(self.job.job_id, 1) if c.tier == QcTier.B1]),
+            1,
+        )
 
 
 if __name__ == "__main__":

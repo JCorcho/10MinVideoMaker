@@ -127,7 +127,7 @@ class StorageTests(unittest.TestCase):
             self.assertEqual(layout.qc_evaluation_frame_accounting_path("job-1", 2, 3, "evaluation-1"), root / "frame-accounting.json")
             self.assertEqual(
                 layout.qc_repair_manifest_path("job-1", 2, 3, "repair-1"),
-                layout.revision_root("job-1", 2, 3) / "qc" / "repairs" / "repair-1.json",
+                layout.revision_root("job-1", 2, 3) / "qc" / "repairs" / "repair-1" / "result.json",
             )
             with self.assertRaises(StorageError):
                 layout.qc_evaluation_root("job-1", 2, 3, "../escape")
