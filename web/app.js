@@ -13,8 +13,85 @@ const state = {
   status: null,
   cancellingProject: false,
   activeChunkProgress: null,
+  qcReview: null,
   progressRefreshes: new Set(),
 };
+
+function qcErrorRows(windows) {
+  return (windows || []).flatMap((window) =>
+    (window?.response?.errors || []).map((error) => `
+      <tr>
+        <td>${escapeHtml(`${Number(error.start_time_seconds || 0).toFixed(2)}–${Number(error.end_time_seconds || 0).toFixed(2)}s`)}</td>
+        <td>${escapeHtml(error.category || "suspect")}</td>
+        <td>${escapeHtml(error.description || error.evidence || "")}</td>
+      </tr>`),
+  ).join("");
+}
+
+function renderQcReviewQueue() {
+  const document = state.qcReview;
+  const panel = $("#qc-review-panel");
+  const pending = document?.pending || [];
+  panel.classList.toggle("hidden", !pending.length);
+  if (!document) return;
+  $("#qc-policy").textContent =
+    `quality_control_enabled=${document.quality_control_enabled} · ` +
+    `auto_advance_pass=${document.auto_advance_pass}`;
+  $("#qc-review-queue").innerHTML = pending.map((item) => {
+    const errors = qcErrorRows(item.suspect_windows);
+    return `<article class="qc-review-card">
+      <div class="qc-review-card-heading">
+        <div>
+          <strong>${escapeHtml(item.job_id)} · Scene ${escapeHtml(item.scene_id)}</strong>
+          <span class="locked-chip">${escapeHtml(item.tier)}</span>
+        </div>
+        <span>${escapeHtml(item.decision)}${item.confidence == null ? "" : ` · ${escapeHtml(item.confidence)}`}</span>
+      </div>
+      <video controls playsinline webkit-playsinline preload="metadata" src="${attribute(item.video_url)}"></video>
+      <p>${escapeHtml(item.summary)}</p>
+      <dl class="context-grid">
+        <div class="context-item"><dt>Seed</dt><dd>${escapeHtml(item.seed)}</dd></div>
+        <div class="context-item"><dt>Evaluator</dt><dd>${escapeHtml(item.evaluator?.evaluator_version || "unknown")} · ${escapeHtml(item.evaluator?.model_id || "unknown")}</dd></div>
+        <div class="context-item lineage-wide"><dt>Current I2V prompt</dt><dd>${escapeHtml(item.prompt)}</dd></div>
+      </dl>
+      ${errors ? `<table class="qc-errors"><thead><tr><th>Window</th><th>Category</th><th>Evidence</th></tr></thead><tbody>${errors}</tbody></table>` : ""}
+      <details><summary>Prior candidate attempts (${item.history.length})</summary>
+        <div>${item.history.map((prior) => `<p>${escapeHtml(prior.tier)} · revision ${escapeHtml(prior.revision)} · seed ${escapeHtml(prior.seed)} · ${escapeHtml(prior.state)}</p>`).join("")}</div>
+      </details>
+      <div class="qc-review-actions">
+        <button class="primary" data-qc-decision="APPROVE" data-job-id="${attribute(item.job_id)}" data-scene-id="${attribute(item.scene_id)}" data-candidate-id="${attribute(item.candidate_id)}">Approve</button>
+        <button class="danger" data-qc-decision="REJECT" data-job-id="${attribute(item.job_id)}" data-scene-id="${attribute(item.scene_id)}" data-candidate-id="${attribute(item.candidate_id)}">Reject / Hold</button>
+      </div>
+    </article>`;
+  }).join("");
+  $$('[data-qc-decision]').forEach((button) =>
+    button.addEventListener("click", submitQcDecision),
+  );
+}
+
+async function loadQcReviewQueue() {
+  state.qcReview = await api("/api/qc/review-queue");
+  renderQcReviewQueue();
+}
+
+async function submitQcDecision(event) {
+  const button = event.currentTarget;
+  button.disabled = true;
+  const path = `/api/qc/jobs/${encodeURIComponent(button.dataset.jobId)}` +
+    `/scenes/${encodeURIComponent(button.dataset.sceneId)}` +
+    `/candidates/${encodeURIComponent(button.dataset.candidateId)}/decision`;
+  try {
+    await api(path, {
+      method: "POST",
+      body: JSON.stringify({ decision: button.dataset.qcDecision }),
+    });
+    toast(`${button.dataset.qcDecision === "APPROVE" ? "Approved" : "Held"} QC candidate.`);
+    await loadQcReviewQueue();
+  } catch (error) {
+    toast(error.message, true);
+    button.disabled = false;
+  }
+}
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -1428,6 +1505,7 @@ async function init() {
     toast(`Live sampler options unavailable: ${error.message}`, true);
   }
   await loadJobs();
+  await loadQcReviewQueue();
   mobileView();
   const stream = new EventSource("/api/events");
   stream.onmessage = (event) => updateStatus(JSON.parse(event.data));

@@ -29,7 +29,9 @@ from .state_store import (
     SceneRevision,
     SceneState,
     StateTransitionError,
+    QcHumanDecisionResult,
 )
+from .qc_contracts import QcCandidateState, QcHumanDecision
 from .storage import StorageLayout, write_json_atomic
 from .supervisor import FatalPipelineError, PipelineSupervisor
 from .workflow_builder import build_t2i_api_workflow
@@ -41,6 +43,7 @@ ACTIVE_RENDER_STATES = frozenset(
         PipelineState.DOWNLOADING_ASSETS,
         PipelineState.RUNNING_T2I,
         PipelineState.RUNNING_I2V,
+        PipelineState.RUNNING_QC,
         PipelineState.STITCHING,
     }
 )
@@ -51,6 +54,7 @@ CANCELLABLE_PROJECT_STATES = frozenset(
         *ACTIVE_RENDER_STATES,
         PipelineState.ERROR,
         PipelineState.AWAITING_REVIEW,
+        PipelineState.AWAITING_QC_REVIEW,
     }
 )
 
@@ -141,6 +145,7 @@ class SupervisorController:
         self._wake.set()
         if self._thread is not None:
             self._thread.join(timeout=5.0)
+        self.supervisor.shutdown()
 
     def wake(self) -> None:
         self._wake.set()
@@ -159,9 +164,118 @@ class SupervisorController:
         self.wake()
 
     def queue_manual_final(self, job_id: str) -> ManualFinalRecord:
-        request = self.store.queue_manual_final(job_id)
+        settings = getattr(
+            getattr(self.supervisor, "qc_controller", None), "settings", None
+        )
+        request = self.store.queue_manual_final(
+            job_id,
+            quality_control_enabled=bool(
+                getattr(settings, "quality_control_enabled", False)
+            ),
+        )
         self.wake()
         return request
+
+    def decide_qc_candidate(
+        self,
+        *,
+        job_id: str,
+        scene_id: int,
+        candidate_id: str,
+        decision: QcHumanDecision,
+    ) -> QcHumanDecisionResult:
+        result = self.store.decide_qc_candidate(
+            job_id=job_id,
+            scene_id=scene_id,
+            candidate_id=candidate_id,
+            decision=decision,
+            note=None,
+        )
+        self.wake()
+        return result
+
+    def qc_review_queue_document(self) -> dict[str, Any]:
+        qc_controller = getattr(self.supervisor, "qc_controller", None)
+        settings = getattr(qc_controller, "settings", None)
+        pending = []
+        for job_record in self.store.list_jobs():
+            job = self.store.load_job(job_record.job_id)
+            titles = {scene.scene_id: scene.title for scene in job.scenes}
+            all_candidates = self.store.qc_candidates(job.job_id)
+            by_scene: dict[int, list[Any]] = {}
+            for item in all_candidates:
+                by_scene.setdefault(item.scene_id, []).append(item)
+            for candidate in all_candidates:
+                if candidate.state != QcCandidateState.PASS_PENDING_HUMAN:
+                    continue
+                evaluations = [
+                    item for item in self.store.qc_evaluations(candidate.candidate_id)
+                    if item.state == "COMPLETE"
+                ]
+                if not evaluations:
+                    continue
+                evaluation = evaluations[-1]
+                windows = list(evaluation.suspect_windows)
+                responses = [
+                    item.get("response", {})
+                    for item in windows
+                    if isinstance(item, Mapping)
+                ]
+                confidences = [
+                    response.get("confidence")
+                    for response in responses
+                    if isinstance(response, Mapping)
+                    and isinstance(response.get("confidence"), (int, float))
+                ]
+                summaries = [
+                    response.get("summary")
+                    for response in responses
+                    if isinstance(response, Mapping)
+                    and isinstance(response.get("summary"), str)
+                    and response.get("summary").strip()
+                ]
+                pending.append(
+                    {
+                        "job_id": job.job_id,
+                        "scene_id": candidate.scene_id,
+                        "scene_title": titles.get(candidate.scene_id, ""),
+                        "candidate_id": candidate.candidate_id,
+                        "revision": candidate.revision,
+                        "tier": candidate.tier.value,
+                        "video_url": (
+                            f"/api/media/{job.job_id}/{candidate.scene_id}/"
+                            f"{candidate.revision}/video"
+                        ),
+                        "prompt": candidate.current_prompt,
+                        "seed": str(candidate.current_seed),
+                        "decision": evaluation.normalized_decision.value,
+                        "confidence": min(confidences) if confidences else None,
+                        "summary": summaries[-1] if summaries else "QC PASS",
+                        "suspect_windows": windows,
+                        "evaluator": evaluation.evaluator_identity,
+                        "evaluation_id": evaluation.evaluation_id,
+                        "history": [
+                            {
+                                "candidate_id": prior.candidate_id,
+                                "revision": prior.revision,
+                                "tier": prior.tier.value,
+                                "state": prior.state.value,
+                                "seed": str(prior.current_seed),
+                            }
+                            for prior in by_scene[candidate.scene_id]
+                        ],
+                    }
+                )
+        return {
+            "banner": "QC is CANARY / HUMAN APPROVAL REQUIRED",
+            "quality_control_enabled": bool(
+                getattr(settings, "quality_control_enabled", False)
+            ),
+            "auto_advance_pass": bool(
+                getattr(settings, "auto_advance_pass", False)
+            ),
+            "pending": pending,
+        }
 
     def interrupt_current_job(self) -> tuple[str, ...]:
         snapshot = self.store.snapshot()
@@ -241,6 +355,22 @@ class SupervisorController:
             "can_cancel_current_project": self.can_cancel_current_project(),
             "hold_new_jobs_for_review": self.supervisor.settings.require_human_review,
             "continuation_mode": self.supervisor.settings.continuation_mode,
+            "quality_control_enabled": bool(
+                getattr(
+                    getattr(self.supervisor, "qc_controller", None),
+                    "settings",
+                    None,
+                )
+                and self.supervisor.qc_controller.settings.quality_control_enabled
+            ),
+            "qc_auto_advance_pass": bool(
+                getattr(
+                    getattr(self.supervisor, "qc_controller", None),
+                    "settings",
+                    None,
+                )
+                and self.supervisor.qc_controller.settings.auto_advance_pass
+            ),
             "chunk_progress": self.active_chunk_progress_document(),
             "manual_final": (
                 {

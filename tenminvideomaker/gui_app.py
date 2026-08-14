@@ -35,6 +35,7 @@ from .state_store import (
     SceneRevision,
     StateTransitionError,
 )
+from .qc_contracts import QcHumanDecision
 from .storage import StorageLayout, write_json_atomic
 
 
@@ -318,6 +319,53 @@ def create_gui_app(
                 }
             )
         return documents
+
+    @app.get("/api/qc/review-queue")
+    async def qc_review_queue() -> dict[str, Any]:
+        return controller.qc_review_queue_document()
+
+    @app.post(
+        "/api/qc/jobs/{job_id}/scenes/{scene_id}/candidates/{candidate_id}/decision"
+    )
+    async def qc_human_decision(
+        job_id: str,
+        scene_id: int,
+        candidate_id: str,
+        request: Request,
+    ) -> dict[str, Any]:
+        body = await request.json()
+        if not isinstance(body, Mapping) or set(body) != {"decision"}:
+            raise HTTPException(
+                status_code=400,
+                detail="Payload must contain only the durable QC decision.",
+            )
+        try:
+            decision = QcHumanDecision(str(body["decision"]))
+            if decision not in {
+                QcHumanDecision.APPROVE,
+                QcHumanDecision.REJECT,
+                QcHumanDecision.HOLD,
+            }:
+                raise ValueError
+            result = controller.decide_qc_candidate(
+                job_id=job_id,
+                scene_id=scene_id,
+                candidate_id=candidate_id,
+                decision=decision,
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail="Unknown QC decision.") from error
+        except StateTransitionError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        return {
+            "job_id": job_id,
+            "scene_id": scene_id,
+            "candidate_id": candidate_id,
+            "decision_id": result.decision.decision_id,
+            "decision": result.decision.decision.value,
+            "candidate_state": result.candidate.state.value,
+            "replayed": result.replayed,
+        }
 
     @app.get("/api/jobs/{job_id}")
     async def job_detail(job_id: str) -> dict[str, Any]:

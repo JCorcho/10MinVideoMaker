@@ -14,6 +14,12 @@ except ImportError:  # System Python intentionally does not host the GUI.
     TestClient = None
 
 from tenminvideomaker.contracts import parse_job_payload
+from tenminvideomaker.qc_contracts import (
+    QcCandidateState,
+    QcDecision,
+    QcTier,
+    evaluation_idempotency_key,
+)
 from tenminvideomaker.state_store import PipelineState, PipelineStateStore, SceneState
 from tenminvideomaker.storage import StorageLayout
 
@@ -21,6 +27,19 @@ from test_contracts import payload
 
 
 class GuiStaticAssetTests(unittest.TestCase):
+    def test_qc_canary_review_ui_is_human_gated_and_has_no_patch_editor(self) -> None:
+        web_root = Path(__file__).parents[1] / "web"
+        markup = (web_root / "index.html").read_text(encoding="utf-8")
+        script = (web_root / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn("QC is CANARY / HUMAN APPROVAL REQUIRED", markup)
+        self.assertIn('id="qc-review-queue"', markup)
+        self.assertIn("/api/qc/review-queue", script)
+        self.assertIn('JSON.stringify({ decision: button.dataset.qcDecision })', script)
+        self.assertIn("Approve", script)
+        self.assertIn("Reject / Hold", script)
+        self.assertNotIn("qc-prompt-editor", markup)
+
     def test_acceptance_review_page_shows_labeled_boundary_comparison(self) -> None:
         web_root = Path(__file__).parents[1] / "web"
         markup = (web_root / "acceptance-review.html").read_text(encoding="utf-8")
@@ -171,6 +190,129 @@ class GuiStaticAssetTests(unittest.TestCase):
 
 @unittest.skipUnless(TestClient is not None, "FastAPI is supplied by the embedded Python")
 class GuiAppTests(unittest.TestCase):
+    def test_qc_review_api_resolves_media_server_side_and_decisions_are_safe(self) -> None:
+        from tenminvideomaker.gui_app import create_gui_app
+        from tenminvideomaker.gui_service import SupervisorController
+        from tenminvideomaker.review import scene_review_document
+        from tenminvideomaker.supervisor import PipelineSupervisor, SupervisorSettings
+
+        with tempfile.TemporaryDirectory() as directory:
+            storage = StorageLayout(Path(directory) / "storage")
+            storage.ensure()
+            store = PipelineStateStore(storage.database_path)
+            job = parse_job_payload(payload())
+            store.claim_job(job)
+            frame = storage.scene_frame_path(job.job_id, 1, 1)
+            video = storage.scene_clip_path(job.job_id, 1, 1)
+            frame.parent.mkdir(parents=True, exist_ok=True)
+            frame.write_bytes(b"frame")
+            video.write_bytes(b"video")
+            document = scene_review_document(job, job.scenes[0])
+            store.set_scene_state(
+                job.job_id, 1, SceneState.SUCCEEDED,
+                frame_path=str(frame), video_path=str(video),
+            )
+            store.ensure_original_scene_revision(
+                job.job_id, 1, parameters=document,
+                frame_path=str(frame), video_path=str(video),
+            )
+            candidate = store.ensure_qc_candidate(
+                candidate_id="candidate-ui",
+                job_id=job.job_id,
+                scene_id=1,
+                revision=1,
+                tier=QcTier.ORIGINAL,
+                parent_candidate_id=None,
+                source_video_path=str(video),
+                source_video_sha256="a" * 64,
+                original_prompt=document["i2v"]["prompt"],
+                current_prompt=document["i2v"]["prompt"],
+                original_seed=int(document["i2v"]["seed"]),
+                current_seed=int(document["i2v"]["seed"]),
+                negative_prompt=document["i2v"]["negative"],
+                negative_prompt_sha256="b" * 64,
+                state=QcCandidateState.PENDING_QC,
+                next_action="evaluate",
+            )
+            identity = {
+                "evaluator_id": "production-qc", "evaluator_version": "phase1-v1",
+                "backend_family": "llama.cpp", "backend_version": "2.28.2",
+                "executable_path": "C:/llama-server.exe", "executable_sha256": "1" * 64,
+                "model_id": "Qwen3.6 27B", "model_path": "C:/model.gguf",
+                "model_sha256": "2" * 64, "quantization": "IQ3_M GGUF",
+                "projector_path": "C:/mmproj.gguf", "projector_sha256": "3" * 64,
+                "projector_precision": "FP16", "gpu_uuid": "GPU-stable",
+                "gpu_name": "NVIDIA GeForce RTX 4080 SUPER",
+            }
+            key = evaluation_idempotency_key(
+                source_video_sha256=candidate.source_video_sha256,
+                evaluator_id=identity["evaluator_id"],
+                evaluator_version=identity["evaluator_version"],
+                backend_version=identity["backend_version"],
+                executable_sha256=identity["executable_sha256"],
+                model_sha256=identity["model_sha256"],
+                projector_sha256=identity["projector_sha256"],
+                effective_config_sha256="4" * 64,
+                prompt_sha256="5" * 64,
+            )
+            evaluation = store.begin_qc_evaluation(
+                evaluation_id="evaluation-ui", idempotency_key=key,
+                candidate_id=candidate.candidate_id,
+                source_video_path=candidate.source_video_path,
+                source_video_sha256=candidate.source_video_sha256,
+                evaluator_identity=identity, effective_config={},
+                effective_config_sha256="4" * 64,
+                prompt_version="production_ltx_video_qc_v1",
+                prompt_sha256="5" * 64, sampling_config={"fps": 2.0},
+                window_config={"frames": 4},
+            )
+            store.complete_qc_evaluation(
+                evaluation.evaluation_id, raw_result="raw",
+                normalized_decision=QcDecision.PASS,
+                suspect_windows=[{"response": {"confidence": 0.91, "summary": "Looks clean", "errors": []}}],
+                strong_window_count=0, frame_accounting={},
+                evidence_manifest_path=str(video.parent / "qc" / "evaluations" / "evaluation-ui" / "result.json"),
+                evidence_manifest_sha256="6" * 64,
+                next_action="await_human",
+            )
+            store.set_qc_candidate_state(
+                candidate.candidate_id, QcCandidateState.PASS_PENDING_HUMAN,
+                next_action="await_human",
+            )
+
+            comfy = SimpleNamespace(queue_counts=lambda: (0, 0))
+            supervisor = PipelineSupervisor(
+                store=store,
+                mail_client=SimpleNamespace(),
+                asset_manager=SimpleNamespace(),
+                comfy=comfy,
+                settings=SupervisorSettings(1, 10, 10, 2),
+                qc_controller=SimpleNamespace(
+                    settings=SimpleNamespace(
+                        quality_control_enabled=True, auto_advance_pass=False
+                    )
+                ),
+            )
+            controller = SupervisorController(supervisor, storage)
+            client = TestClient(create_gui_app(controller, storage, Path(__file__).parents[1]))
+
+            queue = client.get("/api/qc/review-queue").json()
+            self.assertEqual(queue["banner"], "QC is CANARY / HUMAN APPROVAL REQUIRED")
+            self.assertEqual(queue["pending"][0]["candidate_id"], candidate.candidate_id)
+            self.assertEqual(queue["pending"][0]["video_url"], f"/api/media/{job.job_id}/1/1/video")
+            self.assertNotIn("source_video_path", queue["pending"][0])
+            route = f"/api/qc/jobs/{job.job_id}/scenes/1/candidates/{candidate.candidate_id}/decision"
+            self.assertEqual(
+                client.post(route, json={"decision": "APPROVE", "path": "D:/injected.mp4"}).status_code,
+                400,
+            )
+            approved = client.post(route, json={"decision": "APPROVE"})
+            self.assertEqual(approved.status_code, 200)
+            self.assertEqual(approved.json()["candidate_state"], "ACCEPTED")
+            self.assertTrue(controller._wake.is_set())
+            self.assertTrue(client.post(route, json={"decision": "APPROVE"}).json()["replayed"])
+            self.assertEqual(client.post(route, json={"decision": "REJECT"}).status_code, 409)
+
     def test_duplicate_gui_launch_opens_existing_instance_and_exits_cleanly(self) -> None:
         from scripts.run_gui import main
         from tenminvideomaker.ownership import OwnershipError
