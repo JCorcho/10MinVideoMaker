@@ -105,20 +105,25 @@ def hardware_preflight(
     except OSError:
         port_open = False
     reasons = []
+    warnings: list[str] = []
     if int(gpu["memory_used_mib"]) > 2048:
         reasons.append("configured GPU uses more than 2048 MiB")
-    if int(gpu["utilization_percent"]) > 10:
-        reasons.append("configured GPU utilization exceeds 10 percent")
     if matching_compute:
         reasons.append("configured GPU has an existing compute process")
     if port_open:
         reasons.append("dedicated loopback port is already open")
+    if int(gpu["utilization_percent"]) > 10:
+        warnings.append(
+            "configured GPU aggregate utilization exceeds 10 percent; "
+            "treated as WDDM/display telemetry because no numeric compute owner was found"
+        )
     result = {
         "safe": not reasons,
         "gpu": gpu,
         "matching_compute_processes": matching_compute,
         "loopback_port_open": port_open,
         "reasons": reasons,
+        "warnings": warnings,
     }
     if reasons:
         raise RuntimeError("Hardware smoke preflight failed: " + "; ".join(reasons))

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 import tempfile
 import unittest
@@ -34,6 +35,145 @@ class Phase1QcSmokeHarnessTests(unittest.TestCase):
             _numeric_compute_processes(output, uuid),
             [f"200, llama-server.exe, {uuid}, 9123"],
         )
+
+    def test_preflight_wddm_display_case_passes_with_utilization_warning(self) -> None:
+        with (
+            patch.object(
+                smoke,
+                "_gpu_snapshot",
+                return_value={
+                    "line": "GPU-test, RTX test, 844, 13, P5",
+                    "uuid": "GPU-test",
+                    "name": "RTX test",
+                    "memory_used_mib": 844,
+                    "utilization_percent": 13,
+                    "pstate": "P5",
+                },
+            ),
+            patch.object(
+                smoke.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess(
+                    args=[],
+                    returncode=0,
+                    stdout="123, chrome.exe, GPU-test, [N/A]\n",
+                ),
+            ),
+            patch.object(smoke.socket, "create_connection", side_effect=OSError("closed")),
+        ):
+            preflight = smoke.hardware_preflight(
+                gpu_uuid="GPU-test", gpu_name="RTX test", host="127.0.0.1", port=18081
+            )
+
+        self.assertTrue(preflight["safe"])
+        self.assertEqual(preflight["reasons"], [])
+        self.assertEqual(preflight["matching_compute_processes"], [])
+        self.assertEqual(preflight["loopback_port_open"], False)
+        self.assertEqual(len(preflight["warnings"]), 1)
+        self.assertIn("aggregate utilization exceeds 10 percent", preflight["warnings"][0])
+
+    def test_preflight_numeric_compute_owner_still_fails(self) -> None:
+        with (
+            patch.object(
+                smoke,
+                "_gpu_snapshot",
+                return_value={
+                    "line": "GPU-test, RTX test, 844, 0, P5",
+                    "uuid": "GPU-test",
+                    "name": "RTX test",
+                    "memory_used_mib": 844,
+                    "utilization_percent": 0,
+                    "pstate": "P5",
+                },
+            ),
+            patch.object(
+                smoke.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess(
+                    args=[],
+                    returncode=0,
+                    stdout="101, llama-server.exe, GPU-test, 4096\n",
+                ),
+            ),
+            patch.object(smoke.socket, "create_connection", side_effect=OSError("closed")),
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError, "configured GPU has an existing compute process"
+            ):
+                smoke.hardware_preflight(
+                    gpu_uuid="GPU-test", gpu_name="RTX test", host="127.0.0.1", port=18081
+                )
+
+    def test_preflight_vram_above_2_gi_fails(self) -> None:
+        with (
+            patch.object(
+                smoke,
+                "_gpu_snapshot",
+                return_value={
+                    "line": "GPU-test, RTX test, 2500, 0, P5",
+                    "uuid": "GPU-test",
+                    "name": "RTX test",
+                    "memory_used_mib": 2500,
+                    "utilization_percent": 0,
+                    "pstate": "P5",
+                },
+            ),
+            patch.object(
+                smoke.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess(
+                    args=[],
+                    returncode=0,
+                    stdout="",
+                ),
+            ),
+            patch.object(smoke.socket, "create_connection", side_effect=OSError("closed")),
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError, "configured GPU uses more than 2048 MiB"
+            ):
+                smoke.hardware_preflight(
+                    gpu_uuid="GPU-test", gpu_name="RTX test", host="127.0.0.1", port=18081
+                )
+
+    def test_preflight_open_loopback_port_fails(self) -> None:
+        class OpenConnection:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        with (
+            patch.object(
+                smoke,
+                "_gpu_snapshot",
+                return_value={
+                    "line": "GPU-test, RTX test, 844, 0, P5",
+                    "uuid": "GPU-test",
+                    "name": "RTX test",
+                    "memory_used_mib": 844,
+                    "utilization_percent": 0,
+                    "pstate": "P5",
+                },
+            ),
+            patch.object(
+                smoke.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess(
+                    args=[],
+                    returncode=0,
+                    stdout="",
+                ),
+            ),
+            patch.object(smoke.socket, "create_connection", return_value=OpenConnection()),
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError, "dedicated loopback port is already open"
+            ):
+                smoke.hardware_preflight(
+                    gpu_uuid="GPU-test", gpu_name="RTX test", host="127.0.0.1", port=18081
+                )
 
     def test_context_probe_actually_sends_sentinel_in_a_but_not_b(self) -> None:
         requests = []
