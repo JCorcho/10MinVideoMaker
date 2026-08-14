@@ -18,6 +18,7 @@ from .continuation_renderer import ContinuationRenderError, ContinuationRenderer
 from .review import ReviewValidationError, ValidatedSceneEdit, validate_scene_edit
 from .state_store import (
     ChunkState,
+    JobState,
     PipelineState,
     PipelineStateStore,
     ManualFinalRecord,
@@ -198,7 +199,19 @@ class SupervisorController:
         qc_controller = getattr(self.supervisor, "qc_controller", None)
         settings = getattr(qc_controller, "settings", None)
         pending = []
-        for job_record in self.store.list_jobs():
+        snapshot = self.store.snapshot()
+        review_jobs = (
+            tuple(
+                job_record
+                for job_record in self.store.list_jobs()
+                if job_record.job_id == snapshot.job_id
+                and job_record.status == JobState.RUNNING
+            )
+            if snapshot.state == PipelineState.AWAITING_QC_REVIEW
+            and snapshot.job_id is not None
+            else ()
+        )
+        for job_record in review_jobs:
             job = self.store.load_job(job_record.job_id)
             titles = {scene.scene_id: scene.title for scene in job.scenes}
             all_candidates = self.store.qc_candidates(job.job_id)

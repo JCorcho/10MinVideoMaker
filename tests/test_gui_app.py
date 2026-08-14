@@ -21,7 +21,12 @@ from tenminvideomaker.qc_contracts import (
     QcTier,
     evaluation_idempotency_key,
 )
-from tenminvideomaker.state_store import PipelineState, PipelineStateStore, SceneState
+from tenminvideomaker.state_store import (
+    JobState,
+    PipelineState,
+    PipelineStateStore,
+    SceneState,
+)
 from tenminvideomaker.storage import StorageLayout
 
 from test_contracts import payload
@@ -281,6 +286,8 @@ class GuiAppTests(unittest.TestCase):
                 candidate.candidate_id, QcCandidateState.PASS_PENDING_HUMAN,
                 next_action="await_human",
             )
+            store.set_job_status(job.job_id, JobState.RUNNING)
+            store.transition(PipelineState.AWAITING_QC_REVIEW, job_id=job.job_id)
 
             comfy = SimpleNamespace(queue_counts=lambda: (0, 0))
             supervisor = PipelineSupervisor(

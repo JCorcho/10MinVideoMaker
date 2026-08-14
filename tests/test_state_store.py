@@ -2095,9 +2095,17 @@ class StateStoreTests(unittest.TestCase):
             next_action="await_human",
         )
 
+    def _await_qc_review(self) -> None:
+        self.store.set_job_status(self.job.job_id, JobState.RUNNING)
+        self.store.transition(
+            PipelineState.AWAITING_QC_REVIEW,
+            job_id=self.job.job_id,
+        )
+
     def test_human_qc_decision_is_atomic_idempotent_and_rejects_conflicts(self) -> None:
         candidate = self._create_qc_candidate()
         self._complete_pass_for_candidate(candidate.candidate_id)
+        self._await_qc_review()
 
         approved = self.store.decide_qc_candidate(
             job_id=candidate.job_id,
@@ -2137,6 +2145,7 @@ class StateStoreTests(unittest.TestCase):
     def test_qc_final_selection_requires_durable_acceptance_and_kill_switch_uses_original(self) -> None:
         candidate = self._create_qc_candidate()
         self._complete_pass_for_candidate(candidate.candidate_id)
+        self._await_qc_review()
         with self.assertRaisesRegex(StateTransitionError, "ACCEPTED"):
             self.store.qc_final_selection(candidate.job_id, [candidate.scene_id])
 
@@ -2167,6 +2176,7 @@ class StateStoreTests(unittest.TestCase):
     def test_qc_final_selection_rejects_accepted_path_with_changed_bytes(self) -> None:
         candidate = self._create_qc_candidate()
         self._complete_pass_for_candidate(candidate.candidate_id)
+        self._await_qc_review()
         self.store.decide_qc_candidate(
             job_id=candidate.job_id,
             scene_id=candidate.scene_id,
@@ -2178,6 +2188,70 @@ class StateStoreTests(unittest.TestCase):
 
         with self.assertRaisesRegex(StateTransitionError, "hash"):
             self.store.qc_final_selection(candidate.job_id, [candidate.scene_id])
+
+    def test_cancel_terminalizes_pending_qc_and_rejects_stale_approval(self) -> None:
+        candidate = self._create_qc_candidate()
+        self._complete_pass_for_candidate(candidate.candidate_id)
+        self._await_qc_review()
+        evaluations = self.store.qc_evaluations(candidate.candidate_id)
+
+        self.store.abandon_job(candidate.job_id, reason="cancelled in test")
+
+        stored = self.store.qc_candidate(candidate.candidate_id)
+        self.assertEqual(stored.state, QcCandidateState.SUPERSEDED)
+        self.assertEqual(stored.next_action, "job_cancelled")
+        self.assertEqual(self.store.qc_evaluations(candidate.candidate_id), evaluations)
+        with self.assertRaisesRegex(StateTransitionError, "active QC review"):
+            self.store.decide_qc_candidate(
+                job_id=candidate.job_id,
+                scene_id=candidate.scene_id,
+                candidate_id=candidate.candidate_id,
+                decision=QcHumanDecision.APPROVE,
+                note=None,
+            )
+        self.assertIsNone(self.store.qc_human_decision(candidate.candidate_id))
+
+    def test_stale_replay_after_cancel_cannot_promote(self) -> None:
+        candidate = self._create_qc_candidate()
+        self._complete_pass_for_candidate(candidate.candidate_id)
+        self._await_qc_review()
+        self.store.decide_qc_candidate(
+            job_id=candidate.job_id,
+            scene_id=candidate.scene_id,
+            candidate_id=candidate.candidate_id,
+            decision=QcHumanDecision.APPROVE,
+            note=None,
+        )
+        self.store.abandon_job(candidate.job_id, reason="cancelled after approval")
+
+        with self.assertRaisesRegex(StateTransitionError, "active QC review"):
+            self.store.decide_qc_candidate(
+                job_id=candidate.job_id,
+                scene_id=candidate.scene_id,
+                candidate_id=candidate.candidate_id,
+                decision=QcHumanDecision.APPROVE,
+                note=None,
+            )
+
+    def test_superseded_candidate_cannot_be_approved(self) -> None:
+        candidate = self._create_qc_candidate()
+        self._complete_pass_for_candidate(candidate.candidate_id)
+        self._await_qc_review()
+        self.store.set_qc_candidate_state(
+            candidate.candidate_id,
+            QcCandidateState.SUPERSEDED,
+            next_action="replacement_registered",
+        )
+
+        with self.assertRaisesRegex(StateTransitionError, "PASS_PENDING_HUMAN"):
+            self.store.decide_qc_candidate(
+                job_id=candidate.job_id,
+                scene_id=candidate.scene_id,
+                candidate_id=candidate.candidate_id,
+                decision=QcHumanDecision.APPROVE,
+                note=None,
+            )
+        self.assertIsNone(self.store.qc_human_decision(candidate.candidate_id))
 
     def test_manual_final_cannot_select_latest_unapproved_qc_revision(self) -> None:
         candidate = self._create_qc_candidate()

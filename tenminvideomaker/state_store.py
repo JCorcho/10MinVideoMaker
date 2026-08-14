@@ -3239,6 +3239,23 @@ class PipelineStateStore:
                 or int(candidate["scene_id"]) != scene_id
             ):
                 raise StateTransitionError("QC candidate does not match the route identity.")
+            pipeline = connection.execute(
+                "SELECT state, job_id FROM pipeline_state WHERE singleton = 1"
+            ).fetchone()
+            job = connection.execute(
+                "SELECT status FROM jobs WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+            if (
+                pipeline is None
+                or pipeline["job_id"] != job_id
+                or PipelineState(pipeline["state"]) != PipelineState.AWAITING_QC_REVIEW
+                or job is None
+                or JobState(job["status"]) != JobState.RUNNING
+            ):
+                raise StateTransitionError(
+                    "Human QC decisions require the active QC review job to remain RUNNING."
+                )
             existing = connection.execute(
                 "SELECT * FROM qc_human_decisions WHERE candidate_id = ?",
                 (candidate_id,),
@@ -3278,6 +3295,31 @@ class PipelineStateStore:
                 raise StateTransitionError(
                     "Human approval requires durable completed PASS evidence."
                 )
+            if (
+                evaluation["source_video_path"] != candidate["source_video_path"]
+                or evaluation["source_video_sha256"] != candidate["source_video_sha256"]
+            ):
+                raise StateTransitionError(
+                    "Human QC evidence no longer matches the current candidate identity."
+                )
+            revision = connection.execute(
+                """
+                SELECT frame_path, video_path, state FROM scene_revisions
+                WHERE job_id = ? AND scene_id = ? AND revision = ?
+                """,
+                (job_id, scene_id, candidate["revision"]),
+            ).fetchone()
+            if (
+                revision is None
+                or revision["state"] != SceneState.SUCCEEDED.value
+                or revision["video_path"] != candidate["source_video_path"]
+                or not Path(candidate["source_video_path"]).is_file()
+                or _file_sha256(candidate["source_video_path"])
+                != candidate["source_video_sha256"]
+            ):
+                raise StateTransitionError(
+                    "QC candidate no longer matches its successful revision hash."
+                )
             now = _utc_now()
             connection.execute(
                 """
@@ -3293,24 +3335,6 @@ class PipelineStateStore:
                 ),
             )
             if decision == QcHumanDecision.APPROVE:
-                revision = connection.execute(
-                    """
-                    SELECT frame_path, video_path, state FROM scene_revisions
-                    WHERE job_id = ? AND scene_id = ? AND revision = ?
-                    """,
-                    (job_id, scene_id, candidate["revision"]),
-                ).fetchone()
-                if (
-                    revision is None
-                    or revision["state"] != SceneState.SUCCEEDED.value
-                    or revision["video_path"] != candidate["source_video_path"]
-                    or not Path(candidate["source_video_path"]).is_file()
-                    or _file_sha256(candidate["source_video_path"])
-                    != candidate["source_video_sha256"]
-                ):
-                    raise StateTransitionError(
-                        "Approved candidate no longer matches its successful revision hash."
-                    )
                 connection.execute(
                     "UPDATE qc_candidates SET state = ?, next_action = NULL, updated_at = ? WHERE candidate_id = ?",
                     (QcCandidateState.ACCEPTED.value, now, candidate_id),
@@ -5935,6 +5959,29 @@ class PipelineStateStore:
                 (job_id, SceneState.SUCCEEDED),
             ).fetchall()
             now = _utc_now()
+            nonreviewable_states = (
+                QcCandidateState.PENDING_GENERATION,
+                QcCandidateState.GENERATING,
+                QcCandidateState.PENDING_QC,
+                QcCandidateState.QC_RUNNING,
+                QcCandidateState.PASS_PENDING_HUMAN,
+                QcCandidateState.HOLD_FOR_REVIEW,
+            )
+            candidate_placeholders = ",".join("?" for _ in nonreviewable_states)
+            connection.execute(
+                f"""
+                UPDATE qc_candidates
+                SET state = ?, next_action = ?, updated_at = ?
+                WHERE job_id = ? AND state IN ({candidate_placeholders})
+                """,
+                (
+                    QcCandidateState.SUPERSEDED.value,
+                    "job_cancelled",
+                    now,
+                    job_id,
+                    *(state.value for state in nonreviewable_states),
+                ),
+            )
             active_placeholders = ",".join("?" for _ in _ACTIVE_CHUNK_STATES)
             connection.execute(
                 f"""
