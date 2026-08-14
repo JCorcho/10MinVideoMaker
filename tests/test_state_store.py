@@ -2188,6 +2188,38 @@ class StateStoreTests(unittest.TestCase):
                 note=None,
             )
 
+    def test_human_hold_persists_distinct_operator_decision(self) -> None:
+        candidate = self._create_qc_candidate()
+        self._complete_pass_for_candidate(candidate.candidate_id)
+        self._await_qc_review()
+
+        result = self.store.decide_qc_candidate(
+            job_id=candidate.job_id,
+            scene_id=candidate.scene_id,
+            candidate_id=candidate.candidate_id,
+            decision=QcHumanDecision.HOLD,
+            note="needs specialist review",
+        )
+
+        self.assertEqual(result.decision.decision, QcHumanDecision.HOLD)
+        self.assertEqual(result.candidate.state, QcCandidateState.HOLD_FOR_REVIEW)
+
+    def test_human_reject_persists_distinct_operator_decision(self) -> None:
+        candidate = self._create_qc_candidate()
+        self._complete_pass_for_candidate(candidate.candidate_id)
+        self._await_qc_review()
+
+        result = self.store.decide_qc_candidate(
+            job_id=candidate.job_id,
+            scene_id=candidate.scene_id,
+            candidate_id=candidate.candidate_id,
+            decision=QcHumanDecision.REJECT,
+            note="visible defect confirmed",
+        )
+
+        self.assertEqual(result.decision.decision, QcHumanDecision.REJECT)
+        self.assertEqual(result.candidate.state, QcCandidateState.HOLD_FOR_REVIEW)
+
     def test_qc_final_selection_requires_durable_acceptance_and_kill_switch_uses_original(self) -> None:
         candidate = self._create_qc_candidate()
         self._complete_pass_for_candidate(candidate.candidate_id)

@@ -75,7 +75,8 @@ function renderQcReviewQueue() {
       </details>
       <div class="qc-review-actions">
         <button class="primary" data-qc-decision="APPROVE" data-job-id="${attribute(item.job_id)}" data-scene-id="${attribute(item.scene_id)}" data-candidate-id="${attribute(item.candidate_id)}">Approve</button>
-        <button class="danger" data-qc-decision="REJECT" data-job-id="${attribute(item.job_id)}" data-scene-id="${attribute(item.scene_id)}" data-candidate-id="${attribute(item.candidate_id)}">Reject / Hold</button>
+        <button class="danger" data-qc-decision="REJECT" data-job-id="${attribute(item.job_id)}" data-scene-id="${attribute(item.scene_id)}" data-candidate-id="${attribute(item.candidate_id)}">Reject</button>
+        <button data-qc-decision="HOLD" data-job-id="${attribute(item.job_id)}" data-scene-id="${attribute(item.scene_id)}" data-candidate-id="${attribute(item.candidate_id)}">Hold</button>
       </div>
     </article>`;
   }).join("");
@@ -112,7 +113,12 @@ async function submitQcDecision(event) {
       method: "POST",
       body: JSON.stringify({ decision: button.dataset.qcDecision }),
     });
-    toast(`${button.dataset.qcDecision === "APPROVE" ? "Approved" : "Held"} QC candidate.`);
+    const action = {
+      APPROVE: "Approved",
+      REJECT: "Rejected",
+      HOLD: "Held",
+    }[button.dataset.qcDecision];
+    toast(`${action} QC candidate.`);
     await loadQcReviewQueue();
   } catch (error) {
     toast(error.message, true);
