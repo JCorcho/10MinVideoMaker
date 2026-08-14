@@ -293,6 +293,8 @@ class SupervisorTests(unittest.TestCase):
         for scene in sorted(job.scenes, key=lambda item: item.scene_id):
             clip = root / f"scene-{scene.scene_id}.mp4"
             clip.write_bytes(f"scene-{scene.scene_id}".encode())
+            frame = root / f"scene-{scene.scene_id}.png"
+            frame.write_bytes(f"frame-{scene.scene_id}".encode())
             store.set_scene_state(
                 job.job_id,
                 scene.scene_id,
@@ -303,6 +305,7 @@ class SupervisorTests(unittest.TestCase):
                 job.job_id,
                 scene.scene_id,
                 parameters=scene_review_document(job, scene),
+                frame_path=str(frame),
                 video_path=str(clip),
             )
             candidate = store.ensure_qc_candidate(

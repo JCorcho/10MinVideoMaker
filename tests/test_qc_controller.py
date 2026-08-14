@@ -953,6 +953,61 @@ class Phase1QcControllerRoutingTests(unittest.TestCase):
             2,
         )
 
+    def test_transient_repair_generation_retry_can_succeed(self) -> None:
+        original = self._candidate()
+        self._evaluation(original.candidate_id, QcDecision.FAIL)
+        a1 = self.controller().route_completed_evaluation(
+            self.job, original.candidate_id
+        )
+        calls = 0
+
+        class Comfy:
+            def queue_counts(self):
+                return 0, 0
+
+            def free_memory(self):
+                pass
+
+        class Supervisor:
+            comfy = Comfy()
+
+            def render_qc_candidates(_self, _job, candidates):
+                nonlocal calls
+                calls += 1
+                candidate = candidates[0][0]
+                if calls == 1:
+                    raise RepairGenerationError(
+                        candidate.candidate_id,
+                        "transient_comfy_transport",
+                        retryable=True,
+                    )
+                destination = Path(candidate.source_video_path)
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(b"successful-a1-retry")
+                self.store.complete_qc_candidate_generation(
+                    candidate.candidate_id,
+                    source_video_path=str(destination),
+                    source_video_sha256=hashlib.sha256(
+                        destination.read_bytes()
+                    ).hexdigest(),
+                )
+
+            def release_memory(_self):
+                pass
+
+        first = self.controller().run_epoch(self.job, Supervisor())
+        second = self._epoch_controller([], auto=False).run_epoch(
+            self.job, Supervisor()
+        )
+        persisted = self.store.qc_candidate(a1.candidate_id)
+
+        self.assertFalse(first.ready_for_finalization)
+        self.assertEqual(calls, 2)
+        self.assertEqual(persisted.infrastructure_failure_count, 1)
+        self.assertNotEqual(persisted.state, QcCandidateState.PENDING_GENERATION)
+        self.assertEqual(len(self.store.qc_candidates(self.job.job_id)), 2)
+        self.assertFalse(second.ready_for_finalization)
+
     def test_failed_prior_backend_cleanup_blocks_repair_generation(self) -> None:
         original = self._candidate()
         self._evaluation(original.candidate_id, QcDecision.FAIL)
