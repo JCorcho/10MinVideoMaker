@@ -39,6 +39,7 @@ from .contracts import (
 from .delivery import DiscordDeliverySettings
 from .mail import GmailClient, GmailPollingService
 from .qc_repair import RepairGenerationError
+from .qc_contracts import QcTier
 from .review import SceneWorkflowOverrides, scene_review_document, validate_scene_edit
 from .state_store import (
     JobState,
@@ -235,6 +236,13 @@ class PipelineSupervisor:
                 ):
                     job = self.store.load_job(snapshot.job_id)
                     steps = self.store.qc_finalization_steps(snapshot.job_id)
+                    if plan.selection_mode == "LEGACY_BASELINE":
+                        self._finalize_qc_job(
+                            job,
+                            (),
+                            selection_mode="LEGACY_BASELINE",
+                        )
+                        return
                     if steps:
                         message = (
                             "QC was disabled after finalization side effects may have "
@@ -249,6 +257,9 @@ class PipelineSupervisor:
                         )
                         LOGGER.error("Job %s: %s", snapshot.job_id, message)
                         return
+                    self.store.discard_side_effect_free_qc_finalization_plan(
+                        snapshot.job_id
+                    )
                     baseline = self.store.original_final_selection(
                         snapshot.job_id,
                         [scene.scene_id for scene in job.scenes],
@@ -707,6 +718,8 @@ class PipelineSupervisor:
         self,
         job: JobPayload,
         selection: Sequence[ManualFinalSceneSelection],
+        *,
+        selection_mode: str = "ACCEPTED_QC",
     ) -> None:
         """Resume the accepted-selection plan without replaying external effects."""
         required = tuple(sorted(scene.scene_id for scene in job.scenes))
@@ -728,6 +741,7 @@ class PipelineSupervisor:
             job.job_id,
             required,
             final_path=final_path,
+            selection_mode=selection_mode,
         )
         planned_selection = tuple(
             ManualFinalSceneSelection(
@@ -761,6 +775,7 @@ class PipelineSupervisor:
                 kind="SCENE_DELIVERY",
                 evidence={
                     "candidate_id": item["candidate_id"],
+                    "selection_mode": plan.selection_mode,
                     "scene_id": selected.scene_id,
                     "revision": selected.revision,
                     "artifact_path": selected.video_path,
@@ -974,10 +989,59 @@ class PipelineSupervisor:
             next_request_id=request_id,
         )
         if request_step.state != "COMPLETED":
-            already_sent = self.mail_client.request_was_sent(request_id)
+            if request_step.state == "AMBIGUOUS":
+                self.store.transition(
+                    PipelineState.QC_BLOCKED,
+                    job_id=job.job_id,
+                    error=(
+                        "The next-job request has an ambiguous external send and "
+                        "requires manual reconciliation."
+                    ),
+                )
+                return
+            try:
+                already_sent = self.mail_client.request_was_sent(request_id)
+            except Exception as error:
+                if request_step.state == "DISPATCHING":
+                    self.store.set_qc_finalization_step_dispatch_state(
+                        job.job_id,
+                        "request-next-job",
+                        state="AMBIGUOUS",
+                        receipt={
+                            "request_id": request_id,
+                            "error": str(error),
+                        },
+                    )
+                    self.store.transition(
+                        PipelineState.QC_BLOCKED,
+                        job_id=job.job_id,
+                        error=(
+                            "The next-job request could not be reconciled after its "
+                            "dispatch boundary. Manual reconciliation is required."
+                        ),
+                    )
+                    return
+                raise
             if already_sent:
                 message_id = self.mail_client.request_message_id(request_id)
             elif request_step.state == "DISPATCHING":
+                self.store.set_qc_finalization_step_dispatch_state(
+                    job.job_id,
+                    "request-next-job",
+                    state="AMBIGUOUS",
+                    receipt={
+                        "request_id": request_id,
+                        "error": "Dispatch intent is not observable in Gmail.",
+                    },
+                )
+                self.store.transition(
+                    PipelineState.QC_BLOCKED,
+                    job_id=job.job_id,
+                    error=(
+                        "The next-job request is dispatch-ambiguous and requires "
+                        "manual reconciliation."
+                    ),
+                )
                 LOGGER.warning(
                     "QC next-job request %s is dispatch-ambiguous and is not yet "
                     "observable in Gmail; refusing an automatic resend.",
@@ -988,12 +1052,33 @@ class PipelineSupervisor:
                 self.store.mark_qc_finalization_step_dispatching(
                     job.job_id,
                     "request-next-job",
+                    receipt={"request_id": request_id},
                 )
-                message_id = self.mail_client.send_request(
-                    previous_job_id=job.job_id,
-                    succeeded=True,
-                    request_id=request_id,
-                )
+                try:
+                    message_id = self.mail_client.send_request(
+                        previous_job_id=job.job_id,
+                        succeeded=True,
+                        request_id=request_id,
+                    )
+                except Exception as error:
+                    self.store.set_qc_finalization_step_dispatch_state(
+                        job.job_id,
+                        "request-next-job",
+                        state="AMBIGUOUS",
+                        receipt={
+                            "request_id": request_id,
+                            "error": str(error),
+                        },
+                    )
+                    self.store.transition(
+                        PipelineState.QC_BLOCKED,
+                        job_id=job.job_id,
+                        error=(
+                            "The next-job request failed after its durable dispatch "
+                            "boundary. Manual reconciliation is required."
+                        ),
+                    )
+                    return
                 self._qc_finalization_checkpoint_hook("after_next_request")
             request_step = self.store.complete_qc_finalization_step(
                 job.job_id,
@@ -1031,7 +1116,29 @@ class PipelineSupervisor:
         job: JobPayload,
         selection: Sequence[ManualFinalSceneSelection],
     ) -> None:
-        """Preserve the pre-QC finalization path for the snapshotted baseline."""
+        """Checkpoint a QC-history baseline; preserve never-QC legacy behavior."""
+        has_qc_history = any(
+            item.tier == QcTier.ORIGINAL
+            for item in self.store.qc_candidates(job.job_id)
+        )
+        if not has_qc_history:
+            self._finalize_never_qc_legacy_selection(job, selection)
+            return
+        existing = self.store.qc_finalization_plan(job.job_id)
+        if existing is not None and existing.selection_mode == "ACCEPTED_QC":
+            self.store.discard_side_effect_free_qc_finalization_plan(job.job_id)
+        self._finalize_qc_job(
+            job,
+            selection,
+            selection_mode="LEGACY_BASELINE",
+        )
+
+    def _finalize_never_qc_legacy_selection(
+        self,
+        job: JobPayload,
+        selection: Sequence[ManualFinalSceneSelection],
+    ) -> None:
+        """Keep the pre-feature finalization path for jobs with no QC history."""
         required = tuple(sorted(scene.scene_id for scene in job.scenes))
         if tuple(item.scene_id for item in selection) != required:
             raise FatalPipelineError(

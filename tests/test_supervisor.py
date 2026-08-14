@@ -27,6 +27,7 @@ from tenminvideomaker.state_store import (
     ManualFinalSceneSelection,
     PipelineState,
     PipelineStateStore,
+    RemakeMode,
     SceneState,
 )
 from tenminvideomaker.storage import StorageLayout
@@ -458,7 +459,7 @@ class SupervisorTests(unittest.TestCase):
             self.assertEqual(assembler.calls, [])
             self.assertEqual(store.snapshot().state, PipelineState.QC_BLOCKED)
 
-    def test_qc_disabled_result_uses_baseline_without_committing_qc_plan(self) -> None:
+    def test_qc_disabled_result_commits_legacy_baseline_plan(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
             job = parse_job_payload(payload())
@@ -484,10 +485,109 @@ class SupervisorTests(unittest.TestCase):
 
             supervisor._finalize_qc_result(job, selection)
 
-            self.assertIsNone(store.qc_finalization_plan(job.job_id))
+            plan = store.qc_finalization_plan(job.job_id)
+            self.assertEqual(plan.selection_mode, "LEGACY_BASELINE")
+            self.assertEqual(plan.state, "COMPLETED")
             self.assertEqual(len(assembler.calls), 1)
             self.assertEqual(mail.requests, [(job.job_id, True)])
             self.assertEqual(store.snapshot().state, PipelineState.WAITING_FOR_GROK)
+
+    def test_never_qc_job_keeps_legacy_finalization_without_qc_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            job = parse_job_payload(payload())
+            store = PipelineStateStore(root / "pipeline.sqlite3")
+            store.claim_job(job)
+            clip = root / "legacy.mp4"
+            clip.write_bytes(b"legacy")
+            store.set_scene_state(
+                job.job_id, 1, SceneState.SUCCEEDED, video_path=str(clip)
+            )
+            store.ensure_original_scene_revision(
+                job.job_id,
+                1,
+                parameters=scene_review_document(job, job.scenes[0]),
+                video_path=str(clip),
+            )
+            supervisor = PipelineSupervisor(
+                store=store,
+                mail_client=FakeMailClient(),
+                asset_manager=FakeAssetManager(),
+                comfy=FakeComfy(root / "unused.png"),
+                assembler=FakeAssembler(root / "final.mp4"),
+                settings=SupervisorSettings(),
+                video_probe=lambda path: VideoStreamInfo(
+                    Path(path), PRODUCTION_WIDTH, PRODUCTION_HEIGHT, Fraction(24, 1)
+                ),
+            )
+
+            supervisor._finalize_qc_disabled_selection(
+                job, store.legacy_final_selection(job.job_id, [1])
+            )
+
+            self.assertIsNone(store.qc_finalization_plan(job.job_id))
+            self.assertEqual(store.snapshot().state, PipelineState.WAITING_FOR_GROK)
+
+    def test_legacy_baseline_plan_never_substitutes_accepted_repair(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            job = parse_job_payload(payload())
+            store = PipelineStateStore(root / "pipeline.sqlite3")
+            store.claim_job(job)
+            baseline = self._accept_qc_scenes(store, job, root)[0]
+            repair_path = root / "accepted-a1.mp4"
+            repair_path.write_bytes(b"accepted-a1")
+            document = scene_review_document(job, job.scenes[0])
+            revision = store.create_scene_revision(
+                job.job_id,
+                1,
+                remake_mode=RemakeMode.VIDEO_ONLY,
+                parameters=document,
+                state=SceneState.SUCCEEDED,
+                video_path=str(repair_path),
+            )
+            repair = store.ensure_qc_candidate(
+                candidate_id="accepted-a1",
+                job_id=job.job_id,
+                scene_id=1,
+                revision=revision,
+                tier=QcTier.A1,
+                parent_candidate_id="accepted-1",
+                source_video_path=str(repair_path),
+                source_video_sha256=hashlib.sha256(repair_path.read_bytes()).hexdigest(),
+                original_prompt=job.scenes[0].i2v.prompt,
+                current_prompt=job.scenes[0].i2v.prompt,
+                original_seed=job.scenes[0].i2v.seed,
+                current_seed=job.scenes[0].i2v.seed + 1,
+                negative_prompt=job.scenes[0].i2v.negative,
+                negative_prompt_sha256=hashlib.sha256(
+                    job.scenes[0].i2v.negative.encode()
+                ).hexdigest(),
+                state=QcCandidateState.ACCEPTED,
+                next_action=None,
+            )
+            store.set_qc_candidate_state(
+                "accepted-1", QcCandidateState.SUPERSEDED, next_action=None
+            )
+            supervisor = PipelineSupervisor(
+                store=store,
+                mail_client=FakeMailClient(),
+                asset_manager=FakeAssetManager(),
+                comfy=FakeComfy(root / "unused.png"),
+                assembler=FakeAssembler(root / "final.mp4"),
+                settings=SupervisorSettings(),
+                video_probe=lambda path: VideoStreamInfo(
+                    Path(path), PRODUCTION_WIDTH, PRODUCTION_HEIGHT, Fraction(24, 1)
+                ),
+            )
+
+            supervisor._finalize_qc_disabled_selection(job, (baseline,))
+
+            plan = store.qc_finalization_plan(job.job_id)
+            self.assertEqual(plan.selection_mode, "LEGACY_BASELINE")
+            self.assertEqual(plan.selection[0]["revision"], baseline.revision)
+            self.assertEqual(plan.selection[0]["artifact_path"], baseline.video_path)
+            self.assertNotEqual(plan.selection[0]["candidate_id"], repair.candidate_id)
 
     def test_qc_disabled_restart_abandons_side_effect_free_plan_for_baseline(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -523,7 +623,9 @@ class SupervisorTests(unittest.TestCase):
 
             self.assertEqual(len(assembler.calls), 1)
             self.assertEqual(mail.requests, [(job.job_id, True)])
-            self.assertEqual(store.qc_finalization_plan(job.job_id).state, "PLAN_COMMITTED")
+            plan = store.qc_finalization_plan(job.job_id)
+            self.assertEqual(plan.selection_mode, "LEGACY_BASELINE")
+            self.assertEqual(plan.state, "COMPLETED")
             self.assertEqual(store.snapshot().state, PipelineState.WAITING_FOR_GROK)
 
     def test_qc_disabled_restart_holds_ambiguous_finalization_side_effect(self) -> None:
@@ -667,6 +769,143 @@ class SupervisorTests(unittest.TestCase):
                 self.assertTrue(
                     all(item.receipt["prompt_id"] for item in delivery_steps)
                 )
+
+    def test_legacy_baseline_plan_resumes_all_crash_boundaries(self) -> None:
+        crash_points = (
+            "plan_committed",
+            "after_scene_delivery:1",
+            "deliveries_completed",
+            "after_stitch_artifact",
+            "after_job_success",
+            "after_next_request",
+        )
+        for crash_point in crash_points:
+            with self.subTest(crash_point=crash_point), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                job = parse_job_payload(payload())
+                storage = StorageLayout(root / "storage")
+                storage.ensure()
+                store = PipelineStateStore(storage.database_path)
+                store.claim_job(job)
+                selection = self._accept_qc_scenes(store, job, root)
+                assembler = FakeAssembler(root / "final.mp4")
+                mail = FakeMailClient()
+
+                class IdempotentRenderer:
+                    def __init__(self):
+                        self.actual_sends = 0
+                        self.sent = set()
+
+                    def deliver_existing_scene(self, _job, scene, _path, **_kwargs):
+                        if scene.scene_id not in self.sent:
+                            self.sent.add(scene.scene_id)
+                            self.actual_sends += 1
+                        return SimpleNamespace(
+                            status="sent", prompt_id=f"prompt-{scene.scene_id}"
+                        )
+
+                renderer = IdempotentRenderer()
+                fired = []
+
+                def crash_hook(point):
+                    if point == crash_point and not fired:
+                        fired.append(point)
+                        raise RuntimeError(f"crash at {point}")
+
+                def build(hook=None):
+                    supervisor = PipelineSupervisor(
+                        store=store,
+                        mail_client=mail,
+                        asset_manager=FakeAssetManager(),
+                        comfy=FakeComfy(root / "unused.png"),
+                        assembler=assembler,
+                        settings=SupervisorSettings(),
+                        storage=storage,
+                        delivery=DiscordDeliverySettings(
+                            "https://discord.com/api/webhooks/123456789/test-token"
+                        ),
+                        qc_controller=SimpleNamespace(
+                            settings=SimpleNamespace(quality_control_enabled=False)
+                        ),
+                        video_probe=lambda path: VideoStreamInfo(
+                            Path(path), PRODUCTION_WIDTH, PRODUCTION_HEIGHT, Fraction(24, 1)
+                        ),
+                        qc_finalization_checkpoint_hook=hook,
+                    )
+                    supervisor.continuation_renderer = renderer
+                    return supervisor
+
+                with self.assertRaisesRegex(RuntimeError, "crash at"):
+                    build(crash_hook)._finalize_qc_job(
+                        job,
+                        selection,
+                        selection_mode="LEGACY_BASELINE",
+                    )
+
+                build().tick()
+
+                plan = store.qc_finalization_plan(job.job_id)
+                self.assertEqual(plan.selection_mode, "LEGACY_BASELINE")
+                self.assertEqual(plan.state, "COMPLETED")
+                self.assertEqual(renderer.actual_sends, 1)
+                self.assertEqual(len(assembler.calls), 1)
+                self.assertEqual(mail.actual_send_count, 1)
+                self.assertEqual(store.snapshot().state, PipelineState.WAITING_FOR_GROK)
+
+    def test_legacy_baseline_ambiguous_mail_send_holds_without_resend(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            job = parse_job_payload(payload())
+            storage = StorageLayout(root / "storage")
+            storage.ensure()
+            store = PipelineStateStore(storage.database_path)
+            store.claim_job(job)
+            selection = self._accept_qc_scenes(store, job, root)
+
+            class AmbiguousMail(FakeMailClient):
+                def send_request(self, **kwargs):
+                    self.actual_send_count += 1
+                    raise TimeoutError("connection lost after SMTP submission")
+
+            mail = AmbiguousMail()
+
+            def build():
+                return PipelineSupervisor(
+                    store=store,
+                    mail_client=mail,
+                    asset_manager=FakeAssetManager(),
+                    comfy=FakeComfy(root / "unused.png"),
+                    assembler=FakeAssembler(root / "final.mp4"),
+                    settings=SupervisorSettings(),
+                    storage=storage,
+                    qc_controller=SimpleNamespace(
+                        settings=SimpleNamespace(quality_control_enabled=False)
+                    ),
+                    video_probe=lambda path: VideoStreamInfo(
+                        Path(path), PRODUCTION_WIDTH, PRODUCTION_HEIGHT, Fraction(24, 1)
+                    ),
+                )
+
+            build()._finalize_qc_job(
+                job,
+                selection,
+                selection_mode="LEGACY_BASELINE",
+            )
+
+            self.assertEqual(mail.actual_send_count, 1)
+            self.assertEqual(store.snapshot().state, PipelineState.QC_BLOCKED)
+            step = next(
+                item
+                for item in store.qc_finalization_steps(job.job_id)
+                if item.step_key == "request-next-job"
+            )
+            self.assertEqual(step.state, "AMBIGUOUS")
+            self.assertIn("SMTP submission", step.receipt["error"])
+
+            build().tick()
+
+            self.assertEqual(mail.actual_send_count, 1)
+            self.assertEqual(store.snapshot().state, PipelineState.QC_BLOCKED)
 
     def test_qc_enabled_inserts_epoch_after_complete_i2v_batch_and_blocks_stitch(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -388,6 +388,7 @@ class QcHumanDecisionResult:
 class QcFinalizationPlanRecord:
     job_id: str
     version: int
+    selection_mode: str
     selection: tuple[Mapping[str, Any], ...]
     plan_sha256: str
     state: str
@@ -849,6 +850,7 @@ class PipelineStateStore:
                 CREATE TABLE IF NOT EXISTS qc_finalization_plans (
                     job_id TEXT PRIMARY KEY,
                     version INTEGER NOT NULL,
+                    selection_mode TEXT NOT NULL DEFAULT 'ACCEPTED_QC',
                     selection_json TEXT NOT NULL,
                     plan_sha256 TEXT NOT NULL UNIQUE,
                     state TEXT NOT NULL,
@@ -900,6 +902,17 @@ class PipelineStateStore:
                     connection.execute(
                         f"ALTER TABLE qc_candidates ADD COLUMN {column} TEXT"
                     )
+            finalization_plan_columns = {
+                row["name"]
+                for row in connection.execute(
+                    "PRAGMA table_info(qc_finalization_plans)"
+                ).fetchall()
+            }
+            if "selection_mode" not in finalization_plan_columns:
+                connection.execute(
+                    "ALTER TABLE qc_finalization_plans ADD COLUMN "
+                    "selection_mode TEXT NOT NULL DEFAULT 'ACCEPTED_QC'"
+                )
             scene_columns = {
                 row["name"] for row in connection.execute("PRAGMA table_info(scenes)").fetchall()
             }
@@ -3598,6 +3611,7 @@ class PipelineStateStore:
         return QcFinalizationPlanRecord(
             job_id=row["job_id"],
             version=int(row["version"]),
+            selection_mode=row["selection_mode"],
             selection=tuple(json.loads(row["selection_json"])),
             plan_sha256=row["plan_sha256"],
             state=row["state"],
@@ -3633,8 +3647,11 @@ class PipelineStateStore:
         scene_ids: Sequence[int],
         *,
         final_path: str,
+        selection_mode: str = "ACCEPTED_QC",
     ) -> QcFinalizationPlanRecord:
-        """Commit the accepted selection before any QC finalization side effect."""
+        """Commit one immutable accepted-QC or kill-switch baseline selection."""
+        if selection_mode not in {"ACCEPTED_QC", "LEGACY_BASELINE"}:
+            raise StateTransitionError("Unknown QC finalization selection mode.")
         required = tuple(sorted(set(int(item) for item in scene_ids)))
         resolved_final = str(Path(final_path).resolve())
         self.initialize()
@@ -3650,6 +3667,7 @@ class PipelineStateStore:
                 if (
                     tuple(int(item["scene_id"]) for item in record.selection) != required
                     or record.final_path != resolved_final
+                    or record.selection_mode != selection_mode
                 ):
                     raise StateTransitionError(
                         "The durable QC finalization plan is immutable."
@@ -3665,8 +3683,9 @@ class PipelineStateStore:
                         )
                 return record
 
-            rows = connection.execute(
-                """
+            if selection_mode == "ACCEPTED_QC":
+                rows = connection.execute(
+                    """
                 SELECT c.candidate_id, c.scene_id, c.revision,
                        c.source_video_path, c.source_video_sha256,
                        r.state AS revision_state, r.video_path AS revision_video_path
@@ -3676,11 +3695,27 @@ class PipelineStateStore:
                 WHERE c.job_id = ? AND c.state = ?
                 ORDER BY c.scene_id
                 """,
-                (job_id, QcCandidateState.ACCEPTED.value),
-            ).fetchall()
+                    (job_id, QcCandidateState.ACCEPTED.value),
+                ).fetchall()
+                selection_requirement = "one ACCEPTED candidate"
+            else:
+                rows = connection.execute(
+                    """
+                SELECT c.candidate_id, c.scene_id, c.revision,
+                       c.source_video_path, c.source_video_sha256,
+                       r.state AS revision_state, r.video_path AS revision_video_path
+                FROM qc_candidates c
+                JOIN scene_revisions r ON r.job_id = c.job_id
+                    AND r.scene_id = c.scene_id AND r.revision = c.revision
+                WHERE c.job_id = ? AND c.tier = ?
+                ORDER BY c.scene_id
+                """,
+                    (job_id, QcTier.ORIGINAL.value),
+                ).fetchall()
+                selection_requirement = "one immutable ORIGINAL baseline candidate"
             if tuple(int(row["scene_id"]) for row in rows) != required:
                 raise StateTransitionError(
-                    "QC finalization plan requires one ACCEPTED candidate for every scene."
+                    f"QC finalization plan requires {selection_requirement} for every scene."
                 )
             selection: list[dict[str, Any]] = []
             for position, row in enumerate(rows, start=1):
@@ -3694,7 +3729,7 @@ class PipelineStateStore:
                     or _file_sha256(path) != artifact_hash
                 ):
                     raise StateTransitionError(
-                        "An ACCEPTED candidate cannot be snapshotted because its artifact changed."
+                        "A finalization candidate cannot be snapshotted because its artifact changed."
                     )
                 selection.append(
                     {
@@ -3707,8 +3742,9 @@ class PipelineStateStore:
                     }
                 )
             document = {
-                "schema_version": 1,
+                "schema_version": 2,
                 "job_id": job_id,
+                "selection_mode": selection_mode,
                 "ordered_selection": selection,
                 "final_path": resolved_final,
             }
@@ -3720,12 +3756,15 @@ class PipelineStateStore:
             connection.execute(
                 """
                 INSERT INTO qc_finalization_plans (
-                    job_id, version, selection_json, plan_sha256, state,
+                    job_id, version, selection_mode, selection_json, plan_sha256, state,
                     final_path, final_sha256, next_request_id,
                     next_request_receipt, created_at, updated_at
-                ) VALUES (?, 1, ?, ?, 'PLAN_COMMITTED', ?, NULL, NULL, NULL, ?, ?)
+                ) VALUES (?, 2, ?, ?, ?, 'PLAN_COMMITTED', ?, NULL, NULL, NULL, ?, ?)
                 """,
-                (job_id, selection_json, plan_sha256, resolved_final, now, now),
+                (
+                    job_id, selection_mode, selection_json, plan_sha256,
+                    resolved_final, now, now,
+                ),
             )
             stored = connection.execute(
                 "SELECT * FROM qc_finalization_plans WHERE job_id = ?",
@@ -3741,6 +3780,38 @@ class PipelineStateStore:
                 (job_id,),
             ).fetchone()
         return None if row is None else self._qc_finalization_plan_record(row)
+
+    def discard_side_effect_free_qc_finalization_plan(self, job_id: str) -> bool:
+        """Discard an accepted-QC plan only while no effect intent exists."""
+        self.initialize()
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._assert_active_automatic_job_connection(connection, job_id)
+            row = connection.execute(
+                "SELECT * FROM qc_finalization_plans WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+            if row is None:
+                return False
+            plan = self._qc_finalization_plan_record(row)
+            step = connection.execute(
+                "SELECT 1 FROM qc_finalization_steps WHERE job_id = ? LIMIT 1",
+                (job_id,),
+            ).fetchone()
+            if (
+                plan.selection_mode != "ACCEPTED_QC"
+                or plan.state not in {"PLAN_COMMITTED", "DELIVERING"}
+                or plan.final_sha256 is not None
+                or plan.next_request_id is not None
+                or step is not None
+            ):
+                raise StateTransitionError(
+                    "A QC finalization plan with effect intent cannot change selection."
+                )
+            connection.execute(
+                "DELETE FROM qc_finalization_plans WHERE job_id = ?", (job_id,)
+            )
+        return True
 
     def advance_qc_finalization_plan(
         self,
