@@ -966,6 +966,111 @@ class Phase1QcControllerRoutingTests(unittest.TestCase):
         self.assertTrue(final.ready_for_finalization)
         self.assertEqual(final.selection[0].revision, b1.revision)
 
+    def test_worst_case_original_a1_b1_fail_reaches_hold_without_loop_error(self) -> None:
+        identity = BackendIdentity(
+            evaluator_id="production-qc",
+            evaluator_version="phase1-v1",
+            backend_family="llama.cpp",
+            backend_version="llama.cpp 2.28.2",
+            executable_path="C:/llama-server.exe",
+            executable_sha256="1" * 64,
+            model_path="C:/model.gguf",
+            model_sha256="2" * 64,
+            model_id="Qwen3.6 27B",
+            quantization="IQ3_M GGUF",
+            projector_path="C:/mmproj.gguf",
+            projector_sha256="3" * 64,
+            projector_precision="FP16",
+            gpu_uuid="GPU-stable",
+            gpu_name="NVIDIA GeForce RTX 4080 SUPER",
+            effective_args=("--host", "127.0.0.1"),
+            effective_config_sha256="4" * 64,
+            owned_pid=123,
+            stdout_log_path="stdout.log",
+            stderr_log_path="stderr.log",
+        )
+
+        class Backend:
+            def start(self):
+                return identity
+
+            def plan_repair(self, request):
+                source = request.source_identity
+                return RepairPlannerResponse(
+                    raw_text=(
+                        '{"schema_version":1,"source":{'
+                        f'"candidate_id":"{source["candidate_id"]}",'
+                        f'"candidate_sha256":"{source["candidate_sha256"]}",'
+                        f'"evaluation_id":"{source["evaluation_id"]}",'
+                        f'"repair_input_sha256":"{request.repair_input_sha256}",'
+                        f'"source_revision":{source["source_revision"]},'
+                        f'"source_document_sha256":"{source["source_document_sha256"]}"'
+                        '},"patch":{"i2v":{"prompt":"bounded repaired motion prompt"}},'
+                        '"summary":"address normalized defect"}'
+                    )
+                )
+
+            def close(self):
+                return None
+
+        controller = Phase1QcController(
+            store=self.store,
+            layout=self.layout,
+            settings=replace(
+                QualityControlSettings(), quality_control_enabled=True
+            ),
+            backend_factory=Backend,
+            prompt_root=Path(__file__).parents[1] / "prompts",
+        )
+        controller._evaluate_candidate = (
+            lambda candidate, _backend, _identity: self._evaluation(
+                candidate.candidate_id,
+                QcDecision.FAIL,
+            )
+        )
+
+        class Comfy:
+            def queue_counts(self):
+                return 0, 0
+
+            def free_memory(self):
+                return None
+
+        class Supervisor:
+            comfy = Comfy()
+
+            def render_qc_candidates(_self, _job, candidates):
+                for candidate, _document in candidates:
+                    destination = Path(candidate.source_video_path)
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    destination.write_bytes(candidate.candidate_id.encode("utf-8"))
+                    self.store.complete_qc_candidate_generation(
+                        candidate.candidate_id,
+                        source_video_path=str(destination),
+                        source_video_sha256=hashlib.sha256(
+                            destination.read_bytes()
+                        ).hexdigest(),
+                    )
+
+            def release_memory(_self):
+                return None
+
+        result = controller.run_epoch(self.job, Supervisor())
+        candidates = self.store.qc_candidates(self.job.job_id)
+
+        self.assertFalse(result.ready_for_finalization)
+        self.assertTrue(result.waiting_for_human)
+        self.assertEqual(result.generated_count, 2)
+        self.assertEqual(result.evaluated_count, 3)
+        self.assertEqual(
+            [(item.tier, item.state) for item in candidates],
+            [
+                (QcTier.ORIGINAL, QcCandidateState.SUPERSEDED),
+                (QcTier.A1, QcCandidateState.SUPERSEDED),
+                (QcTier.B1, QcCandidateState.HOLD_FOR_REVIEW),
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

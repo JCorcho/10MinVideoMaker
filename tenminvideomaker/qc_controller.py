@@ -734,11 +734,39 @@ class Phase1QcController:
             return QcEpochResult(False, (), True)
         generated = 0
         evaluated = 0
-        for _epoch in range(4):
+        seen_work_states: set[tuple[tuple[Any, ...], ...]] = set()
+        while True:
+            candidates = self.store.qc_candidates(job.job_id)
             generation = [
-                item for item in self.store.qc_candidates(job.job_id)
+                item for item in candidates
                 if item.state in {QcCandidateState.PENDING_GENERATION, QcCandidateState.GENERATING}
             ]
+            pending_before_generation = [
+                item for item in candidates
+                if item.state in {
+                    QcCandidateState.PENDING_QC,
+                    QcCandidateState.QC_RUNNING,
+                }
+            ]
+            if not generation and not pending_before_generation:
+                break
+            work_state = tuple(
+                (
+                    item.candidate_id,
+                    item.tier.value,
+                    item.state.value,
+                    item.infrastructure_failure_count,
+                    item.next_action,
+                    item.source_video_sha256,
+                    item.generation_prompt_id,
+                )
+                for item in candidates
+            )
+            if work_state in seen_work_states:
+                raise QcControllerError(
+                    "QC durable work state repeated without progress; refusing a retry loop."
+                )
+            seen_work_states.add(work_state)
             if generation:
                 if self.qc_port_open():
                     raise QcControllerError(
@@ -817,9 +845,6 @@ class Phase1QcController:
                         if self._active_backend is backend:
                             self._active_backend = None
                 continue
-            break
-        else:
-            raise QcControllerError("QC epoch bound exceeded; refusing a retry loop.")
 
         candidates = self.store.qc_candidates(job.job_id)
         try:
