@@ -14,7 +14,10 @@ from urllib.error import URLError
 from tenminvideomaker.configuration import load_project_environment
 from tenminvideomaker.qc_backend import BackendIdentity, LlamaCppHttpBackend
 from tenminvideomaker.qc_config import QualityControlSettings
-from tenminvideomaker.qc_controller import Phase1QcController
+from tenminvideomaker.qc_controller import (
+    _identity_mapping,
+    Phase1QcController,
+)
 from tenminvideomaker.qc_contracts import QcCandidateState, QcDecision, QcTier
 from tenminvideomaker.qc_llama import LlamaCppProcess
 from tenminvideomaker.state_store import PipelineStateStore
@@ -92,16 +95,11 @@ def _identity_for_resume(
     snapshot_job_id = store.snapshot().job_id
     if snapshot_job_id is not None:
         for candidate in store.qc_candidates(snapshot_job_id):
-            if candidate.state in {
-                QcCandidateState.SUPERSEDED,
-                QcCandidateState.HOLD_FOR_REVIEW,
-            }:
-                continue
             for evaluation in store.qc_evaluations(candidate.candidate_id):
                 if evaluation.state != "COMPLETE":
                     continue
                 identity = _identity_from_evaluation_row(qc_settings, evaluation)
-                if identity is not None and _backend_is_healthy(qc_settings):
+                if identity is not None:
                     return identity
     if fallback_identity is not None and _backend_is_healthy(qc_settings):
         return fallback_identity
@@ -248,14 +246,52 @@ def _collect_db_metrics(store: PipelineStateStore, job_id: str) -> dict[str, Any
     return totals
 
 
-def _build_targets(store: PipelineStateStore, job_id: str) -> list[Any]:
+def _coerce_qc_candidate_to_pending(store: PipelineStateStore, candidate) -> Any:
+    if candidate.state == QcCandidateState.PENDING_GENERATION:
+        video_path = Path(candidate.source_video_path)
+        if not video_path.is_file():
+            return candidate
+        # Do not re-run generation when a generated MP4 is already on disk;
+        # this run is an evaluator recovery after previous infrastructure faults.
+        return store.set_qc_candidate_state(
+            candidate.candidate_id,
+            QcCandidateState.PENDING_QC,
+            next_action="retry_evaluation",
+        )
+    if (
+        candidate.state == QcCandidateState.HOLD_FOR_REVIEW
+        and candidate.infrastructure_failure_count > 0
+        and candidate.source_video_path
+    ):
+        failure = _candidate_last_failure(candidate)
+        kind = str(failure.get("kind", "")) if isinstance(failure, Mapping) else ""
+        if kind in {"LlamaCppLifecycleError", "QcBackendError", "RepairGenerationError"}:
+            video_path = Path(candidate.source_video_path)
+            if video_path.is_file():
+                return store.set_qc_candidate_state(
+                    candidate.candidate_id,
+                    QcCandidateState.PENDING_QC,
+                    next_action="retry_infra_recovery",
+                )
+    if candidate.state == QcCandidateState.QC_RUNNING:
+        return store.set_qc_candidate_state(
+            candidate.candidate_id,
+            QcCandidateState.PENDING_QC,
+            next_action="retry_evaluation",
+        )
+    return candidate
+
+
+def _build_targets(store: PipelineStateStore, job_id: str) -> tuple[tuple[Any, ...], int]:
     targets: list[Any] = []
     for candidate in store.qc_candidates(job_id):
         if candidate.tier not in {QcTier.ORIGINAL, QcTier.A1, QcTier.B1}:
             continue
-        if candidate.infrastructure_failure_count <= 0:
-            continue
         if candidate.scene_id < 1 or candidate.scene_id > 28:
+            continue
+
+        candidate = _coerce_qc_candidate_to_pending(store, candidate)
+        if candidate.state != QcCandidateState.PENDING_QC:
             continue
         has_complete_decision = False
         for evaluation in store.qc_evaluations(candidate.candidate_id):
@@ -267,43 +303,8 @@ def _build_targets(store: PipelineStateStore, job_id: str) -> list[Any]:
                 break
         if has_complete_decision:
             continue
-        if candidate.state != QcCandidateState.PENDING_QC:
-            candidate = store.set_qc_candidate_state(
-                candidate.candidate_id,
-                QcCandidateState.PENDING_QC,
-                next_action="retry_evaluation",
-            )
         targets.append(candidate)
-    return sorted(targets, key=lambda item: item.scene_id)
-
-
-def _apply_readonly_routing(
-    store: PipelineStateStore,
-    candidate,
-    evaluation: Any,
-) -> None:
-    decision = evaluation.normalized_decision
-    if decision == QcDecision.PASS:
-        store.set_qc_candidate_state(
-            candidate.candidate_id,
-            QcCandidateState.PASS_PENDING_HUMAN,
-            next_action="await_human",
-        )
-        return
-
-    if decision == QcDecision.UNCERTAIN or decision == QcDecision.FAIL:
-        store.set_qc_candidate_state(
-            candidate.candidate_id,
-            QcCandidateState.HOLD_FOR_REVIEW,
-            next_action="hold_for_review",
-        )
-        return
-
-    store.set_qc_candidate_state(
-        candidate.candidate_id,
-        QcCandidateState.HOLD_FOR_REVIEW,
-        next_action="hold_for_review",
-    )
+    return tuple(sorted(targets, key=lambda item: item.scene_id)), len(targets)
 
 
 def _safe_parse_failure_message(error: Exception) -> str:
@@ -361,7 +362,14 @@ def _print_infra_failures(store: PipelineStateStore, job_id: str, root: Path) ->
 
 
 def run_recovery(canary_roots: tuple[Path, ...]) -> dict[str, Any]:
+    reference_identity = _collect_reference_identity(canary_roots)
     qc_settings = _load_qc_settings()
+    if reference_identity is not None:
+        qc_settings = replace(
+            qc_settings,
+            expected_gpu_uuid=reference_identity.gpu_uuid,
+            expected_gpu_name=reference_identity.gpu_name,
+        )
     qc_settings.validate_for_start()
     summary: dict[str, Any] = {
         "roots": [],
@@ -391,29 +399,46 @@ def run_recovery(canary_roots: tuple[Path, ...]) -> dict[str, Any]:
         print(f"\n--- {root} ---")
         _print_infra_failures(store, job_id, root)
 
-        targets = _build_targets(store, job_id)
-        print(f"Candidates queued for infra-rerun: {len(targets)}")
-
         evaluated = 0
         started_backend = False
         backend = None
-        if targets:
-            identity = _identity_for_resume(store, qc_settings, reference_identity)
-            try:
-                if identity is None:
-                    backend = controller.backend_factory()
-                    identity = backend.start()
-                    started_backend = True
-                else:
-                    backend = controller.backend_factory()
+        identity = _identity_for_resume(store, qc_settings, reference_identity)
+        try:
+            if identity is None:
+                backend = controller.backend_factory()
+                identity = backend.start()
+                started_backend = True
+            else:
+                backend = controller.backend_factory()
+
+            passes = 0
+            while passes < 8:
+                passes += 1
+                targets, candidate_count = _build_targets(store, job_id)
+                if passes == 1:
+                    print(f"Candidates queued for infra-rerun: {candidate_count}")
+                if not targets:
+                    break
+                pre_states = {
+                    item.candidate_id: (
+                        item.state,
+                        item.infrastructure_failure_count,
+                    )
+                    for item in targets
+                }
                 for candidate in targets:
                     try:
-                        evaluation = controller._evaluate_candidate(
+                        controller._evaluate_candidate(
                             candidate,
                             backend,
                             identity,
                         )
-                        _apply_readonly_routing(store, candidate, evaluation)
+                        controller.route_completed_evaluation(
+                            job,
+                            candidate.candidate_id,
+                            backend=backend,
+                            planner_identity=_identity_mapping(identity),
+                        )
                         evaluated += 1
                     except Exception as error:
                         store.record_qc_infrastructure_failure(
@@ -425,12 +450,22 @@ def run_recovery(canary_roots: tuple[Path, ...]) -> dict[str, Any]:
                             },
                         )
                         print(
-                            f"  [{candidate.scene_id}] evaluation retry failed: "
+                            f"  [{candidate.scene_id}] evaluation recovery failed: "
                             f"{type(error).__name__}: {_safe_parse_failure_message(error)}"
                         )
-            finally:
-                if backend is not None and started_backend:
-                    backend.close()
+                post_states = {
+                    item.candidate_id: (
+                        item.state,
+                        item.infrastructure_failure_count,
+                    )
+                    for item in store.qc_candidates(job_id)
+                    if item.candidate_id in pre_states
+                }
+                if post_states == pre_states:
+                    break
+        finally:
+            if backend is not None and started_backend:
+                backend.close()
         after = _collect_db_metrics(store, job_id)
         failures_after = _group_infra_failures(store, job_id)
         print(f"Infrastructure-rerun complete for {root}; evaluated {evaluated}.")

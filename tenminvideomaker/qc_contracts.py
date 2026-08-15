@@ -21,6 +21,7 @@ class QcTier(StrEnum):
     ORIGINAL = "ORIGINAL"
     A1 = "A1"
     B1 = "B1"
+    B2 = "B2"
 
 
 class QcCandidateState(StrEnum):

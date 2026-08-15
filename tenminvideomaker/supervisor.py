@@ -7,6 +7,7 @@ import gc
 import hashlib
 import logging
 import os
+import shutil
 from pathlib import Path
 import threading
 import time
@@ -624,12 +625,6 @@ class PipelineSupervisor:
                     "QC repair lost its persisted scene revision.",
                     retryable=False,
                 )
-            if not revision.frame_path or not Path(revision.frame_path).is_file():
-                raise RepairGenerationError(
-                    candidate.candidate_id,
-                    "QC repair lost its immutable starting frame.",
-                    retryable=False,
-                )
             try:
                 validated = validate_scene_edit(job, candidate.scene_id, document)
             except Exception as error:
@@ -638,6 +633,114 @@ class PipelineSupervisor:
                     "QC repair revision document is invalid: " + str(error),
                     retryable=False,
                 ) from error
+            frame_path = Path(revision.frame_path) if revision.frame_path else None
+            if candidate.tier == QcTier.B2:
+                if frame_path is None:
+                    raise RepairGenerationError(
+                        candidate.candidate_id,
+                        "B2 repair is missing its revision-local frame path.",
+                        retryable=False,
+                    )
+                if self.storage is None:
+                    raise RepairGenerationError(
+                        candidate.candidate_id,
+                        "B2 repair requires storage-aware path helpers to generate a fresh start frame.",
+                        retryable=False,
+                    )
+                if frame_path.is_file():
+                    frame_path.unlink()
+                LOGGER.info(
+                    "Job %s scene %s revision %s: regenerating B2 start frame with fresh T2I.",
+                    job.job_id,
+                    candidate.scene_id,
+                    candidate.revision,
+                )
+                build = build_t2i_api_workflow(
+                    validated.job,
+                    validated.scene,
+                    preparation.resolved_filenames,
+                    delivery=self.delivery,
+                    overrides=validated.workflow,
+                    revision=candidate.revision,
+                )
+                frame_path.parent.mkdir(parents=True, exist_ok=True)
+                frame_dump_node = str(max(int(node_id) for node_id in build.api) + 1)
+                build.api[frame_dump_node] = {
+                    "class_type": "SaveImage",
+                    "inputs": {
+                        "images": build.api[build.output_node_id]["inputs"]["images"],
+                        "filename_prefix": (
+                            f"10MinVideoMaker/{validated.job.job_id}/frames/"
+                            f"{validated.scene.scene_id:04d}/b2-{candidate.revision}"
+                        ),
+                    },
+                    "_meta": {"title": "B2 T2I frame capture"},
+                }
+                history = self.run_or_reclaim_prompt(
+                    build.api,
+                    timeout_seconds=self.settings.t2i_timeout_seconds,
+                    prompt_id_callback=(
+                        lambda prompt_id, candidate_id=candidate.candidate_id: (
+                            self.store.set_qc_generation_owner(
+                                candidate_id,
+                                prompt_id=prompt_id,
+                                prompt_stage="t2i",
+                                route="legacy",
+                            )
+                        )
+                    ),
+                )
+                if not frame_path.is_file():
+                    outputs = history.get("outputs", {})
+                    selected_output = (
+                        outputs.get(frame_dump_node)
+                        if isinstance(outputs, Mapping)
+                        else None
+                    )
+
+                    def _find_output_source(node_output: Any) -> str | Mapping[str, Any] | None:
+                        expected_suffixes = (".png", ".jpg", ".jpeg", ".webp")
+                        if isinstance(node_output, str):
+                            if node_output.casefold().endswith(expected_suffixes):
+                                return node_output
+                            return None
+                        if isinstance(node_output, Mapping):
+                            filename = node_output.get("filename")
+                            if (
+                                isinstance(filename, str)
+                                and filename.casefold().endswith(expected_suffixes)
+                            ):
+                                return node_output
+                            for value in node_output.values():
+                                match = _find_output_source(value)
+                                if match is not None:
+                                    return match
+                        elif isinstance(node_output, list):
+                            for value in node_output:
+                                match = _find_output_source(value)
+                                if match is not None:
+                                    return match
+                        return None
+
+                    source = _find_output_source(selected_output)
+                    if isinstance(source, Mapping):
+                        self.comfy.download_output(source, frame_path)
+                    elif isinstance(source, str):
+                        source_path = Path(source)
+                        if source_path.is_file():
+                            shutil.copyfile(source_path, frame_path)
+                if not frame_path.is_file():
+                    raise RepairGenerationError(
+                        candidate.candidate_id,
+                        f"B2 T2I did not produce the revision-local frame {frame_path}.",
+                        retryable=True,
+                    )
+            elif not frame_path or not frame_path.is_file():
+                raise RepairGenerationError(
+                    candidate.candidate_id,
+                    "QC repair lost its immutable starting frame.",
+                    retryable=False,
+                )
             use_continuation = self._uses_continuation(
                 validated.scene, validated.workflow
             )

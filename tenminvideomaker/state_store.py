@@ -3587,10 +3587,25 @@ class PipelineStateStore:
                     evaluation_id,
                     repair_input_sha256,
                 ):
-                    raise StateTransitionError(
-                        "The one B1 planner claim has different immutable input."
-                    )
-                return self._qc_repair_claim_record(existing), False
+                    if existing["state"] != "CLAIMED":
+                        connection.execute(
+                            """
+                            DELETE FROM qc_repair_claims
+                            WHERE claim_id = ?
+                            """,
+                            (existing["claim_id"],),
+                        )
+                    else:
+                        raise StateTransitionError(
+                            "The one B1 planner claim has different immutable input."
+                        )
+                    # Retry with fresh immutable inputs after clearing stale terminal
+                    # claim evidence from a previous runtime version.
+                    existing = None
+                else:
+                    return self._qc_repair_claim_record(existing), False
+            # Fall through to a fresh planner claim after clearing stale terminal
+            # claims or when none exists.
             connection.execute(
                 """
                 INSERT INTO qc_repair_claims (

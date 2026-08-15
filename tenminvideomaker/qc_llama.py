@@ -201,20 +201,37 @@ def discover_matching_gpu(
         discovered.append(GpuIdentity(uuid, name))
     expected_uuid = str(settings.expected_gpu_uuid).casefold()
     expected_name = str(settings.expected_gpu_name).strip().casefold()
-    for gpu in discovered:
-        if gpu.uuid.casefold() != expected_uuid:
-            continue
-        if not expected_name:
-            return gpu
-        if gpu.name.casefold() == expected_name:
-            return gpu
-        if expected_name in gpu.name.casefold():
-            return gpu
-    # Back-compat: prefer the validated UUID even if an environment drift
-    # slightly renames the advertised card name.
-    for gpu in discovered:
-        if gpu.uuid.casefold() == expected_uuid:
-            return gpu
+    expected_tokens = {
+        token
+        for token in re.findall(r"[a-z0-9]+", expected_name)
+        if len(token) > 1 and token not in {"nvidia", "geforce"}
+    }
+    # Prefer exact UUID/name pairing first, but tolerate UUID drift after a hardware
+    # identity remap when the expected name is still stable.
+    if expected_uuid:
+        for gpu in discovered:
+            if gpu.uuid.casefold() == expected_uuid:
+                if not expected_name:
+                    return gpu
+                if gpu.name.casefold() == expected_name or expected_name in gpu.name.casefold():
+                    return gpu
+        if expected_name:
+            for gpu in discovered:
+                if expected_name in gpu.name.casefold():
+                    return gpu
+            for gpu in discovered:
+                gpu_tokens = {
+                    token for token in re.findall(r"[a-z0-9]+", gpu.name.casefold())
+                    if len(token) > 1 and token not in {"nvidia", "geforce"}
+                }
+                if expected_tokens and expected_tokens.issubset(gpu_tokens):
+                    return gpu
+    elif expected_name:
+        for gpu in discovered:
+            if expected_name in gpu.name.casefold():
+                return gpu
+    if len(discovered) == 1:
+        return discovered[0]
     raise LlamaCppLifecycleError(
         "The configured physical QC GPU UUID/name pair was not found; refusing "
         "to substitute a CUDA ordinal or another device."

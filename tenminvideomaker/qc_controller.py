@@ -7,6 +7,7 @@ import hashlib
 import json
 import logging
 from pathlib import Path
+from datetime import datetime, timezone
 import socket
 from tempfile import TemporaryDirectory
 from typing import Any, Callable, Mapping, Sequence
@@ -32,7 +33,7 @@ from .qc_contracts import (
 )
 from .qc_repair import RepairGenerationError, schedule_a1_retry, schedule_b1_retry
 from .qc_video import sample_video_frames
-from .review import scene_review_document
+from .review import scene_review_document, validate_scene_edit
 from .state_store import (
     IncompleteLegacySelectionError,
     ManualFinalSceneSelection,
@@ -249,6 +250,270 @@ class Phase1QcController:
                 return revision.parameters
         raise StateTransitionError("QC candidate lost its bound scene revision.")
 
+    @staticmethod
+    def _deterministic_b2_seed(
+        *,
+        job_id: str,
+        scene_id: int,
+        parent_candidate_id: str,
+        token: str,
+    ) -> int:
+        if token not in {"B2-T2I", "B2-I2V"}:
+            raise StateTransitionError("Unknown B2 seed token.")
+        return int.from_bytes(
+            hashlib.sha256(f"{job_id}|{scene_id}|{parent_candidate_id}|{token}".encode("utf-8")).digest()[:8],
+            "big",
+        )
+
+    @staticmethod
+    def _candidate_id_for_b2(
+        *,
+        job_id: str,
+        scene_id: int,
+        parent_candidate_id: str,
+        b2_t2i_seed: int,
+        b2_i2v_seed: int,
+    ) -> str:
+        identity = canonical_json(
+            {
+                "job_id": job_id,
+                "scene_id": scene_id,
+                "parent_candidate_id": parent_candidate_id,
+                "tier": QcTier.B2.value,
+                "t2i_seed": str(b2_t2i_seed),
+                "i2v_seed": str(b2_i2v_seed),
+            }
+        )
+        return "candidate-b2-" + hashlib.sha256(identity.encode("utf-8")).hexdigest()[:32]
+
+    @staticmethod
+    def _to_u64_seed(value: Any, field: str) -> int:
+        try:
+            value = int(value)
+        except (TypeError, ValueError) as error:
+            raise StateTransitionError(f"{field} must be an unsigned 64-bit integer.") from error
+        if value < 0 or value > 2**64 - 1:
+            raise StateTransitionError(f"{field} must be an unsigned 64-bit integer.")
+        return value
+
+    @staticmethod
+    def _b2_start_frame_detected(evaluation: QcEvaluationRecord) -> bool:
+        if evaluation.normalized_decision != QcDecision.FAIL:
+            return False
+        for window in evaluation.suspect_windows:
+            if not isinstance(window, Mapping):
+                continue
+            response = window.get("response")
+            if not isinstance(response, Mapping):
+                continue
+            raw_errors = response.get("errors")
+            if not isinstance(raw_errors, list):
+                continue
+            for raw_error in raw_errors:
+                if not isinstance(raw_error, Mapping):
+                    continue
+                category = str(raw_error.get("category", "")).strip().lower()
+                if not category:
+                    continue
+                try:
+                    start_time = float(raw_error.get("start_time_seconds", 1.0))
+                    severity = int(raw_error.get("severity"))
+                except (TypeError, ValueError):
+                    continue
+                if start_time > 0.5:
+                    continue
+                if any(
+                    token in category
+                    for token in ("anatomy", "morph", "topology", "limb")
+                ):
+                    return True
+                if severity >= 5 and "temporal" in category:
+                    return True
+        return False
+
+    def _ensure_qc_b2_revision(
+        self,
+        *,
+        job_id: str,
+        scene_id: int,
+        revision: int,
+        parameters: Mapping[str, Any],
+        frame_path: str,
+    ) -> None:
+        parameters_json = canonical_json(parameters)
+        now = datetime.now(timezone.utc).isoformat()
+        with self.store._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                """
+                SELECT parameters_json, frame_path FROM scene_revisions
+                WHERE job_id = ? AND scene_id = ? AND revision = ?
+                """,
+                (job_id, scene_id, revision),
+            ).fetchone()
+            if existing is not None:
+                try:
+                    existing_parameters = json.loads(existing["parameters_json"])
+                except (TypeError, json.JSONDecodeError) as error:
+                    raise StateTransitionError("B2 revision document is invalid.") from error
+                if (
+                    existing["frame_path"] != frame_path
+                    or canonical_json(existing_parameters) != parameters_json
+                ):
+                    raise StateTransitionError(
+                        "An existing B2 revision already exists with different evidence."
+                    )
+                return
+            next_revision = connection.execute(
+                "SELECT COALESCE(MAX(revision), 0) + 1 AS revision FROM scene_revisions WHERE job_id = ? AND scene_id = ?",
+                (job_id, scene_id),
+            ).fetchone()
+            if next_revision is None or int(next_revision["revision"]) != revision:
+                raise StateTransitionError(
+                    "The expected B2 revision is stale; regenerate from current durable state."
+                )
+            connection.execute(
+                """
+                INSERT INTO scene_revisions (
+                    job_id, scene_id, revision, remake_mode, parameters_json, state,
+                    frame_path, video_path, error, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?)
+                """,
+                (
+                    job_id,
+                    scene_id,
+                    revision,
+                    "video_only",
+                    parameters_json,
+                    SceneState.PENDING.value,
+                    frame_path,
+                    now,
+                    now,
+                ),
+            )
+
+    def schedule_b2_retry(
+        self,
+        *,
+        original_job: JobPayload,
+        source_candidate_id: str,
+        source_document: Mapping[str, Any],
+    ) -> QcCandidateRecord:
+        source = self.store.qc_candidate(source_candidate_id)
+        if source.tier != QcTier.B1:
+            raise StateTransitionError("B2 can only descend from the failed B1 candidate.")
+        if source.job_id != original_job.job_id:
+            raise StateTransitionError("B2 source candidate identity is stale.")
+        if source_document.get("job_id") != source.job_id or source_document.get("scene_id") != source.scene_id:
+            raise StateTransitionError("B2 source document identity is stale.")
+        self.store.validate_qc_candidate_source_identity(
+            source_candidate_id,
+            source_document,
+        )
+        source_t2i = source_document.get("t2i")
+        source_i2v = source_document.get("i2v")
+        if not isinstance(source_t2i, Mapping) or not isinstance(source_i2v, Mapping):
+            raise StateTransitionError("B2 source document lacks the scene contract.")
+        source_t2i_seed = self._to_u64_seed(
+            source_t2i.get("seed"),
+            "source T2I seed",
+        )
+        source_i2v_seed = self._to_u64_seed(
+            source_i2v.get("seed"),
+            "source I2V seed",
+        )
+        source_i2v_prompt = source_i2v.get("prompt")
+        source_negative = source_i2v.get("negative")
+        if (
+            source_i2v_prompt != source.current_prompt
+            or source_negative != source.negative_prompt
+            or source_i2v_seed != source.current_seed
+        ):
+            raise StateTransitionError("B2 source evidence does not match its candidate.")
+        b2_t2i_seed = self._deterministic_b2_seed(
+            job_id=source.job_id,
+            scene_id=source.scene_id,
+            parent_candidate_id=source.candidate_id,
+            token="B2-T2I",
+        )
+        b2_i2v_seed = self._deterministic_b2_seed(
+            job_id=source.job_id,
+            scene_id=source.scene_id,
+            parent_candidate_id=source.candidate_id,
+            token="B2-I2V",
+        )
+        if b2_t2i_seed == source_t2i_seed:
+            raise StateTransitionError("B2 requires a new T2I seed.")
+        if b2_i2v_seed == source_i2v_seed:
+            raise StateTransitionError("B2 requires a new I2V seed.")
+        revision = source.revision + 1
+        b2_document = json.loads(canonical_json(source_document))
+        b2_t2i = dict(b2_document.get("t2i") or {})
+        b2_i2v = dict(b2_document.get("i2v") or {})
+        b2_t2i["seed"] = b2_t2i_seed
+        b2_i2v["prompt"] = source_i2v_prompt
+        b2_i2v["negative"] = source_negative
+        b2_i2v["seed"] = b2_i2v_seed
+        b2_document["t2i"] = b2_t2i
+        b2_document["i2v"] = b2_i2v
+        validated = validate_scene_edit(original_job, source.scene_id, b2_document)
+        b2_document = validated.document
+
+        frame_path = str(self.layout.scene_frame_path(source.job_id, source.scene_id, revision))
+        source_video_path = str(self.layout.scene_clip_path(source.job_id, source.scene_id, revision))
+        self._ensure_qc_b2_revision(
+            job_id=source.job_id,
+            scene_id=source.scene_id,
+            revision=revision,
+            parameters=b2_document,
+            frame_path=frame_path,
+        )
+
+        candidate_id = self._candidate_id_for_b2(
+            job_id=source.job_id,
+            scene_id=source.scene_id,
+            parent_candidate_id=source.candidate_id,
+            b2_t2i_seed=b2_t2i_seed,
+            b2_i2v_seed=b2_i2v_seed,
+        )
+        existing = tuple(
+            item
+            for item in self.store.qc_candidates(source.job_id, source.scene_id)
+            if item.tier == QcTier.B2
+        )
+        if existing:
+            candidate = existing[0]
+            if candidate.parent_candidate_id != source.candidate_id:
+                raise StateTransitionError("Existing B2 candidate belongs to a different lineage.")
+            if candidate.revision != revision:
+                raise StateTransitionError("Existing B2 revision is stale.")
+            if candidate.current_seed != b2_i2v_seed:
+                raise StateTransitionError("Existing B2 candidate has a different I2V seed.")
+            if canonical_json(
+                self._revision_document(self.store, candidate)
+            ) != canonical_json(b2_document):
+                raise StateTransitionError("Existing B2 candidate has immutable drift.")
+            return candidate
+
+        return self.store.ensure_qc_candidate(
+            candidate_id=candidate_id,
+            job_id=source.job_id,
+            scene_id=source.scene_id,
+            revision=revision,
+            tier=QcTier.B2,
+            parent_candidate_id=source.candidate_id,
+            source_video_path=source_video_path,
+            source_video_sha256=None,
+            original_prompt=source.original_prompt,
+            current_prompt=source.current_prompt,
+            original_seed=source.original_seed,
+            current_seed=b2_i2v_seed,
+            negative_prompt=source.negative_prompt,
+            negative_prompt_sha256=source.negative_prompt_sha256,
+            state=QcCandidateState.PENDING_GENERATION,
+            next_action="render_b2",
+        )
+
     def register_original_candidates(self, job: JobPayload) -> tuple[QcCandidateRecord, ...]:
         """Atomically bind the exact pre-QC legacy selection to immutable bytes."""
         scene_ids = tuple(scene.scene_id for scene in job.scenes)
@@ -371,7 +636,33 @@ class Phase1QcController:
                 self.store.promote_accepted_qc_candidate(candidate_id)
             return routed
 
-        if decision == QcDecision.UNCERTAIN or candidate.tier == QcTier.B1:
+        if decision == QcDecision.UNCERTAIN:
+            return self.store.set_qc_candidate_state(
+                candidate_id,
+                QcCandidateState.HOLD_FOR_REVIEW,
+                next_action="hold_for_review",
+            )
+
+        if candidate.tier == QcTier.B1:
+            if not self._b2_start_frame_detected(evaluation):
+                return self.store.set_qc_candidate_state(
+                    candidate_id,
+                    QcCandidateState.HOLD_FOR_REVIEW,
+                    next_action="hold_for_review",
+                )
+            candidate_b2 = self.schedule_b2_retry(
+                original_job=job,
+                source_candidate_id=candidate.candidate_id,
+                source_document=self._revision_document(self.store, candidate),
+            )
+            self.store.set_qc_candidate_state(
+                candidate_id,
+                QcCandidateState.SUPERSEDED,
+                next_action=None,
+            )
+            return candidate_b2
+
+        if candidate.tier == QcTier.B2:
             return self.store.set_qc_candidate_state(
                 candidate_id,
                 QcCandidateState.HOLD_FOR_REVIEW,
