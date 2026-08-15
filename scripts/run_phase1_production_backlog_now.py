@@ -202,6 +202,19 @@ def main() -> int:
     print(f"SCENES_SELECTED={','.join(map(str, selected_scene_ids))}")
 
     while True:
+        snapshot = store.snapshot()
+        if (
+            snapshot.job_id != args.job_id
+            and snapshot.state
+            in {"downloading_assets", "running_t2i", "running_i2v", "stitching"}
+        ):
+            print(
+                "SIDECAR_WAITING_FOR_AUTOMATIC_PIPELINE="
+                f"{snapshot.state}/{snapshot.job_id}/{snapshot.active_scene_id}"
+            )
+            time.sleep(5)
+            continue
+
         latest_by_scene: dict[int, object] = {}
         qwen_candidates: list = []
         any_progress = False
