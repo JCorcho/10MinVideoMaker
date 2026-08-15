@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import hashlib
 import os
 import sys
@@ -51,7 +52,6 @@ QC_ENV = {
 
 def _configure_environment() -> None:
     os.environ.update(QC_ENV)
-    os.environ.setdefault("TENMIN_COMFY_URL", "http://127.0.0.1:8188")
     vendor = Path(os.environ["TENMIN_QC_LLAMA_VENDOR_ROOT"]).resolve()
     path_value = os.environ.get("PATH", "")
     if vendor.as_posix().casefold() not in {item.casefold() for item in path_value.split(os.pathsep)}:
@@ -85,10 +85,14 @@ def _build_stack(layout: StorageLayout, settings: QualityControlSettings):
         ffmpeg_command=ffmpeg,
         ffprobe_command=ffprobe,
     )
-    mail_client = type("noop", (), {"send_request": lambda self, **_: ""})()
+
+    class _NoopMailClient:
+        def send_request(self, **_):
+            return ""
+
     supervisor = PipelineSupervisor(
         store=controller.store,
-        mail_client=mail_client,
+        mail_client=_NoopMailClient(),
         asset_manager=ComfyLoraAssetClient(comfy),
         comfy=comfy,
         assembler=FfmpegAssembler(layout.finals_root, ffmpeg_executable=ffmpeg),
@@ -113,12 +117,7 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _latest_actionable_candidate(
-    *,
-    store: PipelineStateStore,
-    job_id: str,
-    scene_id: int,
-):
+def _latest_actionable_candidate(*, store: PipelineStateStore, job_id: str, scene_id: int):
     candidates = tuple(store.qc_candidates(job_id, scene_id))
     if not candidates:
         return None
@@ -130,11 +129,7 @@ def _latest_actionable_candidate(
                 f"QC candidate chain contains a cycle for {job_id} scene {scene_id}."
             )
         seen.add(current.candidate_id)
-        children = [
-            item
-            for item in candidates
-            if item.parent_candidate_id == current.candidate_id
-        ]
+        children = [item for item in candidates if item.parent_candidate_id == current.candidate_id]
         if not children:
             break
         current = max(children, key=lambda item: (item.revision, item.created_at))
@@ -144,16 +139,25 @@ def _latest_actionable_candidate(
 def _candidate_counts(candidates: tuple) -> str:
     counts: dict[str, int] = {}
     for candidate in candidates:
-        if candidate is None:
-            key = "MISSING"
-        else:
-            key = candidate.state.value
+        key = "MISSING" if candidate is None else candidate.state.value
         counts[key] = counts.get(key, 0) + 1
     return ", ".join(f"{key}={value}" for key, value in sorted(counts.items()))
 
 
 def _has_complete_qc_evaluation(store: PipelineStateStore, candidate_id: str) -> bool:
     return any(item.state == "COMPLETE" for item in store.qc_evaluations(candidate_id))
+
+
+def _identity_mapping(identity) -> dict:
+    if dataclasses.is_dataclass(identity):
+        return asdict(identity)
+    if isinstance(identity, dict):
+        return identity
+    if isinstance(identity, (list, tuple)) and all(
+        isinstance(item, tuple) and len(item) == 2 for item in identity
+    ):
+        return {key: value for key, value in identity}
+    return asdict(vars(identity))
 
 
 def main() -> int:
@@ -172,9 +176,6 @@ def main() -> int:
     if job is None:
         raise RuntimeError(f"Job not found: {args.job_id}")
 
-    scene_ids = tuple(scene.scene_id for scene in sorted(job.scenes, key=lambda item: item.scene_id))
-    selected_scene_ids = scene_ids[: args.scene_limit]
-
     settings = replace(
         QualityControlSettings.from_environment(),
         quality_control_enabled=True,
@@ -185,19 +186,25 @@ def main() -> int:
     before = store.snapshot()
     print(f"GLOBAL_PIPELINE_BEFORE={_snapshot_line(before)}")
 
-    existing_tiers = tuple(item.tier for item in store.qc_candidates(args.job_id))
-    if QcTier.ORIGINAL not in existing_tiers:
+    all_candidates = tuple(store.qc_candidates(args.job_id))
+    if not any(item.tier == QcTier.ORIGINAL for item in all_candidates):
         originals = controller.register_original_candidates(job)
         if originals:
             print(f"REGISTERED_ORIGINALS={','.join(item.candidate_id for item in originals)}")
+        else:
+            print("REGISTERED_ORIGINALS=NONE")
+    else:
+        print("REGISTERED_ORIGINALS=EXISTS")
 
+    scene_ids = tuple(scene.scene_id for scene in sorted(job.scenes, key=lambda item: item.scene_id))
+    selected_scene_ids = scene_ids[: args.scene_limit]
     print(f"JOB={args.job_id}")
     print(f"SCENES_SELECTED={','.join(map(str, selected_scene_ids))}")
 
     while True:
         latest_by_scene: dict[int, object] = {}
-        qwen_batch: list[object] = []
-        changed = False
+        qwen_candidates: list = []
+        any_progress = False
 
         for scene_id in selected_scene_ids:
             candidate = _latest_actionable_candidate(
@@ -212,7 +219,7 @@ def main() -> int:
             if candidate.state == QcCandidateState.PENDING_GENERATION:
                 document = controller._revision_document(store, candidate)
                 supervisor.render_qc_candidates(job, ((candidate, document),))
-                changed = True
+                any_progress = True
                 continue
 
             if candidate.state == QcCandidateState.GENERATING:
@@ -223,72 +230,84 @@ def main() -> int:
                         source_video_path=str(output),
                         source_video_sha256=_sha256_file(output),
                     )
-                    changed = True
+                    any_progress = True
                     continue
                 if candidate.generation_prompt_id is not None:
                     continue
-                candidate = controller.store.set_qc_candidate_state(
+                controller.store.set_qc_candidate_state(
                     candidate.candidate_id,
                     QcCandidateState.PENDING_GENERATION,
                     next_action=candidate.next_action,
                 )
-                changed = True
-                latest_by_scene[scene_id] = candidate
+                any_progress = True
                 continue
 
             if candidate.state == QcCandidateState.PENDING_QC:
-                qwen_batch.append(candidate)
+                qwen_candidates.append(candidate)
                 continue
 
             if candidate.state == QcCandidateState.QC_RUNNING:
-                qwen_batch.append(candidate)
+                if _has_complete_qc_evaluation(store, candidate.candidate_id):
+                    controller.route_completed_evaluation(
+                        job,
+                        candidate.candidate_id,
+                        backend=None,
+                        planner_identity=_identity_mapping({"planner_name": "historical-sidecar"}),
+                    )
+                    any_progress = True
+                else:
+                    qwen_candidates.append(candidate)
                 continue
 
-            if candidate.state == QcCandidateState.PASS_PENDING_HUMAN:
+            if candidate.state in {QcCandidateState.PASS_PENDING_HUMAN, QcCandidateState.ACCEPTED}:
                 continue
 
             if candidate.state == QcCandidateState.HOLD_FOR_REVIEW:
-                if candidate.tier == QcTier.B2:
+                if str(candidate.next_action) in {"B2", "UNCERTAIN"}:
                     continue
                 continue
 
-        if qwen_batch:
+            if candidate.state == QcCandidateState.SUPERSEDED:
+                continue
+
+        if qwen_candidates:
             running, pending = supervisor.comfy.queue_counts()
             if running or pending:
                 time.sleep(2.0)
                 continue
+
             supervisor.release_memory()
             backend = controller.backend_factory()
             controller._active_backend = backend
             identity = backend.start()
             try:
-                for candidate in qwen_batch:
+                for candidate in qwen_candidates:
                     refreshed = store.qc_candidate(candidate.candidate_id)
                     if _has_complete_qc_evaluation(store, refreshed.candidate_id):
                         controller.route_completed_evaluation(
                             job,
                             refreshed.candidate_id,
                             backend=backend,
-                            planner_identity=asdict(identity),
+                            planner_identity=_identity_mapping(identity),
                         )
-                        changed = True
+                        any_progress = True
                         continue
                     controller._evaluate_candidate(refreshed, backend, identity)
                     controller.route_completed_evaluation(
                         job,
                         refreshed.candidate_id,
                         backend=backend,
-                        planner_identity=asdict(identity),
+                        planner_identity=_identity_mapping(identity),
                     )
-                    changed = True
-                    continue
+                    any_progress = True
             finally:
                 backend.close()
                 if controller._active_backend is backend:
                     controller._active_backend = None
 
-        if not changed:
-            any_inflight = any(
+        if not any_progress:
+            running, pending = supervisor.comfy.queue_counts()
+            if not any(
                 candidate is not None
                 and candidate.state
                 in {
@@ -298,28 +317,39 @@ def main() -> int:
                     QcCandidateState.QC_RUNNING,
                 }
                 for candidate in latest_by_scene.values()
+            ) and not running and not pending:
+                time.sleep(2.0)
+                final_candidates = tuple(
+                    _latest_actionable_candidate(
+                        store=store,
+                        job_id=args.job_id,
+                        scene_id=scene_id,
+                    )
+                    for scene_id in selected_scene_ids
+                )
+                after = store.snapshot()
+                print(f"GLOBAL_PIPELINE_AFTER={_snapshot_line(after)}")
+                print(f"SIDECAR_CHANGED_GLOBAL_PIPELINE={'YES' if _snapshot_line(after) != _snapshot_line(before) else 'NO'}")
+                print(f"SELECTED_SIX_CANDIDATE_STATE_COUNTS={_candidate_counts(final_candidates)}")
+                print(f"SIDECAR_ALIVE=0")
+                return 0
+
+        if any_progress:
+            any_inflight = any(
+                value is not None
+                and value.state
+                in {
+                    QcCandidateState.PENDING_GENERATION,
+                    QcCandidateState.GENERATING,
+                    QcCandidateState.PENDING_QC,
+                    QcCandidateState.QC_RUNNING,
+                }
+                for value in latest_by_scene.values()
             )
-            if not any_inflight:
-                break
-            time.sleep(2.0)
-            continue
+            if any_inflight:
+                print(f"SELECTED_SIX_CANDIDATE_STATE_COUNTS={_candidate_counts(tuple(latest_by_scene.values()))}")
 
         time.sleep(2.0)
-
-    after = store.snapshot()
-    final_candidates = tuple(
-        _latest_actionable_candidate(
-            store=store,
-            job_id=args.job_id,
-            scene_id=scene_id,
-        )
-        for scene_id in selected_scene_ids
-    )
-    print(f"GLOBAL_PIPELINE_AFTER={_snapshot_line(after)}")
-    print(f"SIDECAR_CHANGED_GLOBAL_PIPELINE={'YES' if after != before else 'NO'}")
-    print(f"SELECTED_SIX_CANDIDATE_STATE_COUNTS={_candidate_counts(final_candidates)}")
-    print(f"SIDECAR_ALIVE={1}")
-    return 0
 
 
 if __name__ == "__main__":
