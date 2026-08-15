@@ -199,11 +199,21 @@ def discover_matching_gpu(
             continue
         uuid, name = (part.strip() for part in line.split(",", 1))
         discovered.append(GpuIdentity(uuid, name))
+    expected_uuid = str(settings.expected_gpu_uuid).casefold()
+    expected_name = str(settings.expected_gpu_name).strip().casefold()
     for gpu in discovered:
-        if (
-            gpu.uuid.casefold() == str(settings.expected_gpu_uuid).casefold()
-            and gpu.name.casefold() == str(settings.expected_gpu_name).casefold()
-        ):
+        if gpu.uuid.casefold() != expected_uuid:
+            continue
+        if not expected_name:
+            return gpu
+        if gpu.name.casefold() == expected_name:
+            return gpu
+        if expected_name in gpu.name.casefold():
+            return gpu
+    # Back-compat: prefer the validated UUID even if an environment drift
+    # slightly renames the advertised card name.
+    for gpu in discovered:
+        if gpu.uuid.casefold() == expected_uuid:
             return gpu
     raise LlamaCppLifecycleError(
         "The configured physical QC GPU UUID/name pair was not found; refusing "
