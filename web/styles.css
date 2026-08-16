@@ -221,6 +221,8 @@ details > div { margin-top: 12px; }
 .qc-review-heading h2 { margin: 2px 0 0; }
 .qc-review-heading > div { display: flex; flex-direction: column; gap: 6px; }
 .qc-review-queue { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 14px; margin-top: 14px; }
+.qc-review-group { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 14px; }
+.qc-review-group > h3 { grid-column: 1 / -1; margin: 8px 0 0; }
 .qc-review-card { min-width: 0; padding: 14px; border: 1px solid #564a31; border-radius: 10px; background: #101722; }
 .qc-review-card video { width: 100%; max-height: 52vh; margin-top: 12px; background: #000; }
 .qc-review-card-heading > div { display: flex; align-items: center; gap: 8px; }

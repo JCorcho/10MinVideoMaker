@@ -3920,6 +3920,63 @@ class PipelineStateStore:
             False,
         )
 
+    def accept_automatic_hold_override(
+        self, *, job_id: str, scene_id: int, candidate_id: str,
+        actor: str = "local-operator",
+    ) -> QcHumanDecisionResult:
+        """Accept one current automatic hold after an explicit human override."""
+        candidate_id = _evidence_id(candidate_id, "candidate_id")
+        actor = _required_text(actor, "actor")
+        decision_id = "decision-qc-hold-override-" + hashlib.sha256(candidate_id.encode("utf-8")).hexdigest()[:32]
+        self.initialize()
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            candidate = connection.execute("SELECT * FROM qc_candidates WHERE candidate_id = ?", (candidate_id,)).fetchone()
+            if candidate is None or candidate["job_id"] != job_id or int(candidate["scene_id"]) != scene_id:
+                raise StateTransitionError("QC candidate does not match the route identity.")
+            if connection.execute("SELECT 1 FROM qc_human_decisions WHERE candidate_id = ?", (candidate_id,)).fetchone() is not None:
+                raise StateTransitionError("A terminal human QC decision cannot be overwritten.")
+            pipeline = connection.execute("SELECT state, job_id FROM pipeline_state WHERE singleton = 1").fetchone()
+            job = connection.execute("SELECT status FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
+            if (pipeline is None or pipeline["job_id"] != job_id
+                    or PipelineState(pipeline["state"]) != PipelineState.AWAITING_QC_REVIEW
+                    or job is None or JobState(job["status"]) != JobState.RUNNING):
+                raise StateTransitionError("Human QC decisions require the active QC review job to remain RUNNING.")
+            if QcCandidateState(candidate["state"]) != QcCandidateState.HOLD_FOR_REVIEW:
+                raise StateTransitionError("Only a current automatic HOLD_FOR_REVIEW candidate may be override-accepted.")
+            if connection.execute(
+                "SELECT 1 FROM qc_candidates WHERE job_id = ? AND scene_id = ? AND candidate_id != ? AND state != ?",
+                (job_id, scene_id, candidate_id, QcCandidateState.SUPERSEDED.value),
+            ).fetchone() is not None:
+                raise StateTransitionError("QC candidate is no longer the current candidate for this scene.")
+            revision = connection.execute(
+                "SELECT frame_path, video_path, state FROM scene_revisions WHERE job_id = ? AND scene_id = ? AND revision = ?",
+                (job_id, scene_id, candidate["revision"]),
+            ).fetchone()
+            if (revision is None or revision["state"] != SceneState.SUCCEEDED.value
+                    or revision["video_path"] != candidate["source_video_path"]
+                    or not Path(candidate["source_video_path"]).is_file()
+                    or not candidate["source_video_sha256"]
+                    or _file_sha256(candidate["source_video_path"]) != candidate["source_video_sha256"]):
+                raise StateTransitionError("QC candidate no longer matches its successful revision hash.")
+            evaluation = connection.execute(
+                "SELECT evidence_manifest_sha256 FROM qc_evaluations WHERE candidate_id = ? AND state = 'COMPLETE' ORDER BY completed_at DESC, evaluation_id DESC LIMIT 1",
+                (candidate_id,),
+            ).fetchone()
+            if evaluation is None or not evaluation["evidence_manifest_sha256"]:
+                raise StateTransitionError("Automatic hold is missing durable QC evidence.")
+            now = _utc_now()
+            connection.execute(
+                "INSERT INTO qc_human_decisions (decision_id, candidate_id, decision, note, actor, result_sha256, evidence_sha256, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (decision_id, candidate_id, QcHumanDecision.APPROVE.value, "manual_override_of_automatic_hold", actor, candidate["source_video_sha256"], evaluation["evidence_manifest_sha256"], now),
+            )
+            connection.execute("UPDATE qc_candidates SET state = ?, next_action = NULL, updated_at = ? WHERE candidate_id = ?", (QcCandidateState.ACCEPTED.value, now, candidate_id))
+            connection.execute("UPDATE qc_candidates SET state = ?, next_action = NULL, updated_at = ? WHERE job_id = ? AND scene_id = ? AND candidate_id != ?", (QcCandidateState.SUPERSEDED.value, now, job_id, scene_id, candidate_id))
+            connection.execute("UPDATE scenes SET state = ?, frame_path = COALESCE(?, frame_path), video_path = ?, error = NULL, updated_at = ? WHERE job_id = ? AND scene_id = ?", (SceneState.SUCCEEDED.value, revision["frame_path"], candidate["source_video_path"], now, job_id, scene_id))
+            stored_decision = connection.execute("SELECT * FROM qc_human_decisions WHERE decision_id = ?", (decision_id,)).fetchone()
+            stored_candidate = connection.execute("SELECT * FROM qc_candidates WHERE candidate_id = ?", (candidate_id,)).fetchone()
+        return QcHumanDecisionResult(self._qc_human_decision_record(stored_decision), self._qc_candidate_record(stored_candidate), False)
+
     def qc_final_selection(
         self,
         job_id: str,

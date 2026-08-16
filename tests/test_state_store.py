@@ -2220,6 +2220,52 @@ class StateStoreTests(unittest.TestCase):
         self.assertEqual(result.decision.decision, QcHumanDecision.REJECT)
         self.assertEqual(result.candidate.state, QcCandidateState.HOLD_FOR_REVIEW)
 
+    def test_automatic_hold_override_accepts_and_persists_evidence(self) -> None:
+        candidate = self._create_qc_candidate()
+        self._complete_pass_for_candidate(candidate.candidate_id)
+        self.store.set_qc_candidate_state(
+            candidate.candidate_id, QcCandidateState.HOLD_FOR_REVIEW,
+            next_action="hold_for_review",
+        )
+        self._await_qc_review()
+
+        result = self.store.accept_automatic_hold_override(
+            job_id=candidate.job_id, scene_id=candidate.scene_id,
+            candidate_id=candidate.candidate_id,
+        )
+
+        self.assertEqual(result.candidate.state, QcCandidateState.ACCEPTED)
+        self.assertEqual(result.decision.decision, QcHumanDecision.APPROVE)
+        self.assertEqual(result.decision.note, "manual_override_of_automatic_hold")
+        self.assertEqual(
+            self.store.qc_human_decision(candidate.candidate_id).note,
+            "manual_override_of_automatic_hold",
+        )
+
+    def test_automatic_hold_override_rejects_terminal_human_decision_and_wrong_job(self) -> None:
+        candidate = self._create_qc_candidate()
+        self._complete_pass_for_candidate(candidate.candidate_id)
+        self.store.set_qc_candidate_state(
+            candidate.candidate_id, QcCandidateState.HOLD_FOR_REVIEW,
+            next_action="hold_for_review",
+        )
+        self._await_qc_review()
+        self.store.record_qc_human_decision(
+            decision_id="terminal-reject", candidate_id=candidate.candidate_id,
+            decision=QcHumanDecision.REJECT, note="operator rejected", actor="test",
+            result_sha256="1" * 64, evidence_sha256="2" * 64,
+        )
+        with self.assertRaisesRegex(StateTransitionError, "cannot be overwritten"):
+            self.store.accept_automatic_hold_override(
+                job_id=candidate.job_id, scene_id=candidate.scene_id,
+                candidate_id=candidate.candidate_id,
+            )
+        with self.assertRaisesRegex(StateTransitionError, "route identity"):
+            self.store.accept_automatic_hold_override(
+                job_id="wrong-job", scene_id=candidate.scene_id,
+                candidate_id=candidate.candidate_id,
+            )
+
     def test_qc_final_selection_requires_durable_acceptance_and_kill_switch_uses_original(self) -> None:
         candidate = self._create_qc_candidate()
         self._complete_pass_for_candidate(candidate.candidate_id)

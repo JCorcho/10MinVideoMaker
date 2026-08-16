@@ -367,6 +367,25 @@ def create_gui_app(
             "replayed": result.replayed,
         }
 
+    @app.post(
+        "/api/qc/jobs/{job_id}/scenes/{scene_id}/candidates/{candidate_id}/accept-hold"
+    )
+    async def accept_qc_hold(
+        job_id: str, scene_id: int, candidate_id: str,
+    ) -> dict[str, Any]:
+        try:
+            result = controller.accept_automatic_hold_override(
+                job_id=job_id, scene_id=scene_id, candidate_id=candidate_id,
+            )
+        except StateTransitionError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        return {
+            "job_id": job_id, "scene_id": scene_id, "candidate_id": candidate_id,
+            "decision_id": result.decision.decision_id,
+            "decision": result.decision.decision.value,
+            "candidate_state": result.candidate.state.value,
+        }
+
     @app.get("/api/jobs/{job_id}")
     async def job_detail(job_id: str) -> dict[str, Any]:
         try:

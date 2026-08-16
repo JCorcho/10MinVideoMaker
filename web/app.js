@@ -178,10 +178,11 @@ function registerReviewPlaybackWatchers(card) {
 }
 
 function updateQcReviewCount(reviewDocument) {
-  const count = reviewDocument?.pending?.length || 0;
+  const approvals = reviewDocument?.pending?.length || 0;
+  const holds = reviewDocument?.holds?.length || 0;
   const button = $("#open-qc-review");
   if (button) {
-    button.textContent = `QC Review (${count})`;
+    button.textContent = `QC Review (${approvals} / ${holds})`;
   }
 }
 
@@ -204,11 +205,7 @@ function closeQcReviewPanel() {
 }
 
 function maybeAutoOpenQcReviewPanel(reviewDocument, reason) {
-  if (reason !== "initial") return;
-  if (state.qcReviewPanelManuallyClosed || state.qcReviewPanelOpen) return;
-  if ((reviewDocument?.pending || []).length) {
-    setQcReviewPanelOpen(true);
-  }
+  // Human review is intentionally opened only by the operator.
 }
 
 function renderQcReviewQueue(
@@ -216,6 +213,7 @@ function renderQcReviewQueue(
   { reason, previousFingerprint, nextFingerprint } = {},
 ) {
   const pending = reviewDocument?.pending || [];
+  const holds = reviewDocument?.holds || [];
   const status = state.status?.qc_progress;
   const isAutomationActive = Boolean(
     status?.enabled
@@ -224,7 +222,7 @@ function renderQcReviewQueue(
         || status.counts?.pending_qc
         || status.counts?.qc_running),
   );
-  const emptyMessage = "No scenes are currently awaiting human approval.";
+  const emptyMessage = "No scenes are currently awaiting human action.";
   const queue = $("#qc-review-queue");
   const emptyState = $("#qc-review-empty");
   const snapshot = captureReviewCandidateState();
@@ -242,7 +240,7 @@ function renderQcReviewQueue(
       nextFingerprint,
     });
   }
-  if (!pending.length) {
+  if (!pending.length && !holds.length) {
     queue.innerHTML = "";
     if (emptyState) {
       emptyState.classList.remove("hidden");
@@ -253,10 +251,10 @@ function renderQcReviewQueue(
     return;
   }
   if (emptyState) emptyState.classList.add("hidden");
-  queue.innerHTML = pending.map((item) => {
+  const reviewCard = (item, kind) => {
     const errors = qcErrorRows(item.suspect_windows);
     const comparison = item.prompt_comparison;
-    const b1Review = comparison ? `
+    const b1Review = kind === "approval" && comparison ? `
       <section class="qc-b1-review" aria-label="B1 prompt comparison">
         <h3>B1 repair prompt review</h3>
         <p><strong>QC defect summary that motivated repair:</strong> ${escapeHtml(item.repair_motivation?.summary || "Prior A1 candidate did not pass QC.")}</p>
@@ -289,20 +287,28 @@ function renderQcReviewQueue(
         <div>${item.history.map((prior) => `<p>${escapeHtml(prior.tier)} · revision ${escapeHtml(prior.revision)} · seed ${escapeHtml(prior.seed)} · ${escapeHtml(prior.state)}</p>`).join("")}</div>
       </details>
       <div class="qc-review-actions">
-        <button class="primary" data-qc-decision="APPROVE" data-job-id="${attribute(item.job_id)}" data-scene-id="${attribute(item.scene_id)}" data-candidate-id="${attribute(item.candidate_id)}">Approve</button>
-        <button class="danger" data-qc-decision="REJECT" data-job-id="${attribute(item.job_id)}" data-scene-id="${attribute(item.scene_id)}" data-candidate-id="${attribute(item.candidate_id)}">Reject</button>
-        <button data-qc-decision="HOLD" data-job-id="${attribute(item.job_id)}" data-scene-id="${attribute(item.scene_id)}" data-candidate-id="${attribute(item.candidate_id)}">Hold</button>
+        ${kind === "approval" ? `
+          <button class="primary" data-qc-decision="APPROVE" data-job-id="${attribute(item.job_id)}" data-scene-id="${attribute(item.scene_id)}" data-candidate-id="${attribute(item.candidate_id)}">Approve</button>
+          <button class="danger" data-qc-decision="REJECT" data-job-id="${attribute(item.job_id)}" data-scene-id="${attribute(item.scene_id)}" data-candidate-id="${attribute(item.candidate_id)}">Reject</button>
+          <button data-qc-decision="HOLD" data-job-id="${attribute(item.job_id)}" data-scene-id="${attribute(item.scene_id)}" data-candidate-id="${attribute(item.candidate_id)}">Hold</button>` : `
+          ${item.human_decision ? `<span class="locked-chip">Human ${escapeHtml(item.human_decision.toLowerCase())}</span>` : `<button class="primary" data-qc-accept-hold data-job-id="${attribute(item.job_id)}" data-scene-id="${attribute(item.scene_id)}" data-candidate-id="${attribute(item.candidate_id)}">Accept anyway</button>`}
+          <button data-qc-open-scene data-job-id="${attribute(item.job_id)}" data-scene-id="${attribute(item.scene_id)}">Open scene</button>`}
       </div>
     </article>`;
-  }).join("");
+  };
+  queue.innerHTML = `
+    <section class="qc-review-group"><h3>Approvals (${pending.length})</h3>${pending.map((item) => reviewCard(item, "approval")).join("") || "<p class=\"muted\">No scenes awaiting approval.</p>"}</section>
+    <section class="qc-review-group"><h3>Needs Attention (${holds.length})</h3>${holds.map((item) => reviewCard(item, "hold")).join("") || "<p class=\"muted\">No held scenes.</p>"}</section>`;
   $$('[data-qc-decision]').forEach((button) =>
     button.addEventListener("click", submitQcDecision),
   );
+  $$('[data-qc-accept-hold]').forEach((button) => button.addEventListener("click", acceptQcHold));
+  $$('[data-qc-open-scene]').forEach((button) => button.addEventListener("click", openQcReviewScene));
   $$("#qc-review-queue [data-qc-candidate-id]").forEach((card) => {
     registerReviewPlaybackWatchers(card);
   });
   restoreReviewCandidateState(snapshot);
-  if (pending.length) {
+  if (pending.length || holds.length) {
     state.qcReviewHasRenderedCards = true;
   }
   state.qcReview = reviewDocument;
@@ -414,6 +420,33 @@ async function submitQcDecision(event) {
       item.disabled = false;
     });
   }
+}
+
+async function acceptQcHold(event) {
+  const button = event.currentTarget;
+  if (!button || !window.confirm("Accept this scene despite the VLM hold?")) return;
+  button.disabled = true;
+  const path = `/api/qc/jobs/${encodeURIComponent(button.dataset.jobId)}` +
+    `/scenes/${encodeURIComponent(button.dataset.sceneId)}` +
+    `/candidates/${encodeURIComponent(button.dataset.candidateId)}/accept-hold`;
+  try {
+    await api(path, {method: "POST"});
+    toast("Accepted held QC candidate.");
+    await loadQcReviewQueue({force: true, reason: "decision_refresh"});
+  } catch (error) {
+    button.disabled = false;
+    toast(error.message, true);
+  }
+}
+
+async function openQcReviewScene(event) {
+  const button = event.currentTarget;
+  if (!button) return;
+  closeQcReviewPanel();
+  if (state.selectedJob !== button.dataset.jobId) {
+    await selectJob(button.dataset.jobId);
+  }
+  await selectScene(Number(button.dataset.sceneId));
 }
 
 const $ = (selector) => document.querySelector(selector);
@@ -1762,10 +1795,10 @@ function updateQcProgress(progress) {
   $("#qc-progress-waiting-render").textContent = `waiting for render: ${counts.pending_generation || 0}`;
   $("#qc-progress-waiting-qc").textContent = `waiting for Qwen: ${counts.pending_qc || 0}`;
   $("#qc-progress-qwen-active").textContent = `Qwen active: ${counts.qc_running || 0}`;
-  $("#qc-progress-passed").textContent = `passed: ${counts.pass_pending_human || 0}`;
-  $("#qc-progress-held").textContent = `held: ${counts.hold_for_review || 0}`;
+  $("#qc-progress-passed").textContent = `Accepted: ${counts.accepted || 0}`;
+  $("#qc-progress-held").textContent = `Awaiting approval: ${counts.pass_pending_human || 0} · Needs attention: ${counts.hold_for_review || 0}`;
   $("#qc-progress-decisions").textContent = `Pass: ${progress?.decisions?.pass || 0} · Fail: ${progress?.decisions?.fail || 0} · Uncertain: ${progress?.decisions?.uncertain || 0}`;
-  $("#qc-progress-ratio").textContent = `${resolved} of ${total} scenes resolved`;
+  $("#qc-progress-ratio").textContent = `${resolved} of ${total} scenes finished automatic QC`;
   $("#qc-progress-bar").style.width = `${percent}%`;
   $("#qc-progress-last-activity").textContent = lastLabel;
 

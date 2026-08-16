@@ -304,10 +304,20 @@ class SupervisorController:
         self.wake()
         return result
 
+    def accept_automatic_hold_override(
+        self, *, job_id: str, scene_id: int, candidate_id: str,
+    ) -> QcHumanDecisionResult:
+        result = self.store.accept_automatic_hold_override(
+            job_id=job_id, scene_id=scene_id, candidate_id=candidate_id,
+        )
+        self.wake()
+        return result
+
     def qc_review_queue_document(self) -> dict[str, Any]:
         qc_controller = getattr(self.supervisor, "qc_controller", None)
         settings = getattr(qc_controller, "settings", None)
         pending = []
+        holds = []
         snapshot = self.store.snapshot()
         review_jobs = (
             tuple(
@@ -338,7 +348,10 @@ class SupervisorController:
             for item in all_candidates:
                 by_scene.setdefault(item.scene_id, []).append(item)
             for candidate in all_candidates:
-                if candidate.state != QcCandidateState.PASS_PENDING_HUMAN:
+                if candidate.state not in {
+                    QcCandidateState.PASS_PENDING_HUMAN,
+                    QcCandidateState.HOLD_FOR_REVIEW,
+                }:
                     continue
                 evaluations = [
                     item for item in self.store.qc_evaluations(candidate.candidate_id)
@@ -426,8 +439,8 @@ class SupervisorController:
                             ) or "The prior A1 candidate did not pass QC.",
                             "defects": parent_defects,
                         }
-                pending.append(
-                    {
+                human_decision = self.store.qc_human_decision(candidate.candidate_id)
+                row = {
                         "job_id": job.job_id,
                         "scene_id": candidate.scene_id,
                         "scene_title": titles.get(candidate.scene_id, ""),
@@ -467,8 +480,15 @@ class SupervisorController:
                             for prior in by_scene[candidate.scene_id]
                             if prior.candidate_id != candidate.candidate_id
                         ],
+                        "human_decision": (
+                            human_decision.decision.value
+                            if human_decision is not None else None
+                        ),
                     }
-                )
+                if candidate.state == QcCandidateState.PASS_PENDING_HUMAN:
+                    pending.append(row)
+                else:
+                    holds.append(row)
         return {
             "banner": "QC is CANARY / HUMAN APPROVAL REQUIRED",
             "quality_control_enabled": bool(
@@ -478,6 +498,7 @@ class SupervisorController:
                 getattr(settings, "auto_advance_pass", False)
             ),
             "pending": pending,
+            "holds": holds,
             "pending_fingerprint": _document_sha256(
                 sorted(
                     (
@@ -491,7 +512,7 @@ class SupervisorController:
                                 "tier": item["tier"],
                                 "candidate_state": item["candidate_state"],
                                 "video_url": item["video_url"],
-                            } for item in pending
+                            } for item in (*pending, *holds)
                         )
                     ),
                     key=lambda item: (
