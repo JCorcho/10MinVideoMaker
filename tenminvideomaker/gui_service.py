@@ -426,49 +426,49 @@ class SupervisorController:
                             ) or "The prior A1 candidate did not pass QC.",
                             "defects": parent_defects,
                         }
-            pending.append(
-                {
-                    "job_id": job.job_id,
-                    "scene_id": candidate.scene_id,
-                    "scene_title": titles.get(candidate.scene_id, ""),
-                    "candidate_id": candidate.candidate_id,
-                    "revision": candidate.revision,
-                    "tier": candidate.tier.value,
-                    "candidate_state": candidate.state.value,
-                    "video_url": (
-                        f"/api/media/{job.job_id}/"
-                        f"{candidate.scene_id}/"
-                        f"{candidate.revision}/video"
-                    ),
-                    "prompt": candidate.current_prompt,
-                    "prompt_comparison": _prompt_comparison(candidate),
-                    "repair_motivation": repair_motivation,
-                    "human_gate_required": True,
-                    "seed": str(candidate.current_seed),
-                    "decision": evaluation.normalized_decision.value,
-                    "confidence": min(confidences) if confidences else None,
-                    "summary": summaries[-1] if summaries else "QC PASS",
-                    "suspect_windows": windows,
-                    "evaluator": evaluator,
-                    "effective_config_sha256": (
-                        evaluation.effective_config_sha256
-                    ),
-                    "prompt_version": evaluation.prompt_version,
-                    "prompt_sha256": evaluation.prompt_sha256,
-                    "evaluation_id": evaluation.evaluation_id,
-                    "history": [
-                        {
-                            "candidate_id": prior.candidate_id,
-                            "revision": prior.revision,
-                            "tier": prior.tier.value,
-                            "state": prior.state.value,
-                            "seed": str(prior.current_seed),
-                        }
-                        for prior in by_scene[candidate.scene_id]
-                        if prior.candidate_id != candidate.candidate_id
-                    ],
-                }
-            )
+                pending.append(
+                    {
+                        "job_id": job.job_id,
+                        "scene_id": candidate.scene_id,
+                        "scene_title": titles.get(candidate.scene_id, ""),
+                        "candidate_id": candidate.candidate_id,
+                        "revision": candidate.revision,
+                        "tier": candidate.tier.value,
+                        "candidate_state": candidate.state.value,
+                        "video_url": (
+                            f"/api/media/{job.job_id}/"
+                            f"{candidate.scene_id}/"
+                            f"{candidate.revision}/video"
+                        ),
+                        "prompt": candidate.current_prompt,
+                        "prompt_comparison": _prompt_comparison(candidate),
+                        "repair_motivation": repair_motivation,
+                        "human_gate_required": True,
+                        "seed": str(candidate.current_seed),
+                        "decision": evaluation.normalized_decision.value,
+                        "confidence": min(confidences) if confidences else None,
+                        "summary": summaries[-1] if summaries else "QC PASS",
+                        "suspect_windows": windows,
+                        "evaluator": evaluator,
+                        "effective_config_sha256": (
+                            evaluation.effective_config_sha256
+                        ),
+                        "prompt_version": evaluation.prompt_version,
+                        "prompt_sha256": evaluation.prompt_sha256,
+                        "evaluation_id": evaluation.evaluation_id,
+                        "history": [
+                            {
+                                "candidate_id": prior.candidate_id,
+                                "revision": prior.revision,
+                                "tier": prior.tier.value,
+                                "state": prior.state.value,
+                                "seed": str(prior.current_seed),
+                            }
+                            for prior in by_scene[candidate.scene_id]
+                            if prior.candidate_id != candidate.candidate_id
+                        ],
+                    }
+                )
         return {
             "banner": "QC is CANARY / HUMAN APPROVAL REQUIRED",
             "quality_control_enabled": bool(
