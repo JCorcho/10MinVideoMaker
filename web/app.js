@@ -16,6 +16,9 @@ const state = {
   qcReview: null,
   qcProgress: null,
   qcReviewFingerprint: null,
+  qcReviewFetchCount: 0,
+  qcReviewRenderCount: 0,
+  qcReviewHasRenderedCards: false,
   qcReviewDeferredPayload: null,
   qcReviewPolicyText: null,
   qcReviewInteractionLock: false,
@@ -28,6 +31,12 @@ const state = {
 const REVIEW_QUEUE_POLL_MS = 3000;
 const STATUS_POLL_MS = 1500;
 const REVIEW_INTERACTION_IDLE_MS = 1000;
+const QC_REVIEW_EXPLICIT_REFRESH_REASONS = new Set([
+  "initial",
+  "manual_refresh",
+  "apply_updates",
+  "decision_refresh",
+]);
 let qcReviewRefreshTimer = null;
 let statusRefreshTimer = null;
 let statusPollInFlight = false;
@@ -95,7 +104,11 @@ function restoreReviewCandidateState(snapshot) {
 }
 
 function isReviewInteractionLocked() {
-  return state.qcReviewInteractionLock || state.qcReviewPlayingCandidates.size > 0;
+  const queue = $("#qc-review-queue");
+  const hasPlayingVideo = [...(queue?.querySelectorAll("video") || [])].some(
+    (video) => !video.paused && !video.ended,
+  );
+  return state.qcReviewInteractionLock || state.qcReviewPlayingCandidates.size > 0 || hasPlayingVideo;
 }
 
 function setReviewInteractionLocked(value) {
@@ -162,7 +175,10 @@ function registerReviewPlaybackWatchers(card) {
   });
 }
 
-function renderQcReviewQueue(reviewDocument) {
+function renderQcReviewQueue(
+  reviewDocument,
+  { reason, previousFingerprint, nextFingerprint } = {},
+) {
   const panel = $("#qc-review-panel");
   const pending = reviewDocument?.pending || [];
   const status = state.status?.qc_progress;
@@ -182,6 +198,16 @@ function renderQcReviewQueue(reviewDocument) {
     state.qcReviewPolicyText = `quality_control_enabled=${reviewDocument.quality_control_enabled} · auto_advance_pass=${reviewDocument.auto_advance_pass}`;
   }
   $("#qc-policy").textContent = state.qcReviewPolicyText || "";
+  state.qcReviewRenderCount += 1;
+  if (reason) {
+    console.debug("[QC review render]", {
+      renderCount: state.qcReviewRenderCount,
+      fetchCount: state.qcReviewFetchCount,
+      reason,
+      previousFingerprint,
+      nextFingerprint,
+    });
+  }
   if (!pending.length) {
     queue.innerHTML = "";
     if (emptyState) {
@@ -242,38 +268,57 @@ function renderQcReviewQueue(reviewDocument) {
     registerReviewPlaybackWatchers(card);
   });
   restoreReviewCandidateState(snapshot);
+  if (pending.length) {
+    state.qcReviewHasRenderedCards = true;
+  }
   state.qcReview = reviewDocument;
 }
 
 function applyReviewQueuePayload(reviewDocument, options = {}) {
+  const reason = options.reason || "background_poll";
   const nextFingerprint = reviewDocument?.pending_fingerprint || null;
+  const previousFingerprint = state.qcReviewFingerprint;
   const hasChanges = nextFingerprint !== state.qcReviewFingerprint;
-  if (!hasChanges && !options.force) {
+  const isFirstReviewPayload = state.qcReview == null && !state.qcReviewHasRenderedCards;
+  if (!hasChanges && !options.force && !isFirstReviewPayload) {
     return;
   }
-  const locked = isReviewInteractionLocked();
-  if (!options.force && locked) {
+  const isBackgroundPoll = !QC_REVIEW_EXPLICIT_REFRESH_REASONS.has(reason);
+  if (
+    !options.force
+    && isBackgroundPoll
+    && state.qcReviewHasRenderedCards
+    && hasChanges
+  ) {
     state.qcReviewDeferredPayload = reviewDocument;
     renderReviewUpdateBanner();
     return;
   }
-  renderQcReviewQueue(reviewDocument);
-  state.qcReviewFingerprint = nextFingerprint;
-  if (!options.fromDeferred) {
-    state.qcReview = reviewDocument;
+  const locked = !options.force && isReviewInteractionLocked();
+  if (locked) {
+    state.qcReviewDeferredPayload = reviewDocument;
+    renderReviewUpdateBanner();
+    return;
   }
+  renderQcReviewQueue(reviewDocument, { reason, previousFingerprint, nextFingerprint });
+  state.qcReviewFingerprint = nextFingerprint;
+  state.qcReview = reviewDocument;
   state.qcReviewDeferredPayload = null;
   renderReviewUpdateBanner();
 }
 
-async function loadQcReviewQueue({force = false} = {}) {
+async function loadQcReviewQueue({
+  force = false,
+  reason = "background_poll",
+} = {}) {
   if (reviewPollInFlight) return;
   reviewPollInFlight = true;
+  state.qcReviewFetchCount += 1;
   try {
     const reviewDocument = await api("/api/qc/review-queue");
     state.reviewDisconnected = false;
     updateReviewDisconnectedIndicator(false);
-    applyReviewQueuePayload(reviewDocument, {force});
+    applyReviewQueuePayload(reviewDocument, {force, reason});
   } catch (error) {
     state.reviewDisconnected = true;
     updateReviewDisconnectedIndicator(true);
@@ -294,7 +339,7 @@ async function applyDeferredReviewUpdate() {
   if (!state.qcReviewDeferredPayload) return;
   const deferred = state.qcReviewDeferredPayload;
   state.qcReviewDeferredPayload = null;
-  applyReviewQueuePayload(deferred, {force: true});
+  applyReviewQueuePayload(deferred, {force: true, reason: "apply_updates"});
 }
 
 function scheduleQcReviewRefresh() {
@@ -326,7 +371,7 @@ async function submitQcDecision(event) {
     relatedButtons.forEach((item) => {
       item.disabled = false;
     });
-    await loadQcReviewQueue({force: true});
+    await loadQcReviewQueue({force: true, reason: "decision_refresh"});
   } catch (error) {
     toast(error.message, true);
     relatedButtons.forEach((item) => {
@@ -1763,7 +1808,7 @@ function updateStatus(status) {
     || previousStatus.pipeline_state !== status.pipeline_state
     || previousStatus.job_id !== status.job_id
   ) {
-    void loadQcReviewQueue();
+    void loadQcReviewQueue({reason: "status_refresh"});
   }
   if (state.working) renderProductionProfile();
   mobileView();
@@ -1866,7 +1911,9 @@ $$('input[name="remake-mode"]').forEach((input) => input.addEventListener("chang
 $("#submit-batch").addEventListener("click", submitDrafts);
 $("#queue-after").addEventListener("click", () => submitPendingBatch("after_current"));
 $("#interrupt-now").addEventListener("click", () => submitPendingBatch("interrupt_current"));
-$("#refresh-reviews").addEventListener("click", () => loadQcReviewQueue({force: true}));
+$("#refresh-reviews").addEventListener("click", () =>
+  loadQcReviewQueue({force: true, reason: "manual_refresh"}),
+);
 $("#review-updates-apply").addEventListener("click", applyDeferredReviewUpdate);
 $("#cancel-modal").addEventListener("click", () => $("#collision-modal").classList.add("hidden"));
 $("#approve-job").addEventListener("click", async () => {
@@ -1887,7 +1934,7 @@ async function init() {
   }
   await loadJobs();
   await loadStatus();
-  await loadQcReviewQueue();
+  await loadQcReviewQueue({reason: "initial"});
   mobileView();
   startStatusPolling();
   startQcReviewPolling();
@@ -1897,7 +1944,7 @@ async function init() {
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) return;
   void loadStatus();
-  void loadQcReviewQueue();
+  void loadQcReviewQueue({reason: "visibility_refresh"});
 });
 
 window.addEventListener("resize", mobileView);
