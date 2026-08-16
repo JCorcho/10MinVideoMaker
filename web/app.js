@@ -24,6 +24,8 @@ const state = {
   qcReviewInteractionLock: false,
   qcReviewInteractionTimer: null,
   qcReviewPlayingCandidates: new Set(),
+  qcReviewPanelOpen: false,
+  qcReviewPanelManuallyClosed: false,
   progressRefreshes: new Set(),
   statusDisconnected: false,
   reviewDisconnected: false,
@@ -175,11 +177,44 @@ function registerReviewPlaybackWatchers(card) {
   });
 }
 
+function updateQcReviewCount(reviewDocument) {
+  const count = reviewDocument?.pending?.length || 0;
+  const button = $("#open-qc-review");
+  if (button) {
+    button.textContent = `QC Review (${count})`;
+  }
+}
+
+function setQcReviewPanelOpen(open) {
+  state.qcReviewPanelOpen = Boolean(open);
+  $("#qc-review-panel")?.classList.toggle("hidden", !state.qcReviewPanelOpen);
+}
+
+function openQcReviewPanel({ fetch = true } = {}) {
+  state.qcReviewPanelManuallyClosed = false;
+  setQcReviewPanelOpen(true);
+  if (fetch) {
+    void loadQcReviewQueue({ reason: "panel_open" });
+  }
+}
+
+function closeQcReviewPanel() {
+  state.qcReviewPanelManuallyClosed = true;
+  setQcReviewPanelOpen(false);
+}
+
+function maybeAutoOpenQcReviewPanel(reviewDocument, reason) {
+  if (reason !== "initial") return;
+  if (state.qcReviewPanelManuallyClosed || state.qcReviewPanelOpen) return;
+  if ((reviewDocument?.pending || []).length) {
+    setQcReviewPanelOpen(true);
+  }
+}
+
 function renderQcReviewQueue(
   reviewDocument,
   { reason, previousFingerprint, nextFingerprint } = {},
 ) {
-  const panel = $("#qc-review-panel");
   const pending = reviewDocument?.pending || [];
   const status = state.status?.qc_progress;
   const isAutomationActive = Boolean(
@@ -192,7 +227,6 @@ function renderQcReviewQueue(
   const emptyMessage = "No scenes are currently awaiting human approval.";
   const queue = $("#qc-review-queue");
   const emptyState = $("#qc-review-empty");
-  panel?.classList.remove("hidden");
   const snapshot = captureReviewCandidateState();
   if (reviewDocument) {
     state.qcReviewPolicyText = `quality_control_enabled=${reviewDocument.quality_control_enabled} · auto_advance_pass=${reviewDocument.auto_advance_pass}`;
@@ -318,7 +352,9 @@ async function loadQcReviewQueue({
     const reviewDocument = await api("/api/qc/review-queue");
     state.reviewDisconnected = false;
     updateReviewDisconnectedIndicator(false);
+    updateQcReviewCount(reviewDocument);
     applyReviewQueuePayload(reviewDocument, {force, reason});
+    maybeAutoOpenQcReviewPanel(reviewDocument, reason);
   } catch (error) {
     state.reviewDisconnected = true;
     updateReviewDisconnectedIndicator(true);
@@ -1911,6 +1947,16 @@ $$('input[name="remake-mode"]').forEach((input) => input.addEventListener("chang
 $("#submit-batch").addEventListener("click", submitDrafts);
 $("#queue-after").addEventListener("click", () => submitPendingBatch("after_current"));
 $("#interrupt-now").addEventListener("click", () => submitPendingBatch("interrupt_current"));
+$("#open-qc-review").addEventListener("click", () => {
+  openQcReviewPanel();
+});
+$("#close-qc-review").addEventListener("click", () => {
+  closeQcReviewPanel();
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape" || !state.qcReviewPanelOpen) return;
+  closeQcReviewPanel();
+});
 $("#refresh-reviews").addEventListener("click", () =>
   loadQcReviewQueue({force: true, reason: "manual_refresh"}),
 );
