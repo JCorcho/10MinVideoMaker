@@ -107,9 +107,6 @@ function scheduleReviewInteractionRelease() {
   state.qcReviewInteractionTimer = setTimeout(() => {
     if (state.qcReviewPlayingCandidates.size === 0) {
       setReviewInteractionLocked(false);
-      if (state.qcReviewDeferredPayload) {
-        applyReviewQueuePayload(state.qcReviewDeferredPayload, {fromDeferred: true});
-      }
     }
   }, REVIEW_INTERACTION_IDLE_MS);
 }
@@ -1765,9 +1762,8 @@ function updateStatus(status) {
     !previousStatus
     || previousStatus.pipeline_state !== status.pipeline_state
     || previousStatus.job_id !== status.job_id
-    || status.pipeline_state === "awaiting_qc_review"
   ) {
-    void loadQcReviewQueue({force: true});
+    void loadQcReviewQueue();
   }
   if (state.working) renderProductionProfile();
   mobileView();
