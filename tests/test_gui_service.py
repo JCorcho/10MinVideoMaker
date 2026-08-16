@@ -19,6 +19,8 @@ from tenminvideomaker.review import scene_review_document
 from tenminvideomaker.state_store import (
     PipelineState,
     PipelineStateStore,
+    QcCandidateState,
+    QcTier,
     ManualFinalState,
     RemakeBatchState,
     RemakeMode,
@@ -692,6 +694,154 @@ class GuiServiceTests(unittest.TestCase):
             self.assertEqual(complete["phase"], "complete")
             self.assertTrue(complete["output_available"])
             self.assertFalse(complete["resumed"])
+
+    def test_status_document_includes_qc_progress_metrics(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            storage = StorageLayout(root / "storage")
+            store = PipelineStateStore(storage.database_path)
+            job = parse_job_payload(payload())
+            store.claim_job(job)
+            store.transition(PipelineState.RUNNING_QC, job_id=job.job_id)
+
+            for scene_id, candidate_id, final_state in (
+                (job.scenes[0].scene_id, "qc-scene-1", QcCandidateState.PASS_PENDING_HUMAN),
+                (job.scenes[1].scene_id, "qc-scene-2", QcCandidateState.GENERATING),
+            ):
+                revisions = store.scene_revisions(job.job_id, scene_id)
+                source_path = revisions[0].video_path or f"scene-{scene_id}-v1.mp4"
+                if source_path != revisions[0].video_path:
+                    store.update_scene_revision(
+                        job.job_id,
+                        scene_id,
+                        revisions[0].revision,
+                        state=revisions[0].state,
+                        video_path=source_path,
+                    )
+                candidate = store.ensure_qc_candidate(
+                    candidate_id=candidate_id,
+                    job_id=job.job_id,
+                    scene_id=scene_id,
+                    revision=revisions[0].revision,
+                    tier=QcTier.ORIGINAL,
+                    parent_candidate_id=None,
+                    source_video_path=source_path,
+                    source_video_sha256=None,
+                    original_prompt="prompt",
+                    current_prompt="prompt",
+                    original_seed=1,
+                    current_seed=2,
+                    negative_prompt="",
+                    negative_prompt_sha256="0" * 64,
+                    state=QcCandidateState.PENDING_GENERATION,
+                    next_action=None,
+                )
+                if final_state != QcCandidateState.PENDING_GENERATION:
+                    store.set_qc_candidate_state(
+                        candidate.candidate_id,
+                        final_state,
+                        next_action=None,
+                    )
+
+            supervisor = Mock()
+            supervisor.store = store
+            supervisor.qc_controller = Mock(settings=Mock(quality_control_enabled=True))
+            supervisor.comfy.queue_counts.return_value = (0, 0)
+            controller = SupervisorController(supervisor, storage)
+
+            progress = controller.status_document()["qc_progress"]
+            self.assertTrue(progress["enabled"])
+            self.assertEqual(progress["pipeline_state"], PipelineState.RUNNING_QC.value)
+            self.assertEqual(progress["total_scenes"], 2)
+            self.assertEqual(progress["resolved_scenes"], 1)
+            self.assertEqual(progress["counts"]["pass_pending_human"], 1)
+            self.assertEqual(progress["counts"]["generating"], 1)
+            self.assertEqual(progress["stage"], "repair_generation")
+            self.assertIn("Generating", progress["stage_label"])
+            self.assertIsNotNone(progress["active_scene_id"])
+            self.assertEqual(progress["decisions"], {"pass": 0, "fail": 0, "uncertain": 0})
+            self.assertIsNotNone(progress["last_activity_at"])
+
+    def test_qc_progress_uses_latest_candidate_for_scene_resolution(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            storage = StorageLayout(root / "storage")
+            store = PipelineStateStore(storage.database_path)
+            job = parse_job_payload(payload())
+            store.claim_job(job)
+            store.transition(PipelineState.RUNNING_QC, job_id=job.job_id)
+
+            scene_id = job.scenes[0].scene_id
+            revisions = store.scene_revisions(job.job_id, scene_id)
+            source_path = revisions[0].video_path or f"scene-{scene_id}-v1.mp4"
+            if source_path != revisions[0].video_path:
+                store.update_scene_revision(
+                    job.job_id,
+                    scene_id,
+                    revisions[0].revision,
+                    state=revisions[0].state,
+                    video_path=source_path,
+                )
+            old_candidate = store.ensure_qc_candidate(
+                candidate_id="qc-old-pass",
+                job_id=job.job_id,
+                scene_id=scene_id,
+                revision=revisions[0].revision,
+                tier=QcTier.ORIGINAL,
+                parent_candidate_id=None,
+                source_video_path=source_path,
+                source_video_sha256=None,
+                original_prompt="prompt",
+                current_prompt="prompt",
+                original_seed=1,
+                current_seed=2,
+                negative_prompt="",
+                negative_prompt_sha256="0" * 64,
+                state=QcCandidateState.PENDING_GENERATION,
+                next_action=None,
+            )
+            store.set_qc_candidate_state(
+                old_candidate.candidate_id,
+                QcCandidateState.PASS_PENDING_HUMAN,
+                next_action=None,
+            )
+            new_candidate = store.ensure_qc_candidate(
+                candidate_id="qc-generating-repair",
+                job_id=job.job_id,
+                scene_id=scene_id,
+                revision=revisions[0].revision + 1,
+                tier=QcTier.B1,
+                parent_candidate_id=old_candidate.candidate_id,
+                source_video_path=source_path,
+                source_video_sha256=None,
+                original_prompt="prompt",
+                current_prompt="prompt",
+                original_seed=3,
+                current_seed=4,
+                negative_prompt="",
+                negative_prompt_sha256="0" * 64,
+                state=QcCandidateState.PENDING_GENERATION,
+                next_action=None,
+            )
+            store.set_qc_candidate_state(
+                new_candidate.candidate_id,
+                QcCandidateState.GENERATING,
+                next_action=None,
+            )
+
+            supervisor = Mock()
+            supervisor.store = store
+            supervisor.qc_controller = Mock(settings=Mock(quality_control_enabled=True))
+            supervisor.comfy.queue_counts.return_value = (0, 0)
+            controller = SupervisorController(supervisor, storage)
+
+            progress = controller.status_document()["qc_progress"]
+            self.assertEqual(progress["pipeline_state"], PipelineState.RUNNING_QC.value)
+            self.assertEqual(progress["resolved_scenes"], 0)
+            self.assertEqual(progress["counts"]["generating"], 1)
+            self.assertEqual(progress["stage"], "repair_generation")
+            self.assertEqual(progress["active_tier"], QcTier.B1.value)
+            self.assertEqual(progress["active_scene_id"], scene_id)
 
     def test_manual_final_uses_latest_selected_revision_without_generation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

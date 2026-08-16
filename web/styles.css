@@ -35,6 +35,7 @@ button { cursor: pointer; }
 .status-pill.busy { color: var(--warning); border-color: #5d4b2d; }
 .status-pill.healthy { color: var(--success); border-color: #28543d; }
 .status-pill.error { color: var(--danger); border-color: #63313b; }
+.connection-indicator { font-size: 11px; color: var(--danger); border: 1px dashed #63313b; border-radius: 999px; padding: 6px 9px; background: rgba(122, 41, 54, .12); }
 
 button { border: 0; border-radius: 8px; padding: 9px 13px; color: var(--text); background: var(--panel-2); }
 button:disabled { opacity: .42; cursor: not-allowed; }
@@ -63,6 +64,23 @@ button:disabled { opacity: .42; cursor: not-allowed; }
 }
 .panel-heading { flex: 0 0 auto; min-height: 70px; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 15px 16px; border-bottom: 1px solid var(--line); }
 .panel-heading h2 { font-size: 16px; margin-top: 3px; }
+.qc-progress-panel { position: fixed; left: 18px; right: 18px; top: 88px; z-index: 14; border: 1px solid #3a4d67; border-radius: 12px; padding: 12px 14px; background: #101723; display: grid; gap: 8px; }
+.qc-progress-panel.hidden { display: none; }
+.qc-progress-heading { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+.qc-progress-heading h2 { margin: 0; font-size: 16px; }
+.qc-progress-stage-label { color: var(--muted); font-size: 11px; }
+.qc-progress-stage { margin: 0; font-size: 13px; }
+.qc-progress-meter { width: min(100%, 520px); height: 8px; border-radius: 999px; border: 1px solid var(--line); background: #0a1118; overflow: hidden; }
+.qc-progress-bar { height: 100%; width: 0; background: linear-gradient(90deg, var(--accent-2), var(--accent)); transition: width 0.25s ease; }
+.qc-progress-grid { display: grid; gap: 8px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.qc-progress-grid div { font-size: 12px; color: #c8d2e4; }
+.qc-progress-decisions { margin: 0; font-weight: 700; color: #d8e1f0; }
+.qc-progress-warning { color: var(--warning); margin: 0; min-height: 1rem; }
+.qc-progress-panel.qc-progress-active .qc-progress-bar { animation: qcPulse 1.15s infinite alternate; }
+@keyframes qcPulse { from { filter: brightness(1); } to { filter: brightness(1.25); } }
+.review-updates-banner { display: flex; gap: 8px; align-items: center; margin: 8px 0 0; padding: 9px 11px; border-radius: 8px; border: 1px solid #3f5a82; background: #13203a; color: #cfe0ff; font-size: 12px; }
+.review-updates-banner.hidden { display: none; }
+.qc-review-tools { display: flex; gap: 9px; align-items: center; }
 .scroll-list {
   flex: 1 1 auto;
   min-height: 0;
@@ -200,6 +218,7 @@ details > div { margin-top: 12px; }
 .qc-review-panel { position: fixed; inset: 88px 18px 18px; z-index: 15; overflow-y: auto; padding: 16px; border: 2px solid #d39b36; border-radius: 12px; background: #19150d; box-shadow: 0 25px 90px #000; }
 .qc-review-heading, .qc-review-card-heading, .qc-review-actions { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
 .qc-review-heading h2 { margin: 2px 0 0; }
+.qc-review-heading > div { display: flex; flex-direction: column; gap: 6px; }
 .qc-review-queue { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 14px; margin-top: 14px; }
 .qc-review-card { min-width: 0; padding: 14px; border: 1px solid #564a31; border-radius: 10px; background: #101722; }
 .qc-review-card video { width: 100%; max-height: 52vh; margin-top: 12px; background: #000; }
@@ -216,9 +235,11 @@ details > div { margin-top: 12px; }
 @media (max-width: 1250px) {
   .workspace { grid-template-columns: 245px 285px minmax(500px, 1fr); }
   .media-stage { height: 36vh; }
+  .qc-progress-panel { left: 12px; right: 12px; }
 }
 
 @media (max-width: 760px) {
+  .qc-progress-panel { top: calc(var(--mobile-topbar-height, 72px) + 8px); position: fixed; }
   .qc-review-panel { inset: calc(var(--mobile-topbar-height, 72px) + 8px) 8px 8px; padding: 12px; }
   .qc-review-heading, .qc-review-card-heading { align-items: flex-start; flex-direction: column; }
   .qc-review-queue { grid-template-columns: 1fr; }

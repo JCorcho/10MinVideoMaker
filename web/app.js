@@ -14,9 +14,24 @@ const state = {
   cancellingProject: false,
   activeChunkProgress: null,
   qcReview: null,
+  qcProgress: null,
+  qcReviewFingerprint: null,
+  qcReviewDeferredPayload: null,
+  qcReviewPolicyText: null,
+  qcReviewInteractionLock: false,
+  qcReviewInteractionTimer: null,
+  qcReviewPlayingCandidates: new Set(),
   progressRefreshes: new Set(),
+  statusDisconnected: false,
+  reviewDisconnected: false,
 };
+const REVIEW_QUEUE_POLL_MS = 3000;
+const STATUS_POLL_MS = 1500;
+const REVIEW_INTERACTION_IDLE_MS = 1000;
 let qcReviewRefreshTimer = null;
+let statusRefreshTimer = null;
+let statusPollInFlight = false;
+let reviewPollInFlight = false;
 
 function qcErrorRows(windows) {
   return (windows || []).flatMap((window) =>
@@ -29,16 +44,159 @@ function qcErrorRows(windows) {
   ).join("");
 }
 
-function renderQcReviewQueue() {
-  const document = state.qcReview;
+function captureReviewCandidateState() {
+  const queue = $("#qc-review-queue");
+  if (!queue) return {focusedCandidateId: null, videos: {}};
+  const focusedCandidateId = document.activeElement?.closest?.("[data-qc-candidate-id]")?.dataset?.qcCandidateId || null;
+  const videos = {};
+  queue.querySelectorAll("[data-qc-candidate-id]").forEach((card) => {
+    const candidateId = card.dataset.qcCandidateId;
+    const video = card.querySelector("video");
+    if (!video) return;
+    videos[candidateId] = {
+      currentTime: Number.isFinite(video.currentTime) ? video.currentTime : 0,
+      paused: video.paused,
+      volume: video.volume,
+      muted: video.muted,
+      playbackRate: video.playbackRate,
+      hasFocus: card.contains(document.activeElement),
+    };
+  });
+  return {focusedCandidateId, videos};
+}
+
+function restoreReviewCandidateState(snapshot) {
+  if (!snapshot) return;
+  const queue = $("#qc-review-queue");
+  if (!queue) return;
+  queue.querySelectorAll("[data-qc-candidate-id]").forEach((card) => {
+    const candidateId = card.dataset.qcCandidateId;
+    const saved = snapshot.videos[candidateId];
+    if (!saved) return;
+    const video = card.querySelector("video");
+    if (!video) return;
+    video.currentTime = saved.currentTime;
+    video.volume = saved.volume;
+    video.muted = saved.muted;
+    video.playbackRate = saved.playbackRate;
+    if (saved.paused) {
+      video.pause();
+    } else {
+      video.play().catch(() => {});
+    }
+  });
+  const focused = snapshot.focusedCandidateId
+    ? queue.querySelector(`[data-qc-candidate-id="${snapshot.focusedCandidateId}"]`)
+    : null;
+  if (focused) {
+    const button = focused.querySelector("[data-qc-decision]");
+    button?.focus();
+  }
+}
+
+function isReviewInteractionLocked() {
+  return state.qcReviewInteractionLock || state.qcReviewPlayingCandidates.size > 0;
+}
+
+function setReviewInteractionLocked(value) {
+  state.qcReviewInteractionLock = Boolean(value);
+}
+
+function scheduleReviewInteractionRelease() {
+  clearTimeout(state.qcReviewInteractionTimer);
+  state.qcReviewInteractionTimer = setTimeout(() => {
+    if (state.qcReviewPlayingCandidates.size === 0) {
+      setReviewInteractionLocked(false);
+      if (state.qcReviewDeferredPayload) {
+        applyReviewQueuePayload(state.qcReviewDeferredPayload, {fromDeferred: true});
+      }
+    }
+  }, REVIEW_INTERACTION_IDLE_MS);
+}
+
+function renderReviewUpdateBanner() {
+  const banner = $("#review-updates-banner");
+  if (!banner) return;
+  const button = $("#review-updates-apply");
+  const active = state.qcReviewDeferredPayload != null;
+  banner.classList.toggle("hidden", !active);
+  if (button) button.disabled = !active;
+}
+
+function registerReviewPlaybackWatchers(card) {
+  const candidateId = card.dataset.qcCandidateId;
+  const video = card.querySelector("video");
+  if (!video) return;
+  card.addEventListener("focusin", () => {
+    setReviewInteractionLocked(true);
+  });
+  video.addEventListener("play", () => {
+    state.qcReviewPlayingCandidates.add(candidateId);
+    setReviewInteractionLocked(true);
+  });
+  video.addEventListener("pause", () => {
+    state.qcReviewPlayingCandidates.delete(candidateId);
+    scheduleReviewInteractionRelease();
+  });
+  ["seeking", "seeked", "ratechange"].forEach((eventName) => {
+    video.addEventListener(eventName, () => {
+      setReviewInteractionLocked(true);
+      scheduleReviewInteractionRelease();
+    });
+  });
+  video.addEventListener("ended", () => {
+    state.qcReviewPlayingCandidates.delete(candidateId);
+    scheduleReviewInteractionRelease();
+  });
+  card.addEventListener("focusout", (event) => {
+    const next = event.relatedTarget;
+    if (!card.contains(next)) {
+      setReviewInteractionLocked(false);
+      scheduleReviewInteractionRelease();
+    }
+  });
+  card.querySelectorAll("[data-qc-decision]").forEach((button) => {
+    button.addEventListener("focusin", () => {
+      setReviewInteractionLocked(true);
+    });
+    button.addEventListener("blur", () => {
+      scheduleReviewInteractionRelease();
+    });
+  });
+}
+
+function renderQcReviewQueue(reviewDocument) {
   const panel = $("#qc-review-panel");
-  const pending = document?.pending || [];
-  panel.classList.toggle("hidden", !pending.length);
-  if (!document) return;
-  $("#qc-policy").textContent =
-    `quality_control_enabled=${document.quality_control_enabled} · ` +
-    `auto_advance_pass=${document.auto_advance_pass}`;
-  $("#qc-review-queue").innerHTML = pending.map((item) => {
+  const pending = reviewDocument?.pending || [];
+  const status = state.status?.qc_progress;
+  const isAutomationActive = Boolean(
+    status?.enabled
+      && (status.counts?.pending_generation
+        || status.counts?.generating
+        || status.counts?.pending_qc
+        || status.counts?.qc_running),
+  );
+  const emptyMessage = "No scenes are currently awaiting human approval.";
+  const queue = $("#qc-review-queue");
+  const emptyState = $("#qc-review-empty");
+  panel?.classList.remove("hidden");
+  const snapshot = captureReviewCandidateState();
+  if (reviewDocument) {
+    state.qcReviewPolicyText = `quality_control_enabled=${reviewDocument.quality_control_enabled} · auto_advance_pass=${reviewDocument.auto_advance_pass}`;
+  }
+  $("#qc-policy").textContent = state.qcReviewPolicyText || "";
+  if (!pending.length) {
+    queue.innerHTML = "";
+    if (emptyState) {
+      emptyState.classList.remove("hidden");
+      emptyState.textContent = isAutomationActive
+        ? `${emptyMessage} Automatic QC and repair are still running.`
+        : emptyMessage;
+    }
+    return;
+  }
+  if (emptyState) emptyState.classList.add("hidden");
+  queue.innerHTML = pending.map((item) => {
     const errors = qcErrorRows(item.suspect_windows);
     const comparison = item.prompt_comparison;
     const b1Review = comparison ? `
@@ -52,7 +210,7 @@ function renderQcReviewQueue() {
         <details><summary>Unified prompt diff</summary><pre class="qc-prompt-diff">${escapeHtml(comparison.unified_diff)}</pre></details>
         <p class="muted">Read-only comparison. This screen permits APPROVE / REJECT / HOLD only.</p>
       </section>` : "";
-    return `<article class="qc-review-card">
+    return `<article class="qc-review-card" data-qc-candidate-id="${attribute(item.candidate_id)}">
       <div class="qc-review-card-heading">
         <div>
           <strong>${escapeHtml(item.job_id)} · Scene ${escapeHtml(item.scene_id)}</strong>
@@ -83,28 +241,77 @@ function renderQcReviewQueue() {
   $$('[data-qc-decision]').forEach((button) =>
     button.addEventListener("click", submitQcDecision),
   );
+  $$("#qc-review-queue [data-qc-candidate-id]").forEach((card) => {
+    registerReviewPlaybackWatchers(card);
+  });
+  restoreReviewCandidateState(snapshot);
+  state.qcReview = reviewDocument;
 }
 
-async function loadQcReviewQueue() {
-  state.qcReview = await api("/api/qc/review-queue");
-  renderQcReviewQueue();
+function applyReviewQueuePayload(reviewDocument, options = {}) {
+  const nextFingerprint = reviewDocument?.pending_fingerprint || null;
+  const hasChanges = nextFingerprint !== state.qcReviewFingerprint;
+  if (!hasChanges && !options.force) {
+    return;
+  }
+  const locked = isReviewInteractionLocked();
+  if (!options.force && locked) {
+    state.qcReviewDeferredPayload = reviewDocument;
+    renderReviewUpdateBanner();
+    return;
+  }
+  renderQcReviewQueue(reviewDocument);
+  state.qcReviewFingerprint = nextFingerprint;
+  if (!options.fromDeferred) {
+    state.qcReview = reviewDocument;
+  }
+  state.qcReviewDeferredPayload = null;
+  renderReviewUpdateBanner();
+}
+
+async function loadQcReviewQueue({force = false} = {}) {
+  if (reviewPollInFlight) return;
+  reviewPollInFlight = true;
+  try {
+    const reviewDocument = await api("/api/qc/review-queue");
+    state.reviewDisconnected = false;
+    updateReviewDisconnectedIndicator(false);
+    applyReviewQueuePayload(reviewDocument, {force});
+  } catch (error) {
+    state.reviewDisconnected = true;
+    updateReviewDisconnectedIndicator(true);
+    console.warn("Could not refresh the QC review queue.", error);
+  } finally {
+    reviewPollInFlight = false;
+  }
+}
+
+function startQcReviewPolling() {
+  if (qcReviewRefreshTimer != null) return;
+  qcReviewRefreshTimer = setInterval(() => {
+    void loadQcReviewQueue();
+  }, REVIEW_QUEUE_POLL_MS);
+}
+
+async function applyDeferredReviewUpdate() {
+  if (!state.qcReviewDeferredPayload) return;
+  const deferred = state.qcReviewDeferredPayload;
+  state.qcReviewDeferredPayload = null;
+  applyReviewQueuePayload(deferred, {force: true});
 }
 
 function scheduleQcReviewRefresh() {
-  if (qcReviewRefreshTimer != null) return;
-  qcReviewRefreshTimer = setTimeout(async () => {
-    qcReviewRefreshTimer = null;
-    try {
-      await loadQcReviewQueue();
-    } catch (error) {
-      console.warn("Could not refresh the QC review queue.", error);
-    }
-  }, 250);
+  startQcReviewPolling();
 }
 
 async function submitQcDecision(event) {
   const button = event.currentTarget;
-  button.disabled = true;
+  const candidateId = button?.dataset?.candidateId;
+  if (!candidateId) return;
+  const relatedButtons = $$(`[data-candidate-id="${attribute(candidateId)}"][data-qc-decision]`);
+  relatedButtons.forEach((item) => {
+    item.disabled = true;
+  });
   const path = `/api/qc/jobs/${encodeURIComponent(button.dataset.jobId)}` +
     `/scenes/${encodeURIComponent(button.dataset.sceneId)}` +
     `/candidates/${encodeURIComponent(button.dataset.candidateId)}/decision`;
@@ -119,10 +326,15 @@ async function submitQcDecision(event) {
       HOLD: "Held",
     }[button.dataset.qcDecision];
     toast(`${action} QC candidate.`);
-    await loadQcReviewQueue();
+    relatedButtons.forEach((item) => {
+      item.disabled = false;
+    });
+    await loadQcReviewQueue({force: true});
   } catch (error) {
     toast(error.message, true);
-    button.disabled = false;
+    relatedButtons.forEach((item) => {
+      item.disabled = false;
+    });
   }
 }
 
@@ -1418,15 +1630,115 @@ async function refreshChunkProgress(progress) {
   }
 }
 
+function updateConnectionIndicator(isDisconnected) {
+  const indicator = $("#status-connection");
+  const status = $("#status");
+  if (!indicator || !status) return;
+  indicator.classList.toggle("hidden", !isDisconnected);
+}
+
+function updateReviewDisconnectedIndicator(isDisconnected) {
+  const indicator = $("#qc-review-disconnected");
+  if (!indicator) return;
+  indicator.classList.toggle("hidden", !isDisconnected);
+}
+
+function updateQcProgress(progress) {
+  const panel = $("#qc-progress-panel");
+  if (!panel) return;
+  state.qcProgress = progress || null;
+  const noJob = !progress || !progress.enabled;
+  panel.classList.remove("hidden");
+  const stage = progress?.stage_label || (noJob ? "No active QC job." : "");
+  const counts = progress?.counts || {};
+  const resolved = progress?.resolved_scenes || 0;
+  const total = progress?.total_scenes || 0;
+  const percent = Math.max(0, Math.min(100, Number(progress?.progress_percent || 0)));
+  const actions = progress?.active_scene_id == null
+    ? "Idle"
+    : `Active scene ${progress.active_scene_id}` +
+      (progress.active_tier
+        ? ` (${progress.active_tier} / revision ${progress.active_revision ?? "?"})`
+        : "");
+  const lastActivityMs = progress?.last_activity_at
+    ? Date.parse(progress.last_activity_at)
+    : Number.NaN;
+  const hasLastActivity = Number.isFinite(lastActivityMs);
+  const secondsAgo = hasLastActivity
+    ? Math.max(0, Math.floor((Date.now() - lastActivityMs) / 1000))
+    : null;
+  const lastLabel = secondsAgo == null
+    ? "Last progress: unknown"
+    : secondsAgo >= 60
+      ? `Last progress: ${Math.floor(secondsAgo / 60)} minute${Math.floor(secondsAgo / 60) === 1 ? "" : "s"} ago`
+      : `Last progress: ${secondsAgo} second${secondsAgo === 1 ? "" : "s"} ago`;
+
+  $("#qc-progress-stage").textContent = stage;
+  const stageLabel = $("#qc-progress-stage-label");
+  if (stageLabel) {
+    stageLabel.textContent = stage;
+  }
+  $("#qc-progress-active").textContent = noJob ? "No active QC job." : actions;
+  $("#qc-progress-count").textContent = `${percent}% complete`;
+  $("#qc-progress-rendering").textContent = `rendering: ${counts.generating || 0}`;
+  $("#qc-progress-waiting-render").textContent = `waiting for render: ${counts.pending_generation || 0}`;
+  $("#qc-progress-waiting-qc").textContent = `waiting for Qwen: ${counts.pending_qc || 0}`;
+  $("#qc-progress-qwen-active").textContent = `Qwen active: ${counts.qc_running || 0}`;
+  $("#qc-progress-passed").textContent = `passed: ${counts.pass_pending_human || 0}`;
+  $("#qc-progress-held").textContent = `held: ${counts.hold_for_review || 0}`;
+  $("#qc-progress-decisions").textContent = `Pass: ${progress?.decisions?.pass || 0} · Fail: ${progress?.decisions?.fail || 0} · Uncertain: ${progress?.decisions?.uncertain || 0}`;
+  $("#qc-progress-ratio").textContent = `${resolved} of ${total} scenes resolved`;
+  $("#qc-progress-bar").style.width = `${percent}%`;
+  $("#qc-progress-last-activity").textContent = lastLabel;
+
+  const activeStages = new Set([
+    "repair_generation",
+    "vlm_evaluation",
+    "repair_generation_queued",
+    "vlm_evaluation_queued",
+    "human_review",
+    "qc_transition",
+  ]);
+  const warning = $("#qc-progress-warning");
+  if (!warning) return;
+  let warningText = "";
+  if (!noJob && secondsAgo != null && secondsAgo >= 300 && secondsAgo < 600) {
+    warningText = "This step is taking longer than usual.";
+  } else if (
+    !noJob
+    && secondsAgo != null
+    && secondsAgo >= 600
+    && activeStages.has(progress.stage || "")
+  ) {
+    const minutes = Math.floor(secondsAgo / 60);
+    warningText = `No durable progress for ${minutes} minute${minutes === 1 ? "" : "s"}. The process may still be computing; check ComfyUI or logs before restarting.`;
+  }
+  warning.textContent = warningText;
+  panel.classList.toggle("qc-progress-active", !noJob);
+}
+
+function isQcProgressActive(progress) {
+  return Boolean(progress?.enabled && progress?.pipeline_state);
+}
+
 function updateStatus(status) {
   const previousStatus = state.status;
   state.status = status;
+  if (state.statusDisconnected) {
+    state.statusDisconnected = false;
+    updateConnectionIndicator(false);
+  }
   const element = $("#status");
+  const stageClass = !status.comfyui_healthy || status.pipeline_error
+    ? "error"
+    : status.active_render
+      ? "busy"
+      : "healthy";
   const intake = typeof status.hold_new_jobs_for_review === "boolean"
     ? (status.hold_new_jobs_for_review ? "review hold" : "auto-start")
     : "intake unknown";
   element.textContent = `${humanize(status.pipeline_state)}${status.job_id ? ` · ${status.job_id}` : ""} · ${intake} · Comfy ${status.comfyui_running}/${status.comfyui_pending}`;
-  element.className = `status-pill ${!status.comfyui_healthy || status.pipeline_error ? "error" : status.active_render ? "busy" : "healthy"}`;
+  element.className = `status-pill ${stageClass}`;
   $("#approve-job").classList.toggle("hidden", status.pipeline_state !== "awaiting_review" || status.job_id !== state.selectedJob);
   const canCancel = Boolean(status.can_cancel_current_project);
   const cancelButton = $("#cancel-current-project");
@@ -1448,16 +1760,45 @@ function updateStatus(status) {
     void refreshChunkProgress(previousProgress);
   }
   state.activeChunkProgress = nextProgress;
+  updateQcProgress(status.qc_progress || null);
   if (
     !previousStatus
     || previousStatus.pipeline_state !== status.pipeline_state
     || previousStatus.job_id !== status.job_id
     || status.pipeline_state === "awaiting_qc_review"
   ) {
-    scheduleQcReviewRefresh();
+    void loadQcReviewQueue({force: true});
   }
   if (state.working) renderProductionProfile();
   mobileView();
+}
+
+async function loadStatus() {
+  if (statusPollInFlight) return;
+  statusPollInFlight = true;
+  try {
+    await loadStatusFromServer();
+  } catch (error) {
+    state.statusDisconnected = true;
+    updateConnectionIndicator(true);
+    console.warn("Could not refresh status.", error);
+  } finally {
+    statusPollInFlight = false;
+  }
+}
+
+async function loadStatusFromServer() {
+  const status = await api("/api/status");
+  state.statusDisconnected = false;
+  updateConnectionIndicator(false);
+  updateStatus(status);
+}
+
+function startStatusPolling() {
+  if (statusRefreshTimer != null) return;
+  statusRefreshTimer = setInterval(() => {
+    void loadStatus();
+  }, STATUS_POLL_MS);
 }
 
 async function cancelCurrentProject() {
@@ -1529,6 +1870,8 @@ $$('input[name="remake-mode"]').forEach((input) => input.addEventListener("chang
 $("#submit-batch").addEventListener("click", submitDrafts);
 $("#queue-after").addEventListener("click", () => submitPendingBatch("after_current"));
 $("#interrupt-now").addEventListener("click", () => submitPendingBatch("interrupt_current"));
+$("#refresh-reviews").addEventListener("click", () => loadQcReviewQueue({force: true}));
+$("#review-updates-apply").addEventListener("click", applyDeferredReviewUpdate);
 $("#cancel-modal").addEventListener("click", () => $("#collision-modal").classList.add("hidden"));
 $("#approve-job").addEventListener("click", async () => {
   try {
@@ -1547,12 +1890,19 @@ async function init() {
     toast(`Live sampler options unavailable: ${error.message}`, true);
   }
   await loadJobs();
+  await loadStatus();
   await loadQcReviewQueue();
   mobileView();
-  const stream = new EventSource("/api/events");
-  stream.onmessage = (event) => updateStatus(JSON.parse(event.data));
-  stream.onerror = () => updateStatus({ pipeline_state: "disconnected", comfyui_healthy: false, comfyui_running: 0, comfyui_pending: 0 });
+  startStatusPolling();
+  startQcReviewPolling();
+  scheduleQcReviewRefresh();
 }
+
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) return;
+  void loadStatus();
+  void loadQcReviewQueue();
+});
 
 window.addEventListener("resize", mobileView);
 mobileQuery.addEventListener?.("change", mobileView);

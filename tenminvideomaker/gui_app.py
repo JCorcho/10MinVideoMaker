@@ -625,7 +625,7 @@ def create_gui_app(
         async def stream():
             while True:
                 yield "data: " + json.dumps(controller.status_document()) + "\n\n"
-                await asyncio.sleep(2)
+                await asyncio.sleep(1.5)
 
         return StreamingResponse(stream(), media_type="text/event-stream")
 

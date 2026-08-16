@@ -13,6 +13,7 @@
       <h1>10MinVideoMaker</h1>
     </div>
     <div id="status" class="status-pill">Connecting…</div>
+    <span id="status-connection" class="connection-indicator hidden" role="status" aria-live="polite">Status disconnected</span>
     <button id="cancel-current-project" class="danger hidden" type="button" title="Cancel the held project and look for the next Gmail job">
       Cancel project
     </button>
@@ -22,13 +23,47 @@
     </button>
   </header>
 
+  <section id="qc-progress-panel" class="qc-progress-panel hidden" aria-live="polite">
+    <div class="qc-progress-heading">
+      <h2>QC / Repair Activity</h2>
+      <span id="qc-progress-stage-label" class="qc-progress-stage-label">No active QC job.</span>
+    </div>
+    <p id="qc-progress-stage" class="qc-progress-stage"></p>
+    <p id="qc-progress-active" class="muted"></p>
+    <div id="qc-progress-meter" class="qc-progress-meter">
+      <div id="qc-progress-bar" class="qc-progress-bar" style="width: 0%;"></div>
+    </div>
+    <p id="qc-progress-ratio">0 of 0 scenes resolved</p>
+    <p id="qc-progress-count">progress: 0%</p>
+    <div class="qc-progress-grid">
+      <div id="qc-progress-rendering">rendering: 0</div>
+      <div id="qc-progress-waiting-render">waiting for render: 0</div>
+      <div id="qc-progress-waiting-qc">waiting for Qwen: 0</div>
+      <div id="qc-progress-qwen-active">Qwen active: 0</div>
+      <div id="qc-progress-passed">passed: 0</div>
+      <div id="qc-progress-held">held: 0</div>
+    </div>
+    <p id="qc-progress-decisions" class="qc-progress-decisions">PASS: 0 · FAIL: 0 · UNCERTAIN: 0</p>
+    <p id="qc-progress-last-activity" class="muted">Last progress: unknown</p>
+    <p id="qc-progress-warning" class="muted qc-progress-warning" aria-live="polite"></p>
+  </section>
+
   <section id="qc-review-panel" class="qc-review-panel hidden" aria-live="polite">
     <div class="qc-review-heading">
       <div>
         <p class="eyebrow">QC is CANARY / HUMAN APPROVAL REQUIRED</p>
         <h2>Pending VLM-QC approvals</h2>
+        <p id="qc-review-empty" class="muted hidden"></p>
       </div>
       <p id="qc-policy" class="muted"></p>
+    </div>
+    <div class="qc-review-tools">
+      <button id="refresh-reviews" class="secondary" type="button">Refresh approvals</button>
+      <span id="qc-review-disconnected" class="connection-indicator hidden" role="status" aria-live="polite">Review updates disconnected</span>
+    </div>
+    <div id="review-updates-banner" class="review-updates-banner hidden">
+      <span>Review updates available</span>
+      <button id="review-updates-apply" class="secondary" type="button">Apply updates</button>
     </div>
     <div id="qc-review-queue" class="qc-review-queue"></div>
   </section>

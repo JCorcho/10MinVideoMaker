@@ -9,6 +9,7 @@ import json
 import logging
 from pathlib import Path
 import threading
+from datetime import UTC, datetime
 from typing import Any, Mapping
 
 from .assembly import AssemblyError, validate_video_profile
@@ -163,6 +164,47 @@ def _read_json_object(path: Path) -> dict[str, Any]:
     return dict(document) if isinstance(document, Mapping) else {}
 
 
+def _to_utc_epoch(value: Any) -> float | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.timestamp()
+
+
+def _format_timestamp(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    return value
+
+
+def _most_recent_timestamp(values: list[str]) -> str | None:
+    best: tuple[float, str] | None = None
+    for value in values:
+        epoch = _to_utc_epoch(value)
+        if epoch is None:
+            continue
+        if best is None or epoch > best[0]:
+            best = (epoch, value)
+    return best[1] if best else None
+
+
+def _review_row_fingerprint(row: Mapping[str, Any]) -> tuple[str, ...]:
+    return (
+        str(row.get("job_id", "")),
+        str(row.get("scene_id", "")),
+        str(row.get("candidate_id", "")),
+        str(row.get("revision", "")),
+        str(row.get("tier", "")),
+        str(row.get("candidate_state", "")),
+        str(row.get("video_url", "")),
+    )
+
+
 class SupervisorController:
     """Run Gmail/automatic work and queued remakes through one worker."""
 
@@ -281,7 +323,17 @@ class SupervisorController:
         for job_record in review_jobs:
             job = self.store.load_job(job_record.job_id)
             titles = {scene.scene_id: scene.title for scene in job.scenes}
-            all_candidates = self.store.qc_candidates(job.job_id)
+            all_candidates = tuple(
+                sorted(
+                    self.store.qc_candidates(job.job_id),
+                    key=lambda item: (
+                        item.scene_id,
+                        item.revision,
+                        item.created_at,
+                        item.candidate_id,
+                    ),
+                )
+            )
             by_scene: dict[int, list[Any]] = {}
             for item in all_candidates:
                 by_scene.setdefault(item.scene_id, []).append(item)
@@ -374,47 +426,49 @@ class SupervisorController:
                             ) or "The prior A1 candidate did not pass QC.",
                             "defects": parent_defects,
                         }
-                pending.append(
-                    {
-                        "job_id": job.job_id,
-                        "scene_id": candidate.scene_id,
-                        "scene_title": titles.get(candidate.scene_id, ""),
-                        "candidate_id": candidate.candidate_id,
-                        "revision": candidate.revision,
-                        "tier": candidate.tier.value,
-                        "video_url": (
-                            f"/api/media/{job.job_id}/{candidate.scene_id}/"
-                            f"{candidate.revision}/video"
-                        ),
-                        "prompt": candidate.current_prompt,
-                        "prompt_comparison": _prompt_comparison(candidate),
-                        "repair_motivation": repair_motivation,
-                        "human_gate_required": True,
-                        "seed": str(candidate.current_seed),
-                        "decision": evaluation.normalized_decision.value,
-                        "confidence": min(confidences) if confidences else None,
-                        "summary": summaries[-1] if summaries else "QC PASS",
-                        "suspect_windows": windows,
-                        "evaluator": evaluator,
-                        "effective_config_sha256": (
-                            evaluation.effective_config_sha256
-                        ),
-                        "prompt_version": evaluation.prompt_version,
-                        "prompt_sha256": evaluation.prompt_sha256,
-                        "evaluation_id": evaluation.evaluation_id,
-                        "history": [
-                            {
-                                "candidate_id": prior.candidate_id,
-                                "revision": prior.revision,
-                                "tier": prior.tier.value,
-                                "state": prior.state.value,
-                                "seed": str(prior.current_seed),
-                            }
-                            for prior in by_scene[candidate.scene_id]
-                            if prior.candidate_id != candidate.candidate_id
-                        ],
-                    }
-                )
+            pending.append(
+                {
+                    "job_id": job.job_id,
+                    "scene_id": candidate.scene_id,
+                    "scene_title": titles.get(candidate.scene_id, ""),
+                    "candidate_id": candidate.candidate_id,
+                    "revision": candidate.revision,
+                    "tier": candidate.tier.value,
+                    "candidate_state": candidate.state.value,
+                    "video_url": (
+                        f"/api/media/{job.job_id}/"
+                        f"{candidate.scene_id}/"
+                        f"{candidate.revision}/video"
+                    ),
+                    "prompt": candidate.current_prompt,
+                    "prompt_comparison": _prompt_comparison(candidate),
+                    "repair_motivation": repair_motivation,
+                    "human_gate_required": True,
+                    "seed": str(candidate.current_seed),
+                    "decision": evaluation.normalized_decision.value,
+                    "confidence": min(confidences) if confidences else None,
+                    "summary": summaries[-1] if summaries else "QC PASS",
+                    "suspect_windows": windows,
+                    "evaluator": evaluator,
+                    "effective_config_sha256": (
+                        evaluation.effective_config_sha256
+                    ),
+                    "prompt_version": evaluation.prompt_version,
+                    "prompt_sha256": evaluation.prompt_sha256,
+                    "evaluation_id": evaluation.evaluation_id,
+                    "history": [
+                        {
+                            "candidate_id": prior.candidate_id,
+                            "revision": prior.revision,
+                            "tier": prior.tier.value,
+                            "state": prior.state.value,
+                            "seed": str(prior.current_seed),
+                        }
+                        for prior in by_scene[candidate.scene_id]
+                        if prior.candidate_id != candidate.candidate_id
+                    ],
+                }
+            )
         return {
             "banner": "QC is CANARY / HUMAN APPROVAL REQUIRED",
             "quality_control_enabled": bool(
@@ -424,6 +478,258 @@ class SupervisorController:
                 getattr(settings, "auto_advance_pass", False)
             ),
             "pending": pending,
+            "pending_fingerprint": _document_sha256(
+                sorted(
+                    (
+                        _review_row_fingerprint(item)
+                        for item in (
+                            {
+                                "job_id": item["job_id"],
+                                "scene_id": item["scene_id"],
+                                "candidate_id": item["candidate_id"],
+                                "revision": item["revision"],
+                                "tier": item["tier"],
+                                "candidate_state": item["candidate_state"],
+                                "video_url": item["video_url"],
+                            } for item in pending
+                        )
+                    ),
+                    key=lambda item: (
+                        item[0],
+                        item[1],
+                        item[4],
+                        item[2],
+                        item[3],
+                        item[5],
+                        item[6],
+                    ),
+                )
+            ),
+        }
+
+    def qc_progress_document(self) -> dict[str, Any]:
+        qc_controller = getattr(self.supervisor, "qc_controller", None)
+        settings = getattr(qc_controller, "settings", None)
+        snapshot = self.store.snapshot()
+        job_id = snapshot.job_id
+        enabled = bool(getattr(settings, "quality_control_enabled", False))
+
+        if not enabled or not job_id:
+            return {
+                "enabled": False,
+                "job_id": job_id,
+                "pipeline_state": snapshot.state.value,
+                "total_scenes": 0,
+                "resolved_scenes": 0,
+                "progress_percent": 0,
+                "stage": snapshot.state.value,
+                "stage_label": "No active QC job.",
+                "active_scene_id": snapshot.active_scene_id,
+                "active_tier": None,
+                "active_revision": None,
+                "counts": {
+                    "pending_generation": 0,
+                    "generating": 0,
+                    "pending_qc": 0,
+                    "qc_running": 0,
+                    "pass_pending_human": 0,
+                    "hold_for_review": 0,
+                    "accepted": 0,
+                    "superseded": 0,
+                },
+                "decisions": {
+                    "pass": 0,
+                    "fail": 0,
+                    "uncertain": 0,
+                },
+                "last_activity_at": None,
+            }
+
+        total_scenes = 0
+        for item in self.store.list_jobs():
+            if item.job_id == job_id:
+                total_scenes = int(item.scene_count)
+                break
+
+        candidates = self.store.qc_candidates(job_id)
+        counts = {
+            "pending_generation": 0,
+            "generating": 0,
+            "pending_qc": 0,
+            "qc_running": 0,
+            "pass_pending_human": 0,
+            "hold_for_review": 0,
+            "accepted": 0,
+            "superseded": 0,
+        }
+        decisions = {"pass": 0, "fail": 0, "uncertain": 0}
+        timestamps: list[str] = []
+        by_scene: dict[int, list[Any]] = {}
+        generating_candidates: list[Any] = []
+        qc_running_candidates: list[Any] = []
+        pending_generation_candidates: list[Any] = []
+        pending_qc_candidates: list[Any] = []
+        latest_candidates: dict[int, Any] = {}
+
+        for candidate in candidates:
+            by_scene.setdefault(candidate.scene_id, []).append(candidate)
+            timestamps.append(candidate.updated_at)
+            if candidate.state in {
+                QcCandidateState.PENDING_GENERATION,
+                QcCandidateState.GENERATING,
+                QcCandidateState.PENDING_QC,
+                QcCandidateState.QC_RUNNING,
+                QcCandidateState.PASS_PENDING_HUMAN,
+                QcCandidateState.HOLD_FOR_REVIEW,
+                QcCandidateState.ACCEPTED,
+                QcCandidateState.SUPERSEDED,
+            }:
+                counts.update(
+                    {
+                        "pending_generation": counts["pending_generation"]
+                        + (candidate.state == QcCandidateState.PENDING_GENERATION),
+                        "generating": counts["generating"]
+                        + (candidate.state == QcCandidateState.GENERATING),
+                        "pending_qc": counts["pending_qc"]
+                        + (candidate.state == QcCandidateState.PENDING_QC),
+                        "qc_running": counts["qc_running"]
+                        + (candidate.state == QcCandidateState.QC_RUNNING),
+                        "pass_pending_human": counts["pass_pending_human"]
+                        + (candidate.state == QcCandidateState.PASS_PENDING_HUMAN),
+                        "hold_for_review": counts["hold_for_review"]
+                        + (candidate.state == QcCandidateState.HOLD_FOR_REVIEW),
+                        "accepted": counts["accepted"]
+                        + (candidate.state == QcCandidateState.ACCEPTED),
+                        "superseded": counts["superseded"]
+                        + (candidate.state == QcCandidateState.SUPERSEDED),
+                    }
+                )
+
+            if candidate.state == QcCandidateState.GENERATING:
+                generating_candidates.append(candidate)
+            elif candidate.state == QcCandidateState.QC_RUNNING:
+                qc_running_candidates.append(candidate)
+            elif candidate.state == QcCandidateState.PENDING_GENERATION:
+                pending_generation_candidates.append(candidate)
+            elif candidate.state == QcCandidateState.PENDING_QC:
+                pending_qc_candidates.append(candidate)
+
+            latest = latest_candidates.get(candidate.scene_id)
+            if latest is None or (
+                candidate.revision > latest.revision
+                or (
+                    candidate.revision == latest.revision
+                    and candidate.created_at >= latest.created_at
+                )
+            ):
+                latest_candidates[candidate.scene_id] = candidate
+
+            latest_evaluation = None
+            for evaluation in self.store.qc_evaluations(candidate.candidate_id):
+                timestamps.append(evaluation.completed_at or evaluation.started_at)
+                if evaluation.state == "COMPLETE":
+                    latest_evaluation = evaluation
+            if latest_evaluation is None:
+                continue
+            if latest_evaluation.normalized_decision is None:
+                continue
+            if latest_evaluation.normalized_decision.value == "PASS":
+                decisions["pass"] += 1
+            elif latest_evaluation.normalized_decision.value == "FAIL":
+                decisions["fail"] += 1
+            elif latest_evaluation.normalized_decision.value == "UNCERTAIN":
+                decisions["uncertain"] += 1
+
+        resolved_scenes = 0
+        for scene_id, scene_candidates in by_scene.items():
+            latest = latest_candidates.get(scene_id)
+            if latest is None:
+                continue
+            latest_state = latest.state
+            unresolved = latest_state == QcCandidateState.SUPERSEDED and (
+                any(
+                    item.state in {
+                        QcCandidateState.GENERATING,
+                        QcCandidateState.PENDING_GENERATION,
+                        QcCandidateState.PENDING_QC,
+                        QcCandidateState.QC_RUNNING,
+                    }
+                    for item in scene_candidates
+                    if item.candidate_id != latest.candidate_id
+                )
+            )
+            if unresolved:
+                continue
+            if latest_state in {
+                QcCandidateState.PASS_PENDING_HUMAN,
+                QcCandidateState.HOLD_FOR_REVIEW,
+                QcCandidateState.ACCEPTED,
+            }:
+                resolved_scenes += 1
+
+        progress_scene = (resolved_scenes / total_scenes) * 100 if total_scenes else 0
+        progress_percent = min(100, max(0, int(round(progress_scene))))
+        active_candidates = (
+            generating_candidates
+            or qc_running_candidates
+            or pending_generation_candidates
+            or pending_qc_candidates
+        )
+        active_scene_id = snapshot.active_scene_id
+        active_tier = None
+        active_revision = None
+        candidate_state: QcCandidateState | None = None
+        if active_candidates:
+            selected = max(
+                active_candidates,
+                key=lambda item: (item.updated_at, item.created_at, item.revision, item.scene_id),
+            )
+            active_scene_id = selected.scene_id
+            active_tier = selected.tier.value
+            active_revision = selected.revision
+            candidate_state = selected.state
+
+        if candidate_state == QcCandidateState.GENERATING:
+            stage = "repair_generation"
+            stage_label = (
+                f"Generating {active_tier} repair for scene {active_scene_id}"
+            )
+        elif candidate_state == QcCandidateState.QC_RUNNING:
+            stage = "vlm_evaluation"
+            stage_label = (
+                f"Qwen is evaluating scene {active_scene_id} ({active_tier})"
+            )
+        elif counts["pending_generation"]:
+            stage = "repair_generation_queued"
+            stage_label = f"{counts['pending_generation']} repair render(s) queued"
+        elif counts["pending_qc"]:
+            stage = "vlm_evaluation_queued"
+            stage_label = f"{counts['pending_qc']} video(s) queued for Qwen review"
+        elif snapshot.state == PipelineState.AWAITING_QC_REVIEW:
+            stage = "human_review"
+            stage_label = "Waiting for human approval"
+        elif snapshot.state == PipelineState.RUNNING_QC:
+            stage = "qc_transition"
+            stage_label = "Routing QC results and preparing the next step"
+        else:
+            stage = snapshot.state.value
+            stage_label = snapshot.state.value.replace("_", " ")
+
+        return {
+            "enabled": True,
+            "job_id": job_id,
+            "pipeline_state": snapshot.state.value,
+            "total_scenes": total_scenes,
+            "resolved_scenes": resolved_scenes,
+            "progress_percent": progress_percent,
+            "stage": stage,
+            "stage_label": stage_label,
+            "active_scene_id": active_scene_id,
+            "active_tier": active_tier,
+            "active_revision": active_revision,
+            "counts": counts,
+            "decisions": decisions,
+            "last_activity_at": _most_recent_timestamp(timestamps),
         }
 
     def interrupt_current_job(self) -> tuple[str, ...]:
@@ -539,6 +845,7 @@ class SupervisorController:
                 if manual_final is not None
                 else None
             ),
+            "qc_progress": self.qc_progress_document(),
         }
 
     def chunk_progress_document(
