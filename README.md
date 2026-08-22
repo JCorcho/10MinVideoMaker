@@ -172,13 +172,11 @@ thin wrappers over framework-independent services so the automation supervisor a
 - `examples/` — a safe example of the exact incoming JSON contract.
 - `tests/` — focused regression tests for node and routing behavior.
 - `Start 10MinVideoMaker.bat` — interactive setup, validation, ComfyUI health check, and supervisor launch.
-- `AI_DEVELOPMENT_RULES.md` — persistent implementation, validation, and documentation rules.
 
 ## Development baseline
 
-Before implementing a node or workflow, inspect its live contract through the local ComfyUI API. Validate workflow
-routing without rendering before running any expensive generation. See `AI_DEVELOPMENT_RULES.md` for the detailed
-project rules and verification commands.
+Before modifying a node or workflow, inspect its live contract through the local ComfyUI API. Validate workflow
+routing without rendering before running any expensive generation.
 
 Run `python scripts\validate_continuation_workflows.py` while ComfyUI is healthy to build representative
 initial/later/final continuation graphs, checkpoint-only decode, and delivery, then validate them against live
