@@ -19,6 +19,8 @@ from tenminvideomaker.review import scene_review_document, validate_scene_edit
 from tenminvideomaker.workflow_builder import (
     WorkflowBuildError,
     build_i2v_api_workflow,
+    build_i2v_draft_api_workflow,
+    build_i2v_final_api_workflow,
     build_t2i_api_workflow,
     validate_against_object_info,
     validate_api_graph,
@@ -32,6 +34,42 @@ def nodes_of_type(workflow, class_type):
 
 
 class WorkflowBuilderTests(unittest.TestCase):
+    def test_qc_draft_omits_expensive_second_pass_and_checkpoints_handoff(self) -> None:
+        frame = Path(r"D:\LTX_Supervisor_Storage\canary\frame.png")
+        build = build_i2v_draft_api_workflow(
+            self.job,
+            self.scene,
+            frame,
+            revision=3,
+            attempt_number=2,
+        )
+        titles = {node.get("_meta", {}).get("title") for node in build.api.values()}
+        self.assertIn("First LCM pass", titles)
+        self.assertIn("Checkpoint approved-draft video latent", titles)
+        self.assertIn("Checkpoint approved-draft audio latent", titles)
+        self.assertNotIn("Second LCM pass", titles)
+        self.assertFalse(nodes_of_type(build.api, "LatentUpscaleModelLoader"))
+        self.assertFalse(nodes_of_type(build.api, "LTXVLatentUpsamplerTiled"))
+        self.assertEqual(len(nodes_of_type(build.api, "SamplerCustom")), 1)
+
+    def test_qc_final_loads_approved_handoff_and_contains_only_second_pass(self) -> None:
+        frame = Path(r"D:\LTX_Supervisor_Storage\canary\frame.png")
+        build = build_i2v_final_api_workflow(
+            self.job,
+            self.scene,
+            frame,
+            revision=3,
+            attempt_number=2,
+        )
+        titles = {node.get("_meta", {}).get("title") for node in build.api.values()}
+        self.assertNotIn("First LCM pass", titles)
+        self.assertIn("Second LCM pass", titles)
+        self.assertIn("Load exact approved first-pass video latent", titles)
+        self.assertIn("Load exact approved first-pass audio latent", titles)
+        self.assertEqual(len(nodes_of_type(build.api, "SamplerCustom")), 1)
+        self.assertTrue(nodes_of_type(build.api, "LatentUpscaleModelLoader"))
+        self.assertTrue(nodes_of_type(build.api, "LTXVLatentUpsamplerTiled"))
+
     def test_reviewed_i2v_sampler_and_sigmas_reach_both_workflow_passes(self) -> None:
         job = parse_job_payload(payload())
         scene = job.scenes[0]

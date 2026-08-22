@@ -23,6 +23,7 @@ from .qc_backend import (
 )
 from .qc_config import QualityControlSettings
 from .qc_contracts import (
+    QcArtifactStage,
     QcCandidateState,
     QcDecision,
     QcError,
@@ -35,6 +36,7 @@ from .qc_repair import RepairGenerationError, schedule_a1_retry, schedule_b1_ret
 from .qc_video import sample_video_frames
 from .review import scene_review_document, validate_scene_edit
 from .state_store import (
+    canonical_draft_recipe_sha256,
     IncompleteLegacySelectionError,
     ManualFinalSceneSelection,
     PipelineState,
@@ -593,6 +595,19 @@ class Phase1QcController:
                     "revision_document_sha256": document_hash,
                     "source_frame_path": revision.frame_path,
                     "source_frame_sha256": frame_hash,
+                    "artifact_stage": (
+                        QcArtifactStage.DRAFT.value
+                        if Path(revision.video_path).name.casefold() == "draft.mp4"
+                        else QcArtifactStage.LEGACY_FINAL.value
+                    ),
+                    "recipe_sha256": (
+                        canonical_draft_recipe_sha256(
+                            document,
+                            source_frame_sha256=frame_hash,
+                        )
+                        if Path(revision.video_path).name.casefold() == "draft.mp4"
+                        else None
+                    ),
                 }
             )
         return self.store.ensure_original_qc_candidates(prepared)
@@ -929,6 +944,10 @@ class Phase1QcController:
         backend: Any,
         identity: BackendIdentity,
     ) -> QcEvaluationRecord:
+        if candidate.artifact_stage == QcArtifactStage.FINAL:
+            raise QcControllerError(
+                "FINAL artifacts are never sent through the ordinary Qwen draft-QC loop."
+            )
         source = Path(candidate.source_video_path)
         if not source.is_file() or _sha256_file(source) != candidate.source_video_sha256:
             raise QcControllerError("QC source video bytes changed after candidate binding.")
@@ -1114,6 +1133,25 @@ class Phase1QcController:
         seen_work_states: set[tuple[tuple[Any, ...], ...]] = set()
         while True:
             candidates = self.store.qc_candidates(job.job_id)
+            deferred = [
+                item
+                for item in candidates
+                if item.state == QcCandidateState.DEFERRED_AUTOMATED_REPAIR
+            ]
+            if deferred:
+                for item in deferred:
+                    self.store.set_qc_candidate_state(
+                        item.candidate_id,
+                        QcCandidateState.PENDING_QC,
+                        next_action="route_existing_evidence",
+                    )
+                continue
+            finals = [
+                item
+                for item in candidates
+                if item.state
+                in {QcCandidateState.FINAL_PENDING, QcCandidateState.FINAL_RENDERING}
+            ]
             generation = [
                 item for item in candidates
                 if item.state in {QcCandidateState.PENDING_GENERATION, QcCandidateState.GENERATING}
@@ -1125,7 +1163,7 @@ class Phase1QcController:
                     QcCandidateState.QC_RUNNING,
                 }
             ]
-            if not generation and not pending_before_generation:
+            if not generation and not pending_before_generation and not finals:
                 break
             work_state = tuple(
                 (
@@ -1144,6 +1182,15 @@ class Phase1QcController:
                     "QC durable work state repeated without progress; refusing a retry loop."
                 )
             seen_work_states.add(work_state)
+            if finals:
+                if self.qc_port_open():
+                    raise QcControllerError(
+                        "Qwen must be unloaded before approved FINAL rendering."
+                    )
+                supervisor.render_qc_finals(job, finals)
+                generated += len(finals)
+                supervisor.release_memory()
+                continue
             if generation:
                 if self.qc_port_open():
                     raise QcControllerError(

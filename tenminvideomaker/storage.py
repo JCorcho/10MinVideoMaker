@@ -188,6 +188,9 @@ class StorageLayout:
     def scene_clip_path(self, job_id: str, scene_id: int, revision: int = 1) -> Path:
         return self.revision_root(job_id, scene_id, revision) / "video.mp4"
 
+    def scene_draft_path(self, job_id: str, scene_id: int, revision: int = 1) -> Path:
+        return self.revision_root(job_id, scene_id, revision) / "draft.mp4"
+
     def generation_manifest_path(
         self,
         job_id: str,

@@ -43,6 +43,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 STORAGE = StorageLayout.configured()
 CHUNK_ARTIFACT_KINDS = [
     "stage1_handoff",
+    "stage1_audio",
     "stage2_video",
     "stage2_audio",
 ]

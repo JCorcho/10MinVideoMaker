@@ -45,7 +45,7 @@ from .contracts import (
 from .delivery import DiscordDeliverySettings
 from .mail import GmailClient, GmailPollingService
 from .qc_repair import RepairGenerationError
-from .qc_contracts import QcTier
+from .qc_contracts import QcArtifactStage, QcCandidateState, QcTier
 from .review import SceneWorkflowOverrides, scene_review_document, validate_scene_edit
 from .state_store import (
     JobState,
@@ -55,7 +55,12 @@ from .state_store import (
     QcCandidateRecord,
     SceneState,
 )
-from .workflow_builder import build_i2v_api_workflow, build_t2i_api_workflow
+from .workflow_builder import (
+    build_i2v_api_workflow,
+    build_i2v_draft_api_workflow,
+    build_i2v_final_api_workflow,
+    build_t2i_api_workflow,
+)
 from .storage import StorageLayout, write_json_atomic
 
 LOGGER = logging.getLogger("10MinVideoMaker.supervisor")
@@ -634,7 +639,7 @@ class PipelineSupervisor:
                     retryable=False,
                 ) from error
             frame_path = Path(revision.frame_path) if revision.frame_path else None
-            if candidate.tier == QcTier.B2:
+            if getattr(candidate, "tier", None) == QcTier.B2:
                 if frame_path is None:
                     raise RepairGenerationError(
                         candidate.candidate_id,
@@ -796,6 +801,7 @@ class PipelineSupervisor:
                     ),
                     deliver_to_discord=False,
                     continuation_route=use_continuation,
+                    artifact_stage=QcArtifactStage.DRAFT,
                 )
                 self._video_probe(rendered)
             except RepairGenerationError:
@@ -818,6 +824,106 @@ class PipelineSupervisor:
                 source_video_path=str(rendered),
                 source_video_sha256=self._sha256_path(rendered),
             )
+
+    def render_qc_finals(
+        self,
+        job: JobPayload,
+        candidates: Sequence[QcCandidateRecord],
+    ) -> None:
+        """Render approved drafts exactly once from their persisted first-pass latents."""
+        if not candidates:
+            return
+        preparation = self._resolve_assets(
+            job, scene_ids={candidate.scene_id for candidate in candidates}
+        )
+        if preparation.failures:
+            raise RepairGenerationError(
+                candidates[0].candidate_id,
+                "FINAL asset resolution failed: "
+                + "; ".join(
+                    error
+                    for errors in preparation.failures.values()
+                    for error in errors
+                ),
+                retryable=False,
+            )
+        for candidate in candidates:
+            revision = next(
+                item
+                for item in self.store.scene_revisions(job.job_id, candidate.scene_id)
+                if item.revision == candidate.revision
+            )
+            if not revision.frame_path or not Path(revision.frame_path).is_file():
+                raise RepairGenerationError(
+                    candidate.candidate_id,
+                    "Approved draft lost its immutable starting frame.",
+                    retryable=False,
+                )
+            validated = validate_scene_edit(job, candidate.scene_id, revision.parameters)
+            destination = self.storage.scene_clip_path(
+                job.job_id, candidate.scene_id, candidate.revision
+            )
+            final = self.store.ensure_qc_final_artifact(
+                candidate.candidate_id,
+                final_video_path=str(destination),
+            )
+            if final.state == "COMPLETE":
+                if (
+                    not destination.is_file()
+                    or self._sha256_path(destination) != final.final_video_sha256
+                ):
+                    raise RepairGenerationError(
+                        candidate.candidate_id,
+                        "Completed FINAL artifact failed integrity verification.",
+                        retryable=False,
+                    )
+                continue
+            self.store.update_qc_final_artifact(
+                candidate.candidate_id,
+                state="RENDERING",
+                prompt_id=final.prompt_id,
+            )
+            try:
+                build = build_i2v_final_api_workflow(
+                    validated.job,
+                    validated.scene,
+                    revision.frame_path,
+                    preparation.resolved_filenames,
+                    overrides=validated.workflow,
+                    revision=candidate.revision,
+                    attempt_number=1,
+                )
+                history = self.run_or_reclaim_prompt(
+                    build.api,
+                    timeout_seconds=self.settings.i2v_timeout_seconds,
+                    existing_prompt_id=final.prompt_id,
+                    prompt_id_callback=lambda prompt_id, candidate_id=candidate.candidate_id: (
+                        self.store.update_qc_final_artifact(
+                            candidate_id,
+                            state="RENDERING",
+                            prompt_id=prompt_id,
+                        )
+                    ),
+                )
+                metadata = find_video_output(history, build.output_node_id)
+                rendered = self.comfy.download_output(metadata, destination)
+                self._video_probe(rendered)
+                self.store.update_qc_final_artifact(
+                    candidate.candidate_id,
+                    state="COMPLETE",
+                    final_video_sha256=self._sha256_path(rendered),
+                )
+            except Exception as error:
+                self.store.update_qc_final_artifact(
+                    candidate.candidate_id,
+                    state="FAILED",
+                    error=str(error),
+                )
+                raise RepairGenerationError(
+                    candidate.candidate_id,
+                    "FINAL render failed: " + str(error),
+                    retryable=True,
+                ) from error
 
     @staticmethod
     def _sha256_path(path: str | Path) -> str:
@@ -1721,6 +1827,7 @@ class PipelineSupervisor:
         existing_prompt_id: str | None = None,
         deliver_to_discord: bool = True,
         continuation_route: bool | None = None,
+        artifact_stage: QcArtifactStage = QcArtifactStage.LEGACY_FINAL,
     ) -> Path:
         """Use one shared legacy/continuation route for jobs and GUI remakes."""
         use_continuation = (
@@ -1729,6 +1836,11 @@ class PipelineSupervisor:
             else continuation_route
         )
         output_path = Path(destination)
+        if use_continuation and artifact_stage != QcArtifactStage.LEGACY_FINAL:
+            raise ComfyHttpError(
+                "Adaptive draft/final continuation rendering must use the split "
+                "continuation checkpoint route."
+            )
         if use_continuation:
             if self.continuation_renderer is None:
                 raise ComfyHttpError(
@@ -1760,14 +1872,35 @@ class PipelineSupervisor:
             scene.scene_id,
             revision,
         )
-        build = build_i2v_api_workflow(
-            job,
-            scene,
-            frame_path,
-            resolved_lora_filenames,
-            delivery=self.delivery if deliver_to_discord else None,
-            overrides=overrides,
-        )
+        if artifact_stage == QcArtifactStage.DRAFT:
+            build = build_i2v_draft_api_workflow(
+                job,
+                scene,
+                frame_path,
+                resolved_lora_filenames,
+                overrides=overrides,
+                revision=revision,
+                attempt_number=1,
+            )
+        elif artifact_stage == QcArtifactStage.FINAL:
+            build = build_i2v_final_api_workflow(
+                job,
+                scene,
+                frame_path,
+                resolved_lora_filenames,
+                overrides=overrides,
+                revision=revision,
+                attempt_number=1,
+            )
+        else:
+            build = build_i2v_api_workflow(
+                job,
+                scene,
+                frame_path,
+                resolved_lora_filenames,
+                delivery=self.delivery if deliver_to_discord else None,
+                overrides=overrides,
+            )
         history = self.run_or_reclaim_prompt(
             build.api,
             timeout_seconds=self.settings.i2v_timeout_seconds,
@@ -1823,7 +1956,7 @@ class PipelineSupervisor:
         )
         if record.prompt_stage == "i2v_continuation":
             return True
-        if record.prompt_stage == "i2v_legacy":
+        if record.prompt_stage in {"i2v_legacy", "i2v_draft"}:
             return False
         if self.store.continuation_plan(job_id, scene.scene_id, 1) is not None:
             return True
@@ -1914,7 +2047,15 @@ class PipelineSupervisor:
             raise ComfyHttpError(
                 f"I2V requires a cached T2I frame for scene {scene.scene_id}."
             )
-        clip_path = self._clip_path(job.job_id, scene.scene_id)
+        qc_enabled = bool(
+            self.qc_controller is not None
+            and self.qc_controller.settings.quality_control_enabled
+        )
+        clip_path = (
+            self.storage.scene_draft_path(job.job_id, scene.scene_id, 1)
+            if qc_enabled and self.storage is not None
+            else self._clip_path(job.job_id, scene.scene_id)
+        )
         use_continuation = self._automatic_uses_continuation(job.job_id, scene)
         if (
             not use_continuation
@@ -1971,7 +2112,9 @@ class PipelineSupervisor:
         resume_continuation = use_continuation and record.i2v_attempts > 0
         resume_stage = resume_continuation or resume_legacy_prompt
         prompt_stage = (
-            "i2v_continuation" if use_continuation else "i2v_legacy"
+            "i2v_continuation"
+            if use_continuation
+            else ("i2v_draft" if qc_enabled else "i2v_legacy")
         )
         attempt = self.store.begin_scene_stage(
             job.job_id,
@@ -2005,6 +2148,11 @@ class PipelineSupervisor:
                 stage=prompt_stage,
             ),
             continuation_route=use_continuation,
+            artifact_stage=(
+                QcArtifactStage.DRAFT
+                if qc_enabled
+                else QcArtifactStage.LEGACY_FINAL
+            ),
         )
         self.store.set_scene_state(
             job.job_id,

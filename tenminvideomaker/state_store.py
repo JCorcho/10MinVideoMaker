@@ -15,6 +15,7 @@ from uuid import uuid4
 
 from .contracts import JobPayload, job_content_fingerprint, parse_job_payload
 from .qc_contracts import (
+    QcArtifactStage,
     QcCandidateState,
     QcDecision,
     QcHumanDecision,
@@ -289,6 +290,11 @@ class QcCandidateRecord:
     scene_id: int
     revision: int
     tier: QcTier
+    artifact_stage: QcArtifactStage
+    attempt_number: int
+    authority_tier: str
+    strategy: str
+    recipe_sha256: str | None
     parent_candidate_id: str | None
     source_video_path: str
     source_video_sha256: str | None
@@ -382,6 +388,55 @@ class QcHumanDecisionResult:
     decision: QcHumanDecisionRecord
     candidate: QcCandidateRecord
     replayed: bool
+
+
+@dataclass(frozen=True)
+class QcFinalArtifactRecord:
+    candidate_id: str
+    state: str
+    final_video_path: str
+    final_video_sha256: str | None
+    prompt_id: str | None
+    error: str | None
+    created_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True)
+class AdaptiveAttemptRecord:
+    attempt_id: str
+    candidate_id: str
+    parent_candidate_id: str | None
+    attempt_number: int
+    authority_tier: str
+    strategy: str
+    recipe_sha256: str
+    source_recipe_sha256: str | None
+    defect_family: str | None
+    intervention: Mapping[str, Any]
+    state: str
+    human_feedback: Mapping[str, Any] | None
+    created_at: str
+    updated_at: str
+
+
+def _adaptive_attempt_record(row: sqlite3.Row) -> AdaptiveAttemptRecord:
+    return AdaptiveAttemptRecord(
+        attempt_id=row["attempt_id"],
+        candidate_id=row["candidate_id"],
+        parent_candidate_id=row["parent_candidate_id"],
+        attempt_number=int(row["attempt_number"]),
+        authority_tier=row["authority_tier"],
+        strategy=row["strategy"],
+        recipe_sha256=row["recipe_sha256"],
+        source_recipe_sha256=row["source_recipe_sha256"],
+        defect_family=row["defect_family"],
+        intervention=_json_load(row["intervention_json"], {}),
+        state=row["state"],
+        human_feedback=_json_load(row["human_feedback_json"], None),
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
 
 
 @dataclass(frozen=True)
@@ -520,6 +575,30 @@ def _qc_generation_config_sha256(document: Mapping[str, Any]) -> str:
         "t2i": document.get("t2i"),
         "i2v": stable_i2v,
         "production_profile": document.get("production_profile"),
+    }
+    return hashlib.sha256(_canonical_json(identity).encode("utf-8")).hexdigest()
+
+
+def canonical_draft_recipe_sha256(
+    document: Mapping[str, Any],
+    *,
+    source_frame_sha256: str,
+    artifact_stage: QcArtifactStage = QcArtifactStage.DRAFT,
+) -> str:
+    """Hash every effective generation input before any GPU draft is queued."""
+    stage = QcArtifactStage(artifact_stage)
+    if stage == QcArtifactStage.FINAL:
+        raise StateTransitionError("A draft recipe cannot use the FINAL stage.")
+    identity = {
+        "schema_version": "adaptive_draft_recipe_v1",
+        "artifact_stage": stage.value,
+        "source_frame_sha256": _sha256(
+            source_frame_sha256, "source_frame_sha256"
+        ),
+        "t2i": document.get("t2i"),
+        "i2v": document.get("i2v"),
+        "production_profile": document.get("production_profile"),
+        "scene_context": document.get("scene_context"),
     }
     return hashlib.sha256(_canonical_json(identity).encode("utf-8")).hexdigest()
 
@@ -905,6 +984,46 @@ class PipelineStateStore:
                     PRIMARY KEY (job_id, step_key),
                     FOREIGN KEY (job_id) REFERENCES qc_finalization_plans(job_id)
                 );
+                CREATE TABLE IF NOT EXISTS qc_final_artifacts (
+                    candidate_id TEXT PRIMARY KEY,
+                    state TEXT NOT NULL,
+                    final_video_path TEXT NOT NULL,
+                    final_video_sha256 TEXT,
+                    prompt_id TEXT,
+                    error TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (candidate_id) REFERENCES qc_candidates(candidate_id)
+                );
+                CREATE TABLE IF NOT EXISTS qc_adaptive_attempts (
+                    attempt_id TEXT PRIMARY KEY,
+                    candidate_id TEXT NOT NULL UNIQUE,
+                    parent_candidate_id TEXT,
+                    attempt_number INTEGER NOT NULL CHECK (attempt_number >= 1),
+                    authority_tier TEXT NOT NULL,
+                    strategy TEXT NOT NULL,
+                    recipe_sha256 TEXT NOT NULL,
+                    source_recipe_sha256 TEXT,
+                    defect_family TEXT,
+                    intervention_json TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    human_feedback_json TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE (candidate_id, recipe_sha256),
+                    FOREIGN KEY (candidate_id) REFERENCES qc_candidates(candidate_id),
+                    FOREIGN KEY (parent_candidate_id) REFERENCES qc_candidates(candidate_id)
+                );
+                CREATE TABLE IF NOT EXISTS qc_repair_requests (
+                    request_id TEXT PRIMARY KEY,
+                    candidate_id TEXT NOT NULL UNIQUE,
+                    reason TEXT NOT NULL,
+                    human_feedback_json TEXT,
+                    state TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (candidate_id) REFERENCES qc_candidates(candidate_id)
+                );
                 CREATE INDEX IF NOT EXISTS idx_scene_chunks_state
                     ON scene_chunks(job_id, scene_id, revision, state, chunk_index);
                 CREATE INDEX IF NOT EXISTS idx_chunk_attempts_state
@@ -932,6 +1051,22 @@ class PipelineStateStore:
                     connection.execute(
                         f"ALTER TABLE qc_candidates ADD COLUMN {column} TEXT"
                     )
+            for column, declaration in (
+                ("artifact_stage", "TEXT NOT NULL DEFAULT 'LEGACY_FINAL'"),
+                ("attempt_number", "INTEGER NOT NULL DEFAULT 1"),
+                ("authority_tier", "TEXT NOT NULL DEFAULT 'A'"),
+                ("strategy", "TEXT NOT NULL DEFAULT 'legacy_original'"),
+                ("recipe_sha256", "TEXT"),
+            ):
+                if column not in qc_candidate_columns:
+                    connection.execute(
+                        f"ALTER TABLE qc_candidates ADD COLUMN {column} {declaration}"
+                    )
+            connection.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_qc_candidate_recipe "
+                "ON qc_candidates(job_id, scene_id, recipe_sha256) "
+                "WHERE recipe_sha256 IS NOT NULL"
+            )
             finalization_plan_columns = {
                 row["name"]
                 for row in connection.execute(
@@ -1480,10 +1615,10 @@ class PipelineStateStore:
                     raise StateTransitionError("T2I scene ownership must use stage t2i.")
             else:
                 stage = prompt_stage or "i2v_legacy"
-                if stage not in {"i2v_legacy", "i2v_continuation"}:
+                if stage not in {"i2v_legacy", "i2v_draft", "i2v_continuation"}:
                     raise StateTransitionError(
-                        "I2V scene ownership must use i2v_legacy or "
-                        "i2v_continuation."
+                        "I2V scene ownership must use i2v_legacy, i2v_draft, "
+                        "or i2v_continuation."
                     )
             resolved_prompt_id = prompt_id
             if (
@@ -1530,11 +1665,12 @@ class PipelineStateStore:
         if stage not in {
             "t2i",
             "i2v_legacy",
+            "i2v_draft",
             "i2v_continuation",
             "delivery",
         }:
             raise StateTransitionError(
-                "Scene prompt stage must be t2i, i2v_legacy, "
+                "Scene prompt stage must be t2i, i2v_legacy, i2v_draft, "
                 "i2v_continuation, or delivery."
             )
         self.initialize()
@@ -1888,6 +2024,11 @@ class PipelineStateStore:
             scene_id=int(row["scene_id"]),
             revision=int(row["revision"]),
             tier=QcTier(row["tier"]),
+            artifact_stage=QcArtifactStage(row["artifact_stage"]),
+            attempt_number=int(row["attempt_number"]),
+            authority_tier=row["authority_tier"],
+            strategy=row["strategy"],
+            recipe_sha256=row["recipe_sha256"],
             parent_candidate_id=row["parent_candidate_id"],
             source_video_path=row["source_video_path"],
             source_video_sha256=row["source_video_sha256"],
@@ -1927,6 +2068,11 @@ class PipelineStateStore:
         negative_prompt_sha256: str,
         state: QcCandidateState,
         next_action: str | None,
+        artifact_stage: QcArtifactStage = QcArtifactStage.LEGACY_FINAL,
+        attempt_number: int = 1,
+        authority_tier: str | None = None,
+        strategy: str | None = None,
+        recipe_sha256: str | None = None,
     ) -> QcCandidateRecord:
         candidate_id = _evidence_id(candidate_id, "candidate_id")
         _positive_revision(revision)
@@ -1952,6 +2098,17 @@ class PipelineStateStore:
         negative_prompt_sha256 = _sha256(
             negative_prompt_sha256, "negative_prompt_sha256"
         )
+        artifact_stage = QcArtifactStage(artifact_stage)
+        attempt_number = _positive_attempt_number(attempt_number)
+        authority_tier = _required_text(
+            authority_tier or ("A" if tier in {QcTier.ORIGINAL, QcTier.A1, QcTier.A2} else tier.value[:1]),
+            "authority_tier",
+        )
+        if authority_tier not in {"A", "B", "C", "D"}:
+            raise StateTransitionError("authority_tier must be A, B, C, or D.")
+        strategy = _required_text(strategy or tier.value.casefold(), "strategy")
+        if recipe_sha256 is not None:
+            recipe_sha256 = _sha256(recipe_sha256, "recipe_sha256")
         if tier == QcTier.ORIGINAL:
             if parent_candidate_id is not None:
                 raise StateTransitionError(
@@ -1965,7 +2122,7 @@ class PipelineStateStore:
             parent_candidate_id = _evidence_id(
                 parent_candidate_id, "parent_candidate_id"
             )
-        immutable = (
+        base_immutable = (
             candidate_id,
             job_id,
             scene_id,
@@ -1995,6 +2152,30 @@ class PipelineStateStore:
                 raise StateTransitionError(
                     f"QC candidate references unknown scene revision {revision}."
                 )
+            if recipe_sha256 is None and artifact_stage == QcArtifactStage.DRAFT:
+                frame_path = revision_row["frame_path"]
+                if not frame_path or not Path(frame_path).is_file():
+                    raise StateTransitionError(
+                        "A DRAFT candidate requires its immutable starting frame."
+                    )
+                try:
+                    revision_document = json.loads(revision_row["parameters_json"])
+                except (TypeError, json.JSONDecodeError) as error:
+                    raise StateTransitionError(
+                        "A DRAFT candidate requires a valid revision document."
+                    ) from error
+                recipe_sha256 = canonical_draft_recipe_sha256(
+                    revision_document,
+                    source_frame_sha256=_file_sha256(frame_path),
+                )
+            immutable = (
+                *base_immutable,
+                artifact_stage.value,
+                attempt_number,
+                authority_tier,
+                strategy,
+                recipe_sha256,
+            )
             revision_video_path = revision_row["video_path"]
             if (
                 revision_video_path is not None
@@ -2042,6 +2223,11 @@ class PipelineStateStore:
                     existing["current_seed"],
                     existing["negative_prompt"],
                     existing["negative_prompt_sha256"],
+                    existing["artifact_stage"],
+                    int(existing["attempt_number"]),
+                    existing["authority_tier"],
+                    existing["strategy"],
+                    existing["recipe_sha256"],
                 )
                 if stored != immutable:
                     raise StateTransitionError(
@@ -2057,10 +2243,23 @@ class PipelineStateStore:
                     original_prompt, current_prompt, original_seed, current_seed,
                     negative_prompt, negative_prompt_sha256, state, next_action,
                     infrastructure_failure_count, last_failure_json,
+                    artifact_stage, attempt_number, authority_tier, strategy,
+                    recipe_sha256,
                     created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (*immutable, state.value, next_action, now, now),
+                (
+                    *base_immutable,
+                    state.value,
+                    next_action,
+                    artifact_stage.value,
+                    attempt_number,
+                    authority_tier,
+                    strategy,
+                    recipe_sha256,
+                    now,
+                    now,
+                ),
             )
             if tier == QcTier.ORIGINAL:
                 try:
@@ -2139,6 +2338,12 @@ class PipelineStateStore:
             source_frame_sha256 = _sha256(
                 item.get("source_frame_sha256"), "source_frame_sha256"
             )
+            artifact_stage = QcArtifactStage(
+                item.get("artifact_stage", QcArtifactStage.LEGACY_FINAL.value)
+            )
+            recipe_sha256 = item.get("recipe_sha256")
+            if recipe_sha256 is not None:
+                recipe_sha256 = _sha256(recipe_sha256, "recipe_sha256")
             job_ids.add(job_id)
             if scene_id in scene_ids:
                 raise StateTransitionError(
@@ -2164,6 +2369,8 @@ class PipelineStateStore:
                     revision_document_sha256,
                     source_frame_path,
                     source_frame_sha256,
+                    artifact_stage.value,
+                    recipe_sha256,
                 )
             )
         if len(job_ids) != 1:
@@ -2313,11 +2520,26 @@ class PipelineStateStore:
                     original_prompt, current_prompt, original_seed, current_seed,
                     negative_prompt, negative_prompt_sha256, state, next_action,
                     infrastructure_failure_count, last_failure_json,
+                    artifact_stage, attempt_number, authority_tier, strategy,
+                    recipe_sha256,
                     created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, 1, 'A', ?, ?, ?, ?)
                 """,
                 [
-                    (*values[:14], QcCandidateState.PENDING_QC.value, "evaluate", now, now)
+                    (
+                        *values[:14],
+                        QcCandidateState.PENDING_QC.value,
+                        "evaluate",
+                        values[17],
+                        (
+                            "original_draft"
+                            if values[17] == QcArtifactStage.DRAFT.value
+                            else "legacy_original"
+                        ),
+                        values[18],
+                        now,
+                        now,
+                    )
                     for values in prepared
                 ],
             )
@@ -3873,9 +4095,22 @@ class PipelineStateStore:
                 ),
             )
             if decision == QcHumanDecision.APPROVE:
+                is_draft = (
+                    QcArtifactStage(candidate["artifact_stage"])
+                    == QcArtifactStage.DRAFT
+                )
                 connection.execute(
-                    "UPDATE qc_candidates SET state = ?, next_action = NULL, updated_at = ? WHERE candidate_id = ?",
-                    (QcCandidateState.ACCEPTED.value, now, candidate_id),
+                    "UPDATE qc_candidates SET state = ?, next_action = ?, updated_at = ? WHERE candidate_id = ?",
+                    (
+                        (
+                            QcCandidateState.FINAL_PENDING.value
+                            if is_draft
+                            else QcCandidateState.ACCEPTED.value
+                        ),
+                        "render_final" if is_draft else None,
+                        now,
+                        candidate_id,
+                    ),
                 )
                 connection.execute(
                     """
@@ -3887,24 +4122,40 @@ class PipelineStateStore:
                         job_id, scene_id, candidate_id,
                     ),
                 )
+                if not is_draft:
+                    connection.execute(
+                        """
+                        UPDATE scenes SET state = ?, frame_path = COALESCE(?, frame_path),
+                            video_path = ?, error = NULL, updated_at = ?
+                        WHERE job_id = ? AND scene_id = ?
+                        """,
+                        (
+                            SceneState.SUCCEEDED.value, revision["frame_path"],
+                            candidate["source_video_path"], now, job_id, scene_id,
+                        ),
+                    )
+            elif decision == QcHumanDecision.REJECT:
                 connection.execute(
-                    """
-                    UPDATE scenes SET state = ?, frame_path = COALESCE(?, frame_path),
-                        video_path = ?, error = NULL, updated_at = ?
-                    WHERE job_id = ? AND scene_id = ?
-                    """,
+                    "UPDATE qc_candidates SET state = ?, next_action = ?, updated_at = ? WHERE candidate_id = ?",
                     (
-                        SceneState.SUCCEEDED.value, revision["frame_path"],
-                        candidate["source_video_path"], now, job_id, scene_id,
+                        QcCandidateState.DEFERRED_AUTOMATED_REPAIR.value,
+                        "resume_adaptive", now, candidate_id,
                     ),
+                )
+                request_id = "repair-request-" + hashlib.sha256(
+                    f"{candidate_id}|human_reject".encode("utf-8")
+                ).hexdigest()[:32]
+                feedback_json = _canonical_json({"note": note})
+                connection.execute(
+                    "INSERT OR IGNORE INTO qc_repair_requests (request_id, candidate_id, "
+                    "reason, human_feedback_json, state, created_at, updated_at) "
+                    "VALUES (?, ?, 'human_reject', ?, 'PENDING', ?, ?)",
+                    (request_id, candidate_id, feedback_json, now, now),
                 )
             else:
                 connection.execute(
                     "UPDATE qc_candidates SET state = ?, next_action = ?, updated_at = ? WHERE candidate_id = ?",
-                    (
-                        QcCandidateState.HOLD_FOR_REVIEW.value,
-                        "hold_for_review", now, candidate_id,
-                    ),
+                    (QcCandidateState.PAUSED.value, "human_hold", now, candidate_id),
                 )
             stored_decision = connection.execute(
                 "SELECT * FROM qc_human_decisions WHERE decision_id = ?",
@@ -3973,12 +4224,207 @@ class PipelineStateStore:
                 "INSERT INTO qc_human_decisions (decision_id, candidate_id, decision, note, actor, result_sha256, evidence_sha256, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (decision_id, candidate_id, QcHumanDecision.APPROVE.value, note, actor, candidate["source_video_sha256"], evaluation["evidence_manifest_sha256"], now),
             )
-            connection.execute("UPDATE qc_candidates SET state = ?, next_action = NULL, updated_at = ? WHERE candidate_id = ?", (QcCandidateState.ACCEPTED.value, now, candidate_id))
+            is_draft = QcArtifactStage(candidate["artifact_stage"]) == QcArtifactStage.DRAFT
+            connection.execute(
+                "UPDATE qc_candidates SET state = ?, next_action = ?, updated_at = ? WHERE candidate_id = ?",
+                (
+                    QcCandidateState.FINAL_PENDING.value if is_draft else QcCandidateState.ACCEPTED.value,
+                    "render_final" if is_draft else None,
+                    now,
+                    candidate_id,
+                ),
+            )
             connection.execute("UPDATE qc_candidates SET state = ?, next_action = NULL, updated_at = ? WHERE job_id = ? AND scene_id = ? AND candidate_id != ?", (QcCandidateState.SUPERSEDED.value, now, job_id, scene_id, candidate_id))
-            connection.execute("UPDATE scenes SET state = ?, frame_path = COALESCE(?, frame_path), video_path = ?, error = NULL, updated_at = ? WHERE job_id = ? AND scene_id = ?", (SceneState.SUCCEEDED.value, revision["frame_path"], candidate["source_video_path"], now, job_id, scene_id))
+            if not is_draft:
+                connection.execute("UPDATE scenes SET state = ?, frame_path = COALESCE(?, frame_path), video_path = ?, error = NULL, updated_at = ? WHERE job_id = ? AND scene_id = ?", (SceneState.SUCCEEDED.value, revision["frame_path"], candidate["source_video_path"], now, job_id, scene_id))
             stored_decision = connection.execute("SELECT * FROM qc_human_decisions WHERE decision_id = ?", (decision_id,)).fetchone()
             stored_candidate = connection.execute("SELECT * FROM qc_candidates WHERE candidate_id = ?", (candidate_id,)).fetchone()
         return QcHumanDecisionResult(self._qc_human_decision_record(stored_decision), self._qc_candidate_record(stored_candidate), False)
+
+    @staticmethod
+    def _qc_final_artifact_record(row: sqlite3.Row) -> QcFinalArtifactRecord:
+        return QcFinalArtifactRecord(
+            candidate_id=row["candidate_id"],
+            state=row["state"],
+            final_video_path=row["final_video_path"],
+            final_video_sha256=row["final_video_sha256"],
+            prompt_id=row["prompt_id"],
+            error=row["error"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+    def ensure_qc_final_artifact(
+        self, candidate_id: str, *, final_video_path: str
+    ) -> QcFinalArtifactRecord:
+        """Create one exactly-once final render intent for an approved draft."""
+        candidate_id = _evidence_id(candidate_id, "candidate_id")
+        final_video_path = _required_text(final_video_path, "final_video_path")
+        self.initialize()
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            candidate = connection.execute(
+                "SELECT artifact_stage, state FROM qc_candidates WHERE candidate_id = ?",
+                (candidate_id,),
+            ).fetchone()
+            if candidate is None:
+                raise StateTransitionError(f"Unknown QC candidate {candidate_id}.")
+            if QcArtifactStage(candidate["artifact_stage"]) != QcArtifactStage.DRAFT:
+                raise StateTransitionError("LEGACY_FINAL candidates do not need another final pass.")
+            if QcCandidateState(candidate["state"]) not in {
+                QcCandidateState.FINAL_PENDING,
+                QcCandidateState.FINAL_RENDERING,
+                QcCandidateState.ACCEPTED,
+            }:
+                raise StateTransitionError("Only an approved draft may create a final artifact.")
+            existing = connection.execute(
+                "SELECT * FROM qc_final_artifacts WHERE candidate_id = ?",
+                (candidate_id,),
+            ).fetchone()
+            if existing is not None:
+                if existing["final_video_path"] != final_video_path:
+                    raise StateTransitionError("Final artifact identity is immutable.")
+                return self._qc_final_artifact_record(existing)
+            now = _utc_now()
+            connection.execute(
+                "INSERT INTO qc_final_artifacts (candidate_id, state, final_video_path, "
+                "final_video_sha256, prompt_id, error, created_at, updated_at) "
+                "VALUES (?, 'PENDING', ?, NULL, NULL, NULL, ?, ?)",
+                (candidate_id, final_video_path, now, now),
+            )
+            row = connection.execute(
+                "SELECT * FROM qc_final_artifacts WHERE candidate_id = ?",
+                (candidate_id,),
+            ).fetchone()
+        return self._qc_final_artifact_record(row)
+
+    def qc_final_artifact(self, candidate_id: str) -> QcFinalArtifactRecord | None:
+        self.initialize()
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM qc_final_artifacts WHERE candidate_id = ?",
+                (candidate_id,),
+            ).fetchone()
+        return None if row is None else self._qc_final_artifact_record(row)
+
+    def update_qc_final_artifact(
+        self,
+        candidate_id: str,
+        *,
+        state: str,
+        prompt_id: str | None = None,
+        final_video_sha256: str | None = None,
+        error: str | None = None,
+    ) -> QcFinalArtifactRecord:
+        allowed = {"PENDING", "RENDERING", "COMPLETE", "FAILED"}
+        if state not in allowed:
+            raise StateTransitionError("Unknown final artifact state.")
+        if final_video_sha256 is not None:
+            final_video_sha256 = _sha256(final_video_sha256, "final_video_sha256")
+        self.initialize()
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM qc_final_artifacts WHERE candidate_id = ?",
+                (candidate_id,),
+            ).fetchone()
+            if row is None:
+                raise StateTransitionError("Final artifact intent does not exist.")
+            if row["state"] == "COMPLETE":
+                if state != "COMPLETE" or (
+                    final_video_sha256 is not None
+                    and final_video_sha256 != row["final_video_sha256"]
+                ):
+                    raise StateTransitionError("A completed FINAL artifact is immutable.")
+                return self._qc_final_artifact_record(row)
+            now = _utc_now()
+            connection.execute(
+                "UPDATE qc_final_artifacts SET state = ?, prompt_id = COALESCE(?, prompt_id), "
+                "final_video_sha256 = COALESCE(?, final_video_sha256), error = ?, "
+                "updated_at = ? WHERE candidate_id = ?",
+                (state, prompt_id, final_video_sha256, error, now, candidate_id),
+            )
+            if state == "COMPLETE":
+                connection.execute(
+                    "UPDATE qc_candidates SET state = ?, artifact_stage = ?, next_action = NULL, "
+                    "updated_at = ? WHERE candidate_id = ?",
+                    (
+                        QcCandidateState.ACCEPTED.value,
+                        QcArtifactStage.FINAL.value,
+                        now,
+                        candidate_id,
+                    ),
+                )
+            elif state == "RENDERING":
+                connection.execute(
+                    "UPDATE qc_candidates SET state = ?, next_action = 'render_final', "
+                    "updated_at = ? WHERE candidate_id = ?",
+                    (QcCandidateState.FINAL_RENDERING.value, now, candidate_id),
+                )
+            row = connection.execute(
+                "SELECT * FROM qc_final_artifacts WHERE candidate_id = ?",
+                (candidate_id,),
+            ).fetchone()
+        return self._qc_final_artifact_record(row)
+
+    def create_qc_repair_request(
+        self,
+        candidate_id: str,
+        *,
+        reason: str,
+        human_feedback: Mapping[str, Any] | None = None,
+    ) -> str:
+        """Append a resume request without changing the terminal human decision."""
+        candidate_id = _evidence_id(candidate_id, "candidate_id")
+        reason = _required_text(reason, "reason")
+        request_id = "repair-request-" + hashlib.sha256(
+            f"{candidate_id}|{reason}".encode("utf-8")
+        ).hexdigest()[:32]
+        feedback_json = (
+            None if human_feedback is None else _canonical_json(human_feedback)
+        )
+        self.initialize()
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                "SELECT * FROM qc_repair_requests WHERE candidate_id = ?",
+                (candidate_id,),
+            ).fetchone()
+            if existing is None:
+                now = _utc_now()
+                connection.execute(
+                    "INSERT INTO qc_repair_requests (request_id, candidate_id, reason, "
+                    "human_feedback_json, state, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, 'PENDING', ?, ?)",
+                    (request_id, candidate_id, reason, feedback_json, now, now),
+                )
+            elif existing["reason"] != reason or existing["human_feedback_json"] != feedback_json:
+                raise StateTransitionError("A repair request cannot overwrite prior human evidence.")
+        return request_id
+
+    def resume_automatic_holds(self, job_id: str) -> tuple[str, ...]:
+        """Idempotently convert only non-human automatic holds to deferred work."""
+        self.initialize()
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute(
+                "SELECT c.candidate_id FROM qc_candidates c "
+                "LEFT JOIN qc_human_decisions h ON h.candidate_id = c.candidate_id "
+                "WHERE c.job_id = ? AND c.state = ? AND h.candidate_id IS NULL",
+                (job_id, QcCandidateState.HOLD_FOR_REVIEW.value),
+            ).fetchall()
+            ids = tuple(row["candidate_id"] for row in rows)
+            if ids:
+                now = _utc_now()
+                connection.executemany(
+                    "UPDATE qc_candidates SET state = ?, next_action = 'resume_adaptive', "
+                    "updated_at = ? WHERE candidate_id = ?",
+                    [
+                        (QcCandidateState.DEFERRED_AUTOMATED_REPAIR.value, now, item)
+                        for item in ids
+                    ],
+                )
+        return ids
 
     def qc_final_selection(
         self,
@@ -3992,11 +4438,14 @@ class PipelineStateStore:
             rows = connection.execute(
                 """
                 SELECT c.scene_id, c.revision, c.source_video_path,
-                       c.source_video_sha256,
-                       r.video_path, r.state
+                       c.source_video_sha256, c.artifact_stage,
+                       r.video_path, r.state,
+                       f.state AS final_state,
+                       f.final_video_path, f.final_video_sha256
                 FROM qc_candidates c
                 JOIN scene_revisions r ON r.job_id = c.job_id
                     AND r.scene_id = c.scene_id AND r.revision = c.revision
+                LEFT JOIN qc_final_artifacts f ON f.candidate_id = c.candidate_id
                 WHERE c.job_id = ? AND c.state = ?
                 ORDER BY c.scene_id
                 """,
@@ -4008,6 +4457,7 @@ class PipelineStateStore:
             )
         result = []
         for row in rows:
+            artifact_stage = QcArtifactStage(row["artifact_stage"])
             if (
                 row["state"] != SceneState.SUCCEEDED.value
                 or row["video_path"] != row["source_video_path"]
@@ -4018,11 +4468,27 @@ class PipelineStateStore:
                 raise StateTransitionError(
                     "An ACCEPTED candidate is missing its bound successful video hash."
                 )
+            selected_path = row["source_video_path"]
+            if artifact_stage == QcArtifactStage.FINAL:
+                selected_path = row["final_video_path"]
+                if (
+                    row["final_state"] != "COMPLETE"
+                    or not selected_path
+                    or not Path(selected_path).is_file()
+                    or _file_sha256(selected_path) != row["final_video_sha256"]
+                ):
+                    raise StateTransitionError(
+                        "An approved DRAFT is missing its completed FINAL artifact."
+                    )
+            elif artifact_stage != QcArtifactStage.LEGACY_FINAL:
+                raise StateTransitionError(
+                    "Assembly rejects DRAFT artifacts that have not completed FINAL."
+                )
             result.append(
                 ManualFinalSceneSelection(
                     scene_id=int(row["scene_id"]),
                     revision=int(row["revision"]),
-                    video_path=row["source_video_path"],
+                    video_path=selected_path,
                 )
             )
         return tuple(result)
@@ -4110,11 +4576,14 @@ class PipelineStateStore:
                 rows = connection.execute(
                     """
                 SELECT c.candidate_id, c.scene_id, c.revision,
-                       c.source_video_path, c.source_video_sha256,
-                       r.state AS revision_state, r.video_path AS revision_video_path
+                       c.source_video_path, c.source_video_sha256, c.artifact_stage,
+                       r.state AS revision_state, r.video_path AS revision_video_path,
+                       f.state AS final_state, f.final_video_path,
+                       f.final_video_sha256
                 FROM qc_candidates c
                 JOIN scene_revisions r ON r.job_id = c.job_id
                     AND r.scene_id = c.scene_id AND r.revision = c.revision
+                LEFT JOIN qc_final_artifacts f ON f.candidate_id = c.candidate_id
                 WHERE c.job_id = ? AND c.state = ?
                 ORDER BY c.scene_id
                 """,
@@ -4153,6 +4622,30 @@ class PipelineStateStore:
                 ):
                     raise StateTransitionError(
                         "A finalization candidate cannot be snapshotted because its artifact changed."
+                    )
+                if (
+                    selection_mode == "ACCEPTED_QC"
+                    and QcArtifactStage(row["artifact_stage"]) == QcArtifactStage.FINAL
+                ):
+                    path = str(row["final_video_path"] or "")
+                    artifact_hash = row["final_video_sha256"]
+                    if (
+                        row["final_state"] != "COMPLETE"
+                        or not path
+                        or not artifact_hash
+                        or not Path(path).is_file()
+                        or _file_sha256(path) != artifact_hash
+                    ):
+                        raise StateTransitionError(
+                            "Finalization requires the completed FINAL artifact, not its DRAFT."
+                        )
+                elif (
+                    selection_mode == "ACCEPTED_QC"
+                    and QcArtifactStage(row["artifact_stage"])
+                    != QcArtifactStage.LEGACY_FINAL
+                ):
+                    raise StateTransitionError(
+                        "Finalization rejects nonfinal DRAFT artifacts."
                     )
                 selection.append(
                     {

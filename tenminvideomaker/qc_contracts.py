@@ -20,8 +20,17 @@ class QcDecision(StrEnum):
 class QcTier(StrEnum):
     ORIGINAL = "ORIGINAL"
     A1 = "A1"
+    A2 = "A2"
     B1 = "B1"
     B2 = "B2"
+    C = "C"
+    D = "D"
+
+
+class QcArtifactStage(StrEnum):
+    DRAFT = "DRAFT"
+    FINAL = "FINAL"
+    LEGACY_FINAL = "LEGACY_FINAL"
 
 
 class QcCandidateState(StrEnum):
@@ -30,8 +39,13 @@ class QcCandidateState(StrEnum):
     PENDING_QC = "PENDING_QC"
     QC_RUNNING = "QC_RUNNING"
     PASS_PENDING_HUMAN = "PASS_PENDING_HUMAN"
+    FINAL_PENDING = "FINAL_PENDING"
+    FINAL_RENDERING = "FINAL_RENDERING"
     ACCEPTED = "ACCEPTED"
     HOLD_FOR_REVIEW = "HOLD_FOR_REVIEW"
+    DEFERRED_AUTOMATED_REPAIR = "DEFERRED_AUTOMATED_REPAIR"
+    PAUSED = "PAUSED"
+    NEEDS_ADJACENT_SCENE_APPROVAL = "NEEDS_ADJACENT_SCENE_APPROVAL"
     SUPERSEDED = "SUPERSEDED"
 
 

@@ -30,6 +30,7 @@ from .contracts import (
     lora_identity,
 )
 from .delivery import DiscordDeliverySettings
+from .qc_contracts import QcArtifactStage
 from .review import SceneWorkflowOverrides
 
 ANIMA_UNET = "CyberRealistic_AnimaSemi_V6.0.safetensors"
@@ -549,11 +550,20 @@ def build_i2v_api_workflow(
     *,
     delivery: DiscordDeliverySettings | None = None,
     overrides: SceneWorkflowOverrides | None = None,
+    artifact_stage: QcArtifactStage = QcArtifactStage.LEGACY_FINAL,
+    revision: int = 1,
+    attempt_number: int = 1,
 ) -> WorkflowBuild:
-    """Build the two-pass LCM LTX 2.3 graph for one exact cached T2I frame."""
+    """Build an explicit first-pass draft, approved final, or legacy graph."""
     frame_path = Path(cached_frame_path)
     if not frame_path.is_absolute():
         raise WorkflowBuildError("cached_frame_path must be absolute.")
+    try:
+        artifact_stage = QcArtifactStage(artifact_stage)
+    except ValueError as error:
+        raise WorkflowBuildError("Unknown I2V artifact stage.") from error
+    if revision < 1 or attempt_number < 1:
+        raise WorkflowBuildError("revision and attempt_number must be positive.")
 
     graph = _Graph()
     first_pass = (
@@ -662,94 +672,181 @@ def build_i2v_api_workflow(
         custom_width=0,
         custom_height=0,
     )
-    base_image = graph.add(
-        "ImageScale",
-        "Scale frame for first pass",
-        image=graph.output(source),
-        upscale_method="lanczos",
-        width=I2V_BASE_WIDTH,
-        height=I2V_BASE_HEIGHT,
-        crop="disabled",
-    )
-    base_preprocessed = graph.add(
-        "LTXVPreprocess",
-        "Preprocess first-pass reference",
-        image=graph.output(base_image),
-        img_compression=first_pass["image_compression"],
-    )
-    base_latent = graph.add(
-        "EmptyLTXVLatentVideo",
-        "Half-resolution video latent",
-        width=I2V_BASE_WIDTH,
-        height=I2V_BASE_HEIGHT,
-        length=scene.frame_count,
-        batch_size=1,
-    )
-    first_i2v = graph.add(
-        "LTXVImgToVideoInplaceKJ",
-        "Inject cached frame into first pass",
-        vae=graph.output(checkpoint, 2),
-        latent=graph.output(base_latent),
-        num_images="1",
-        **{
-            "num_images.strength_1": first_pass["image_strength"],
-            "num_images.image_1": graph.output(base_preprocessed),
-            "num_images.index_1": 0,
-        },
-    )
-    empty_audio = graph.add(
-        "LTXVEmptyLatentAudio",
-        "Matching empty audio latent",
-        frames_number=scene.frame_count,
-        frame_rate=PRODUCTION_FPS,
-        batch_size=1,
-        audio_vae=graph.output(audio_vae),
-    )
-    first_av = graph.add(
-        "LTXVConcatAVLatent",
-        "First-pass AV latent",
-        video_latent=graph.output(first_i2v),
-        audio_latent=graph.output(empty_audio),
-    )
-    first_model = graph.add(
-        "LTXReferenceConditioning",
-        "First-pass reference model",
-        model=graph.output(reference_enabled),
-        vae=graph.output(checkpoint, 2),
-        image=graph.output(base_preprocessed),
-        target_latent=graph.output(first_i2v),
-        strength=first_pass["reference_strength"],
-        position_mode="reference",
-        verbose=False,
-    )
-    first_sampler = graph.add(
-        "KSamplerSelect",
-        "I2V first-pass sampler",
-        sampler_name=first_pass["sampler"],
-    )
-    first_sigmas = graph.add(
-        "ManualSigmas",
-        "Verified first-pass sigmas",
-        sigmas=_sigma_string(first_pass["sigmas"]),
-    )
-    first_sampled = graph.add(
-        "SamplerCustom",
-        "First LCM pass",
-        model=graph.output(first_model),
-        add_noise=True,
-        noise_seed=scene.i2v.seed,
-        cfg=first_pass["cfg"],
-        positive=graph.output(conditioning, 0),
-        negative=graph.output(conditioning, 1),
-        sampler=graph.output(first_sampler),
-        sigmas=graph.output(first_sigmas),
-        latent_image=graph.output(first_av),
-    )
-    first_split = graph.add(
-        "LTXVSeparateAVLatent",
-        "Split first-pass AV latent",
-        av_latent=graph.output(first_sampled, 1),
-    )
+    if artifact_stage == QcArtifactStage.FINAL:
+        temporal_tokens = (scene.frame_count - 1) // 8 + 1
+        draft_video = graph.add(
+            "10MinVideoMaker_LoadChunkLatent",
+            "Load exact approved first-pass video latent",
+            job_id=job.job_id,
+            scene_id=scene.scene_id,
+            revision=revision,
+            chunk_index=0,
+            attempt_number=attempt_number,
+            artifact_kind="stage1_handoff",
+            expected_temporal_tokens=temporal_tokens,
+        )
+        draft_audio = graph.add(
+            "10MinVideoMaker_LoadChunkLatent",
+            "Load exact approved first-pass audio latent",
+            job_id=job.job_id,
+            scene_id=scene.scene_id,
+            revision=revision,
+            chunk_index=0,
+            attempt_number=attempt_number,
+            artifact_kind="stage1_audio",
+            expected_temporal_tokens=1,
+        )
+        draft_video_latent = graph.output(draft_video)
+        draft_audio_latent = graph.output(draft_audio)
+    else:
+        base_image = graph.add(
+            "ImageScale",
+            "Scale frame for first pass",
+            image=graph.output(source),
+            upscale_method="lanczos",
+            width=I2V_BASE_WIDTH,
+            height=I2V_BASE_HEIGHT,
+            crop="disabled",
+        )
+        base_preprocessed = graph.add(
+            "LTXVPreprocess",
+            "Preprocess first-pass reference",
+            image=graph.output(base_image),
+            img_compression=first_pass["image_compression"],
+        )
+        base_latent = graph.add(
+            "EmptyLTXVLatentVideo",
+            "Half-resolution video latent",
+            width=I2V_BASE_WIDTH,
+            height=I2V_BASE_HEIGHT,
+            length=scene.frame_count,
+            batch_size=1,
+        )
+        first_i2v = graph.add(
+            "LTXVImgToVideoInplaceKJ",
+            "Inject cached frame into first pass",
+            vae=graph.output(checkpoint, 2),
+            latent=graph.output(base_latent),
+            num_images="1",
+            **{
+                "num_images.strength_1": first_pass["image_strength"],
+                "num_images.image_1": graph.output(base_preprocessed),
+                "num_images.index_1": 0,
+            },
+        )
+        empty_audio = graph.add(
+            "LTXVEmptyLatentAudio",
+            "Matching empty audio latent",
+            frames_number=scene.frame_count,
+            frame_rate=PRODUCTION_FPS,
+            batch_size=1,
+            audio_vae=graph.output(audio_vae),
+        )
+        first_av = graph.add(
+            "LTXVConcatAVLatent",
+            "First-pass AV latent",
+            video_latent=graph.output(first_i2v),
+            audio_latent=graph.output(empty_audio),
+        )
+        first_model = graph.add(
+            "LTXReferenceConditioning",
+            "First-pass reference model",
+            model=graph.output(reference_enabled),
+            vae=graph.output(checkpoint, 2),
+            image=graph.output(base_preprocessed),
+            target_latent=graph.output(first_i2v),
+            strength=first_pass["reference_strength"],
+            position_mode="reference",
+            verbose=False,
+        )
+        first_sampler = graph.add(
+            "KSamplerSelect",
+            "I2V first-pass sampler",
+            sampler_name=first_pass["sampler"],
+        )
+        first_sigmas = graph.add(
+            "ManualSigmas",
+            "Verified first-pass sigmas",
+            sigmas=_sigma_string(first_pass["sigmas"]),
+        )
+        first_sampled = graph.add(
+            "SamplerCustom",
+            "First LCM pass",
+            model=graph.output(first_model),
+            add_noise=True,
+            noise_seed=scene.i2v.seed,
+            cfg=first_pass["cfg"],
+            positive=graph.output(conditioning, 0),
+            negative=graph.output(conditioning, 1),
+            sampler=graph.output(first_sampler),
+            sigmas=graph.output(first_sigmas),
+            latent_image=graph.output(first_av),
+        )
+        first_split = graph.add(
+            "LTXVSeparateAVLatent",
+            "Split first-pass AV latent",
+            av_latent=graph.output(first_sampled, 1),
+        )
+        draft_video_latent = graph.output(first_split, 0)
+        draft_audio_latent = graph.output(first_split, 1)
+
+        if artifact_stage == QcArtifactStage.DRAFT:
+            saved_video = graph.add(
+                "10MinVideoMaker_SaveChunkLatent",
+                "Checkpoint approved-draft video latent",
+                latent=draft_video_latent,
+                job_id=job.job_id,
+                scene_id=scene.scene_id,
+                revision=revision,
+                chunk_index=0,
+                attempt_number=attempt_number,
+                artifact_kind="stage1_handoff",
+            )
+            saved_audio = graph.add(
+                "10MinVideoMaker_SaveChunkLatent",
+                "Checkpoint approved-draft audio latent",
+                latent=draft_audio_latent,
+                job_id=job.job_id,
+                scene_id=scene.scene_id,
+                revision=revision,
+                chunk_index=0,
+                attempt_number=attempt_number,
+                artifact_kind="stage1_audio",
+            )
+            draft_decoded_video = graph.add(
+                "VAEDecode",
+                "Decode first-pass draft video",
+                samples=graph.output(saved_video),
+                vae=graph.output(checkpoint, 2),
+            )
+            draft_decoded_audio = graph.add(
+                "LTXVAudioVAEDecode",
+                "Decode first-pass draft audio",
+                samples=graph.output(saved_audio),
+                audio_vae=graph.output(audio_vae),
+            )
+            filename_prefix = _scene_prefix(job.job_id, "drafts", scene.scene_id)
+            combined = graph.add(
+                "VHS_VideoCombine",
+                f"Save {I2V_BASE_WIDTH}x{I2V_BASE_HEIGHT} first-pass QC draft",
+                images=graph.output(draft_decoded_video),
+                audio=graph.output(draft_decoded_audio),
+                frame_rate=float(PRODUCTION_FPS),
+                loop_count=0,
+                filename_prefix=filename_prefix,
+                format="video/h264-mp4",
+                pingpong=False,
+                save_output=False,
+                pix_fmt="yuv420p",
+                crf=23,
+                save_metadata=True,
+                trim_to_audio=False,
+            )
+            return WorkflowBuild(
+                api=graph.nodes,
+                output_node_id=combined,
+                filename_prefix=filename_prefix,
+            )
     upscaler = graph.add(
         "LatentUpscaleModelLoader",
         "LTX spatial x2 upscaler",
@@ -758,7 +855,7 @@ def build_i2v_api_workflow(
     upscaled_video = graph.add(
         "LTXVLatentUpsamplerTiled",
         "Tiled spatial upscale",
-        samples=graph.output(first_split, 0),
+        samples=draft_video_latent,
         upscale_model=graph.output(upscaler),
         vae=graph.output(checkpoint, 2),
         tile_size=upscaler_settings["tile_size"],
@@ -799,7 +896,7 @@ def build_i2v_api_workflow(
         "LTXVConcatAVLatent",
         "Upscale-pass AV latent",
         video_latent=graph.output(second_i2v),
-        audio_latent=graph.output(first_split, 1),
+        audio_latent=draft_audio_latent,
     )
     second_model = graph.add(
         "LTXReferenceConditioning",
@@ -878,6 +975,54 @@ def build_i2v_api_workflow(
         delivery,
     )
     return WorkflowBuild(api=graph.nodes, output_node_id=combined, filename_prefix=filename_prefix)
+
+
+def build_i2v_draft_api_workflow(
+    job: JobPayload,
+    scene: SceneSpec,
+    cached_frame_path: str | Path,
+    resolved_lora_filenames: Mapping[str, str] | None = None,
+    *,
+    overrides: SceneWorkflowOverrides | None = None,
+    revision: int = 1,
+    attempt_number: int = 1,
+) -> WorkflowBuild:
+    """Build only the cheap first LTX pass and durable handoff checkpoints."""
+    return build_i2v_api_workflow(
+        job,
+        scene,
+        cached_frame_path,
+        resolved_lora_filenames,
+        delivery=None,
+        overrides=overrides,
+        artifact_stage=QcArtifactStage.DRAFT,
+        revision=revision,
+        attempt_number=attempt_number,
+    )
+
+
+def build_i2v_final_api_workflow(
+    job: JobPayload,
+    scene: SceneSpec,
+    cached_frame_path: str | Path,
+    resolved_lora_filenames: Mapping[str, str] | None = None,
+    *,
+    overrides: SceneWorkflowOverrides | None = None,
+    revision: int = 1,
+    attempt_number: int = 1,
+) -> WorkflowBuild:
+    """Build the expensive pass from the exact approved draft checkpoints."""
+    return build_i2v_api_workflow(
+        job,
+        scene,
+        cached_frame_path,
+        resolved_lora_filenames,
+        delivery=None,
+        overrides=overrides,
+        artifact_stage=QcArtifactStage.FINAL,
+        revision=revision,
+        attempt_number=attempt_number,
+    )
 
 
 def validate_api_graph(workflow: Mapping[str, Mapping[str, Any]]) -> tuple[str, ...]:
