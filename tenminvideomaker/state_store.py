@@ -4794,14 +4794,37 @@ class PipelineStateStore:
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             rows = connection.execute(
-                "SELECT c.candidate_id FROM qc_candidates c "
+                "SELECT c.candidate_id, h.decision, h.note FROM qc_candidates c "
                 "LEFT JOIN qc_human_decisions h ON h.candidate_id = c.candidate_id "
-                "WHERE c.job_id = ? AND c.state = ? AND h.candidate_id IS NULL",
-                (job_id, QcCandidateState.HOLD_FOR_REVIEW.value),
+                "WHERE c.job_id = ? AND c.state = ? "
+                "AND (h.candidate_id IS NULL OR h.decision = ?)",
+                (
+                    job_id,
+                    QcCandidateState.HOLD_FOR_REVIEW.value,
+                    QcHumanDecision.REJECT.value,
+                ),
             ).fetchall()
             ids = tuple(row["candidate_id"] for row in rows)
             if ids:
                 now = _utc_now()
+                for row in rows:
+                    if row["decision"] != QcHumanDecision.REJECT.value:
+                        continue
+                    request_id = "repair-request-" + hashlib.sha256(
+                        f"{row['candidate_id']}|historical_human_reject".encode("utf-8")
+                    ).hexdigest()[:32]
+                    connection.execute(
+                        "INSERT OR IGNORE INTO qc_repair_requests (request_id, candidate_id, "
+                        "reason, human_feedback_json, state, created_at, updated_at) "
+                        "VALUES (?, ?, 'historical_human_reject', ?, 'PENDING', ?, ?)",
+                        (
+                            request_id,
+                            row["candidate_id"],
+                            _canonical_json({"note": row["note"]}),
+                            now,
+                            now,
+                        ),
+                    )
                 connection.executemany(
                     "UPDATE qc_candidates SET state = ?, next_action = 'resume_adaptive', "
                     "updated_at = ? WHERE candidate_id = ?",

@@ -2227,6 +2227,32 @@ class StateStoreTests(unittest.TestCase):
         self.assertEqual(result.candidate.state, QcCandidateState.DEFERRED_AUTOMATED_REPAIR)
         self.assertEqual(result.candidate.next_action, "resume_adaptive")
 
+    def test_reconciliation_resumes_historical_reject_without_overwriting_it(self) -> None:
+        candidate = self._create_qc_candidate()
+        self._complete_pass_for_candidate(candidate.candidate_id)
+        self._await_qc_review()
+        rejected = self.store.decide_qc_candidate(
+            job_id=candidate.job_id, scene_id=candidate.scene_id,
+            candidate_id=candidate.candidate_id, decision=QcHumanDecision.REJECT,
+            note="legacy operator defect",
+        )
+        with self.store._connection() as connection:
+            connection.execute(
+                "UPDATE qc_candidates SET state = ?, next_action = 'hold_for_review' "
+                "WHERE candidate_id = ?",
+                (QcCandidateState.HOLD_FOR_REVIEW.value, candidate.candidate_id),
+            )
+        self.assertEqual(
+            self.store.resume_automatic_holds(candidate.job_id),
+            (candidate.candidate_id,),
+        )
+        resumed = self.store.qc_candidate(candidate.candidate_id)
+        self.assertEqual(resumed.state, QcCandidateState.DEFERRED_AUTOMATED_REPAIR)
+        self.assertEqual(
+            self.store.qc_human_decision(candidate.candidate_id), rejected.decision
+        )
+        self.assertEqual(self.store.resume_automatic_holds(candidate.job_id), ())
+
     def test_approved_draft_schedules_one_final_and_only_final_is_selectable(self) -> None:
         candidate = self._create_qc_candidate(artifact_stage=QcArtifactStage.DRAFT)
         self._complete_pass_for_candidate(candidate.candidate_id)
