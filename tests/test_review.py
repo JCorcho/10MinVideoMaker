@@ -22,7 +22,15 @@ class ReviewTests(unittest.TestCase):
     def test_document_exposes_effective_sampling_and_preserves_large_seed_as_text(self) -> None:
         document = scene_review_document(self.job, self.scene)
         self.assertEqual(document["t2i"]["passes"][0]["sampler"], "er_sde")
-        self.assertEqual(document["i2v"]["first_pass"]["sampler"], "lcm")
+        self.assertEqual(document["i2v"]["first_pass"]["sampler"], "euler_ancestral")
+        self.assertEqual(
+            document["i2v"]["second_pass"]["sampler"],
+            "euler_ancestral_cfg_pp",
+        )
+        self.assertEqual(
+            document["production_profile"]["ltx_checkpoint"],
+            "10Eros_v1.5_fp8mixed_experimental_learned.safetensors",
+        )
         self.assertEqual(document["i2v"]["second_pass"]["sigmas"][-1], 0.0)
         self.assertIsInstance(document["i2v"]["seed"], str)
         self.assertTrue(document["production_profile"]["locked"])

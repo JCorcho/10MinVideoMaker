@@ -39,7 +39,7 @@ class ContinuationWorkflowTests(unittest.TestCase):
             fallback_negative=self.scene.i2v.negative,
         )
 
-    def test_initial_stage1_is_plain_video_lcm_and_checkpoints_bounded_handoff(self):
+    def test_initial_stage1_uses_tenstrip_sampler_and_checkpoints_bounded_handoff(self):
         build = build_continuation_stage1_workflow(
             self.job,
             self.scene,

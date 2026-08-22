@@ -10,9 +10,12 @@ from typing import Any, Mapping
 
 from .constants import (
     I2V_FIRST_PASS_SIGMAS,
-    I2V_SAMPLER,
+    I2V_FIRST_PASS_SAMPLER,
+    I2V_UPSCALE_PASS_SAMPLER,
     I2V_SPATIAL_UPSCALER,
     I2V_UPSCALE_PASS_SIGMAS,
+    LTX_CHECKPOINT,
+    LTX_TEXT_ENCODER,
     MANDATORY_I2V_LORAS,
     PRODUCTION_FPS,
     PRODUCTION_HEIGHT,
@@ -186,7 +189,7 @@ def _default_i2v(scene: SceneSpec) -> dict[str, Any]:
             for filename, weight in MANDATORY_I2V_LORAS
         ],
         "first_pass": {
-            "sampler": I2V_SAMPLER,
+            "sampler": I2V_FIRST_PASS_SAMPLER,
             "sigmas": list(I2V_FIRST_PASS_SIGMAS),
             "cfg": 1.0,
             "reference_strength": 0.75,
@@ -194,7 +197,7 @@ def _default_i2v(scene: SceneSpec) -> dict[str, Any]:
             "image_compression": 35,
         },
         "second_pass": {
-            "sampler": I2V_SAMPLER,
+            "sampler": I2V_UPSCALE_PASS_SAMPLER,
             "sigmas": list(I2V_UPSCALE_PASS_SIGMAS),
             "cfg": 1.0,
             "reference_strength": 1.0,
@@ -255,6 +258,8 @@ def scene_review_document(job: JobPayload, scene: SceneSpec) -> dict[str, Any]:
             "frame_count": frame_count_for_seconds(estimated_seconds),
             "timeline_output_frames": timeline_frames,
             "generation_master_frames": generation_master_frames,
+            "ltx_checkpoint": LTX_CHECKPOINT,
+            "ltx_text_encoder": LTX_TEXT_ENCODER,
             "locked": True,
         },
         "scene_context": {

@@ -32,15 +32,22 @@ if (
 ):
     raise RuntimeError("LTX production and x2 first-pass dimensions must be exact multiples of 32.")
 
-I2V_SAMPLER = "lcm"
-I2V_FIRST_PASS_SIGMAS = (1.0, 0.99375, 0.9875, 0.98125, 0.975, 0.909375, 0.725, 0.421875, 0.0)
-I2V_UPSCALE_PASS_SIGMAS = (0.909375, 0.725, 0.421875, 0.0)
+LTX_CHECKPOINT = "10Eros_v1.5_fp8mixed_experimental_learned.safetensors"
+LTX_TEXT_ENCODER = "gemma-3-12b-it-ablit-norms-biproj-fp8mixed.safetensors"
+
+# TenStrip's Basic DMD V5 recipe. The first and upscale passes deliberately
+# use different Euler variants and hand-tuned schedules.
+I2V_FIRST_PASS_SAMPLER = "euler_ancestral"
+I2V_UPSCALE_PASS_SAMPLER = "euler_ancestral_cfg_pp"
+I2V_FIRST_PASS_SIGMAS = (
+    1.0, 0.955, 0.893, 0.812, 0.715, 0.603, 0.482, 0.241, 0.121, 0.0,
+)
+I2V_UPSCALE_PASS_SIGMAS = (0.92, 0.725, 0.421875, 0.0)
 I2V_SPATIAL_UPSCALER = "ltx-2.3-spatial-upscaler-x2-1.1.safetensors"
 I2V_DYNAMIC_BASE_MODEL = "LTXV 2.3"
 
 MANDATORY_I2V_LORAS = (
-    ("LTX2.3_DMD_reshaped_r256.safetensors", 1.0),
-    ("JoyAI-Echo-content_r256.safetensors", 0.5),
+    ("LTX2.3_DMD_hybrid_v2.safetensors", 1.0),
 )
 
 

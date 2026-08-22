@@ -44,10 +44,10 @@ class WorkflowBuilderTests(unittest.TestCase):
             attempt_number=2,
         )
         titles = {node.get("_meta", {}).get("title") for node in build.api.values()}
-        self.assertIn("First LCM pass", titles)
+        self.assertIn("First sampling pass", titles)
         self.assertIn("Checkpoint approved-draft video latent", titles)
         self.assertIn("Checkpoint approved-draft audio latent", titles)
-        self.assertNotIn("Second LCM pass", titles)
+        self.assertNotIn("Second sampling pass", titles)
         self.assertFalse(nodes_of_type(build.api, "LatentUpscaleModelLoader"))
         self.assertFalse(nodes_of_type(build.api, "LTXVLatentUpsamplerTiled"))
         self.assertEqual(len(nodes_of_type(build.api, "SamplerCustom")), 1)
@@ -62,8 +62,8 @@ class WorkflowBuilderTests(unittest.TestCase):
             attempt_number=2,
         )
         titles = {node.get("_meta", {}).get("title") for node in build.api.values()}
-        self.assertNotIn("First LCM pass", titles)
-        self.assertIn("Second LCM pass", titles)
+        self.assertNotIn("First sampling pass", titles)
+        self.assertIn("Second sampling pass", titles)
         self.assertIn("Load exact approved first-pass video latent", titles)
         self.assertIn("Load exact approved first-pass audio latent", titles)
         self.assertEqual(len(nodes_of_type(build.api, "SamplerCustom")), 1)
@@ -185,7 +185,7 @@ class WorkflowBuilderTests(unittest.TestCase):
         self.assertEqual(saver["inputs"]["images"], [detailer_id, 0])
         self.assertEqual(validate_api_graph(build.api), ())
 
-    def test_i2v_has_two_lcm_passes_verified_sigmas_upscaler_and_chunking(self) -> None:
+    def test_i2v_uses_tenstrip_v5_samplers_sigmas_upscaler_and_chunking(self) -> None:
         build = build_i2v_api_workflow(
             self.job,
             self.scene,
@@ -193,7 +193,15 @@ class WorkflowBuilderTests(unittest.TestCase):
         )
         self.assertEqual(validate_api_graph(build.api), ())
         samplers = nodes_of_type(build.api, "KSamplerSelect")
-        self.assertEqual([node["inputs"]["sampler_name"] for node in samplers], ["lcm", "lcm"])
+        self.assertEqual(
+            [node["inputs"]["sampler_name"] for node in samplers],
+            ["euler_ancestral", "euler_ancestral_cfg_pp"],
+        )
+        self.assertEqual(
+            I2V_FIRST_PASS_SIGMAS,
+            (1.0, 0.955, 0.893, 0.812, 0.715, 0.603, 0.482, 0.241, 0.121, 0.0),
+        )
+        self.assertEqual(I2V_UPSCALE_PASS_SIGMAS, (0.92, 0.725, 0.421875, 0.0))
         sigmas = [node["inputs"]["sigmas"] for node in nodes_of_type(build.api, "ManualSigmas")]
         self.assertEqual(
             sigmas,
@@ -317,11 +325,12 @@ class WorkflowBuilderTests(unittest.TestCase):
         )
         loras = nodes_of_type(build.api, "LoraLoaderModelOnly")
         self.assertEqual(
-            [(node["inputs"]["lora_name"], node["inputs"]["strength_model"]) for node in loras[:2]],
-            [
-                ("LTX2.3_DMD_reshaped_r256.safetensors", 1.0),
-                ("JoyAI-Echo-content_r256.safetensors", 0.5),
-            ],
+            (loras[0]["inputs"]["lora_name"], loras[0]["inputs"]["strength_model"]),
+            ("LTX2.3_DMD_hybrid_v2.safetensors", 1.0),
+        )
+        self.assertNotIn(
+            "JoyAI-Echo-content_r256.safetensors",
+            [node["inputs"]["lora_name"] for node in loras],
         )
 
     def test_i2v_quarantines_t2i_alias_and_loads_only_validated_dynamic_ltx(self) -> None:
@@ -350,8 +359,7 @@ class WorkflowBuilderTests(unittest.TestCase):
         self.assertEqual(
             [node["inputs"]["lora_name"] for node in loras],
             [
-                "LTX2.3_DMD_reshaped_r256.safetensors",
-                "JoyAI-Echo-content_r256.safetensors",
+                "LTX2.3_DMD_hybrid_v2.safetensors",
                 "ltx/Motion.safetensors",
             ],
         )

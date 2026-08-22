@@ -12,10 +12,13 @@ from .constants import (
     I2V_BASE_HEIGHT,
     I2V_BASE_WIDTH,
     I2V_DYNAMIC_BASE_MODEL,
+    I2V_FIRST_PASS_SAMPLER,
     I2V_FIRST_PASS_SIGMAS,
-    I2V_SAMPLER,
     I2V_SPATIAL_UPSCALER,
+    I2V_UPSCALE_PASS_SAMPLER,
     I2V_UPSCALE_PASS_SIGMAS,
+    LTX_CHECKPOINT,
+    LTX_TEXT_ENCODER,
     MANDATORY_I2V_LORAS,
     PRODUCTION_FPS,
     PRODUCTION_HEIGHT,
@@ -38,10 +41,6 @@ ANIMA_UNET = "CyberRealistic_AnimaSemi_V6.0.safetensors"
 ANIMA_TEXT_ENCODER = "cyberrealisticAnima_v30_txt.safetensors"
 ANIMA_VAE = "qwen_image_vae_cybv2.safetensors"
 PONY_CHECKPOINT = "cyberrealisticPony_v180Coreshift.safetensors"
-
-LTX_CHECKPOINT = "10Eros_v1.4_fp8mixed_learned.safetensors"
-LTX_TEXT_ENCODER = "gemma-3-12b-it-ablit-norms-biproj-fp8mixed.safetensors"
-
 
 class WorkflowBuildError(ValueError):
     """Raised when a workflow cannot be built safely from the supplied scene."""
@@ -571,7 +570,7 @@ def build_i2v_api_workflow(
         overrides.i2v_first_pass
         if overrides is not None
         else {
-            "sampler": I2V_SAMPLER,
+            "sampler": I2V_FIRST_PASS_SAMPLER,
             "sigmas": I2V_FIRST_PASS_SIGMAS,
             "cfg": 1.0,
             "reference_strength": 0.75,
@@ -583,7 +582,7 @@ def build_i2v_api_workflow(
         overrides.i2v_second_pass
         if overrides is not None
         else {
-            "sampler": I2V_SAMPLER,
+            "sampler": I2V_UPSCALE_PASS_SAMPLER,
             "sigmas": I2V_UPSCALE_PASS_SIGMAS,
             "cfg": 1.0,
             "reference_strength": 1.0,
@@ -774,7 +773,7 @@ def build_i2v_api_workflow(
         )
         first_sampled = graph.add(
             "SamplerCustom",
-            "First LCM pass",
+            "First sampling pass",
             model=graph.output(first_model),
             add_noise=True,
             noise_seed=scene.i2v.seed,
@@ -926,7 +925,7 @@ def build_i2v_api_workflow(
     )
     second_sampled = graph.add(
         "SamplerCustom",
-        "Second LCM pass",
+        "Second sampling pass",
         model=graph.output(second_model),
         add_noise=True,
         noise_seed=scene.i2v.seed,

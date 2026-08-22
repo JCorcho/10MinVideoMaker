@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 import json
 from pathlib import Path
 import sys
@@ -38,6 +39,26 @@ def _replace_value(value, old: str, new: str):
     if isinstance(value, list):
         return [_replace_value(item, old, new) for item in value]
     return new if value == old else value
+
+
+def _object_info_with_template_placeholders(object_info: dict, builds: dict) -> dict:
+    """Permit only intentional Example_* combo literals during template export."""
+    adjusted = deepcopy(object_info)
+    for build in builds.values():
+        for node in build.api.values():
+            schema = adjusted.get(node["class_type"], {}).get("input", {})
+            for name, value in node.get("inputs", {}).items():
+                if not isinstance(value, str) or not value.startswith("Example_"):
+                    continue
+                specification = schema.get("required", {}).get(name) or schema.get("optional", {}).get(name)
+                if (
+                    isinstance(specification, list)
+                    and specification
+                    and isinstance(specification[0], list)
+                    and value not in specification[0]
+                ):
+                    specification[0].append(value)
+    return adjusted
 
 
 def export(*, shared_root: Path | None) -> dict[str, dict]:
@@ -79,6 +100,7 @@ def export(*, shared_root: Path | None) -> dict[str, dict]:
         "10MinVideoMaker_T2I_Pony": pony,
         "10MinVideoMaker_I2V_LTX23_TwoPass": i2v,
     }
+    object_info = _object_info_with_template_placeholders(object_info, builds)
     report: dict[str, dict] = {}
     for name, build in builds.items():
         api_path = PROJECT_ROOT / "workflows" / f"{name}.api.json"

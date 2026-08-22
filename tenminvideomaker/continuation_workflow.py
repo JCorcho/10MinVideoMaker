@@ -11,7 +11,8 @@ from .constants import (
     I2V_BASE_HEIGHT,
     I2V_BASE_WIDTH,
     I2V_FIRST_PASS_SIGMAS,
-    I2V_SAMPLER,
+    I2V_FIRST_PASS_SAMPLER,
+    I2V_UPSCALE_PASS_SAMPLER,
     I2V_SPATIAL_UPSCALER,
     I2V_UPSCALE_PASS_SIGMAS,
     PRODUCTION_FPS,
@@ -99,7 +100,7 @@ def _pass_settings(
         overrides.i2v_first_pass
         if overrides is not None
         else {
-            "sampler": I2V_SAMPLER,
+            "sampler": I2V_FIRST_PASS_SAMPLER,
             "sigmas": I2V_FIRST_PASS_SIGMAS,
             "cfg": 1.0,
             "reference_strength": 0.75,
@@ -111,7 +112,7 @@ def _pass_settings(
         overrides.i2v_second_pass
         if overrides is not None
         else {
-            "sampler": I2V_SAMPLER,
+            "sampler": I2V_UPSCALE_PASS_SAMPLER,
             "sigmas": I2V_UPSCALE_PASS_SIGMAS,
             "cfg": 1.0,
             "reference_strength": 1.0,
@@ -357,7 +358,7 @@ def build_continuation_stage1_workflow(
     )
     sampler = graph.add(
         "KSamplerSelect",
-        "First-pass LCM sampler",
+        "First-pass sampler",
         sampler_name=first["sampler"],
     )
     sigmas = graph.add(
@@ -420,7 +421,7 @@ def build_continuation_stage1_workflow(
         )
         sampled = graph.add(
             "SamplerCustom",
-            "Initial validated video-only LCM pass",
+            "Initial validated video-only sampling pass",
             model=graph.output(sampling_model),
             add_noise=True,
             noise_seed=chunk.seed,
@@ -766,7 +767,7 @@ def build_continuation_stage2_workflow(
     )
     sampler = graph.add(
         "KSamplerSelect",
-        "Second-pass LCM sampler",
+        "Second-pass sampler",
         sampler_name=second["sampler"],
     )
     sigmas = graph.add(

@@ -74,14 +74,14 @@ class ServerApiTests(unittest.TestCase):
         result = resolve_asset_request(
             {
                 "kind": "required",
-                "filename": "LTX2.3_DMD_reshaped_r256.safetensors",
+                "filename": "LTX2.3_DMD_hybrid_v2.safetensors",
                 "weight": 1.0,
             },
             manager,
         )
         self.assertEqual(
             manager.required.filename,
-            "LTX2.3_DMD_reshaped_r256.safetensors",
+            "LTX2.3_DMD_hybrid_v2.safetensors",
         )
         self.assertFalse(result["downloaded"])
 

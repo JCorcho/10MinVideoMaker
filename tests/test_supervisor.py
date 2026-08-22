@@ -125,17 +125,18 @@ class FakeComfy:
         return f"prompt-{len(self.workflows)}"
 
     def wait_for_prompt(self, prompt_id, *, timeout_seconds):
-        if prompt_id == "prompt-1":
+        workflow = self.workflows[int(prompt_id.rsplit("-", 1)[1]) - 1]
+        if any(
+            node.get("class_type") == "10MinVideoMaker_SaveSceneFrame"
+            for node in workflow.values()
+        ):
             self.frame_path.parent.mkdir(parents=True, exist_ok=True)
             self.frame_path.write_bytes(b"png")
             return {"outputs": {}}
-        workflow = self.workflows[int(prompt_id.rsplit("-", 1)[1]) - 1]
-        output_node = next(
+        output_nodes = [
             node_id for node_id, node in workflow.items()
             if node.get("class_type") == "VHS_VideoCombine"
-        ) if any(
-            node.get("class_type") == "VHS_VideoCombine" for node in workflow.values()
-        ) else "36"
+        ] or ["36"]
         return {
             "outputs": {
                 output_node: {
@@ -147,6 +148,7 @@ class FakeComfy:
                         }
                     ]
                 }
+                for output_node in output_nodes
             }
         }
 
@@ -211,7 +213,7 @@ class RetryOnceComfy(FakeComfy):
             self.frame_path.parent.mkdir(parents=True, exist_ok=True)
             self.frame_path.write_bytes(b"png")
             return {"outputs": {}}
-        return super().wait_for_prompt("prompt-2", timeout_seconds=timeout_seconds)
+        return super().wait_for_prompt(prompt_id, timeout_seconds=timeout_seconds)
 
 
 class ReclaimingComfy(FakeComfy):
@@ -241,7 +243,7 @@ class ReclaimingComfy(FakeComfy):
             return {"outputs": {}}
         return {
             "outputs": {
-                "36": {
+                output_node: {
                     "gifs": [
                         {
                             "filename": "scene.mp4",
@@ -250,6 +252,7 @@ class ReclaimingComfy(FakeComfy):
                         }
                     ]
                 }
+                for output_node in ("35", "36")
             }
         }
 
@@ -283,7 +286,7 @@ class StageRecordingComfy(FakeComfy):
             return {"outputs": {}}
         return {
             "outputs": {
-                "36": {
+                output_node: {
                     "gifs": [
                         {
                             "filename": "scene.mp4",
@@ -292,6 +295,12 @@ class StageRecordingComfy(FakeComfy):
                         }
                     ]
                 }
+                for output_node in [
+                    node_id for node_id, node in self.workflows[
+                        int(prompt_id.rsplit("-", 1)[1]) - 1
+                    ].items()
+                    if node.get("class_type") == "VHS_VideoCombine"
+                ]
             }
         }
 

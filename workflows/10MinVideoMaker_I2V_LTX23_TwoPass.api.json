@@ -5,7 +5,7 @@
       "title": "LTX 2.3 checkpoint"
     },
     "inputs": {
-      "ckpt_name": "10Eros_v1.4_fp8mixed_learned.safetensors"
+      "ckpt_name": "10Eros_v1.5_fp8mixed_experimental_learned.safetensors"
     }
   },
   "2": {
@@ -15,7 +15,7 @@
     },
     "inputs": {
       "text_encoder": "gemma-3-12b-it-ablit-norms-biproj-fp8mixed.safetensors",
-      "ckpt_name": "10Eros_v1.4_fp8mixed_learned.safetensors",
+      "ckpt_name": "10Eros_v1.5_fp8mixed_experimental_learned.safetensors",
       "device": "default"
     }
   },
@@ -25,66 +25,52 @@
       "title": "LTX audio VAE"
     },
     "inputs": {
-      "ckpt_name": "10Eros_v1.4_fp8mixed_learned.safetensors"
+      "ckpt_name": "10Eros_v1.5_fp8mixed_experimental_learned.safetensors"
     }
   },
   "4": {
     "class_type": "LoraLoaderModelOnly",
     "_meta": {
-      "title": "Mandatory I2V LoRA: LTX2.3_DMD_reshaped_r256.safetensors"
+      "title": "Mandatory I2V LoRA: LTX2.3_DMD_hybrid_v2.safetensors"
     },
     "inputs": {
       "model": [
         "1",
         0
       ],
-      "lora_name": "LTX2.3_DMD_reshaped_r256.safetensors",
+      "lora_name": "LTX2.3_DMD_hybrid_v2.safetensors",
       "strength_model": 1.0
     }
   },
   "5": {
-    "class_type": "LoraLoaderModelOnly",
-    "_meta": {
-      "title": "Mandatory I2V LoRA: JoyAI-Echo-content_r256.safetensors"
-    },
-    "inputs": {
-      "model": [
-        "4",
-        0
-      ],
-      "lora_name": "JoyAI-Echo-content_r256.safetensors",
-      "strength_model": 0.5
-    }
-  },
-  "6": {
     "class_type": "LTXVChunkFeedForward",
     "_meta": {
       "title": "16 GB VRAM chunking"
     },
     "inputs": {
       "model": [
-        "5",
+        "4",
         0
       ],
       "chunks": 2,
       "dim_threshold": 4096
     }
   },
-  "7": {
+  "6": {
     "class_type": "LTXReferenceEnable",
     "_meta": {
       "title": "Enable image reference conditioning"
     },
     "inputs": {
       "model": [
-        "6",
+        "5",
         0
       ],
       "zero_ref_timesteps": false,
       "verbose": false
     }
   },
-  "8": {
+  "7": {
     "class_type": "CLIPTextEncode",
     "_meta": {
       "title": "I2V motion prompt"
@@ -97,7 +83,7 @@
       ]
     }
   },
-  "9": {
+  "8": {
     "class_type": "CLIPTextEncode",
     "_meta": {
       "title": "I2V negative prompt"
@@ -110,24 +96,24 @@
       ]
     }
   },
-  "10": {
+  "9": {
     "class_type": "LTXVConditioning",
     "_meta": {
       "title": "24 fps conditioning"
     },
     "inputs": {
       "positive": [
-        "8",
+        "7",
         0
       ],
       "negative": [
-        "9",
+        "8",
         0
       ],
       "frame_rate": 24.0
     }
   },
-  "11": {
+  "10": {
     "class_type": "VHS_LoadImagePath",
     "_meta": {
       "title": "Load exact cached T2I frame"
@@ -138,14 +124,14 @@
       "custom_height": 0
     }
   },
-  "12": {
+  "11": {
     "class_type": "ImageScale",
     "_meta": {
       "title": "Scale frame for first pass"
     },
     "inputs": {
       "image": [
-        "11",
+        "10",
         0
       ],
       "upscale_method": "lanczos",
@@ -154,20 +140,20 @@
       "crop": "disabled"
     }
   },
-  "13": {
+  "12": {
     "class_type": "LTXVPreprocess",
     "_meta": {
       "title": "Preprocess first-pass reference"
     },
     "inputs": {
       "image": [
-        "12",
+        "11",
         0
       ],
       "img_compression": 35
     }
   },
-  "14": {
+  "13": {
     "class_type": "EmptyLTXVLatentVideo",
     "_meta": {
       "title": "Half-resolution video latent"
@@ -179,7 +165,7 @@
       "batch_size": 1
     }
   },
-  "15": {
+  "14": {
     "class_type": "LTXVImgToVideoInplaceKJ",
     "_meta": {
       "title": "Inject cached frame into first pass"
@@ -190,19 +176,19 @@
         2
       ],
       "latent": [
-        "14",
+        "13",
         0
       ],
       "num_images": "1",
       "num_images.strength_1": 0.75,
       "num_images.image_1": [
-        "13",
+        "12",
         0
       ],
       "num_images.index_1": 0
     }
   },
-  "16": {
+  "15": {
     "class_type": "LTXVEmptyLatentAudio",
     "_meta": {
       "title": "Matching empty audio latent"
@@ -217,30 +203,30 @@
       ]
     }
   },
-  "17": {
+  "16": {
     "class_type": "LTXVConcatAVLatent",
     "_meta": {
       "title": "First-pass AV latent"
     },
     "inputs": {
       "video_latent": [
-        "15",
+        "14",
         0
       ],
       "audio_latent": [
-        "16",
+        "15",
         0
       ]
     }
   },
-  "18": {
+  "17": {
     "class_type": "LTXReferenceConditioning",
     "_meta": {
       "title": "First-pass reference model"
     },
     "inputs": {
       "model": [
-        "7",
+        "6",
         0
       ],
       "vae": [
@@ -248,11 +234,11 @@
         2
       ],
       "image": [
-        "13",
+        "12",
         0
       ],
       "target_latent": [
-        "15",
+        "14",
         0
       ],
       "strength": 0.75,
@@ -260,72 +246,72 @@
       "verbose": false
     }
   },
-  "19": {
+  "18": {
     "class_type": "KSamplerSelect",
     "_meta": {
       "title": "I2V first-pass sampler"
     },
     "inputs": {
-      "sampler_name": "lcm"
+      "sampler_name": "euler_ancestral"
     }
   },
-  "20": {
+  "19": {
     "class_type": "ManualSigmas",
     "_meta": {
       "title": "Verified first-pass sigmas"
     },
     "inputs": {
-      "sigmas": "1, 0.99375, 0.9875, 0.98125, 0.975, 0.909375, 0.725, 0.421875, 0"
+      "sigmas": "1, 0.955, 0.893, 0.812, 0.715, 0.603, 0.482, 0.241, 0.121, 0"
     }
   },
-  "21": {
+  "20": {
     "class_type": "SamplerCustom",
     "_meta": {
-      "title": "First LCM pass"
+      "title": "First sampling pass"
     },
     "inputs": {
       "model": [
-        "18",
+        "17",
         0
       ],
       "add_noise": true,
       "noise_seed": 2472348977,
       "cfg": 1.0,
       "positive": [
-        "10",
+        "9",
         0
       ],
       "negative": [
-        "10",
+        "9",
         1
       ],
       "sampler": [
-        "19",
+        "18",
         0
       ],
       "sigmas": [
-        "20",
+        "19",
         0
       ],
       "latent_image": [
-        "17",
+        "16",
         0
       ]
     }
   },
-  "22": {
+  "21": {
     "class_type": "LTXVSeparateAVLatent",
     "_meta": {
       "title": "Split first-pass AV latent"
     },
     "inputs": {
       "av_latent": [
-        "21",
+        "20",
         1
       ]
     }
   },
-  "23": {
+  "22": {
     "class_type": "LatentUpscaleModelLoader",
     "_meta": {
       "title": "LTX spatial x2 upscaler"
@@ -334,18 +320,18 @@
       "model_name": "ltx-2.3-spatial-upscaler-x2-1.1.safetensors"
     }
   },
-  "24": {
+  "23": {
     "class_type": "LTXVLatentUpsamplerTiled",
     "_meta": {
       "title": "Tiled spatial upscale"
     },
     "inputs": {
       "samples": [
-        "22",
+        "21",
         0
       ],
       "upscale_model": [
-        "23",
+        "22",
         0
       ],
       "vae": [
@@ -359,14 +345,14 @@
       "debug": false
     }
   },
-  "25": {
+  "24": {
     "class_type": "ImageScale",
     "_meta": {
       "title": "Scale exact frame to production size"
     },
     "inputs": {
       "image": [
-        "11",
+        "10",
         0
       ],
       "upscale_method": "lanczos",
@@ -375,20 +361,20 @@
       "crop": "disabled"
     }
   },
-  "26": {
+  "25": {
     "class_type": "LTXVPreprocess",
     "_meta": {
       "title": "Preprocess upscale-pass reference"
     },
     "inputs": {
       "image": [
-        "25",
+        "24",
         0
       ],
       "img_compression": 30
     }
   },
-  "27": {
+  "26": {
     "class_type": "LTXVImgToVideoInplaceKJ",
     "_meta": {
       "title": "Reinject cached frame after spatial upscale"
@@ -399,42 +385,42 @@
         2
       ],
       "latent": [
-        "24",
+        "23",
         0
       ],
       "num_images": "1",
       "num_images.strength_1": 1.0,
       "num_images.image_1": [
-        "26",
+        "25",
         0
       ],
       "num_images.index_1": 0
     }
   },
-  "28": {
+  "27": {
     "class_type": "LTXVConcatAVLatent",
     "_meta": {
       "title": "Upscale-pass AV latent"
     },
     "inputs": {
       "video_latent": [
-        "27",
+        "26",
         0
       ],
       "audio_latent": [
-        "22",
+        "21",
         1
       ]
     }
   },
-  "29": {
+  "28": {
     "class_type": "LTXReferenceConditioning",
     "_meta": {
       "title": "Upscale-pass reference model"
     },
     "inputs": {
       "model": [
-        "7",
+        "6",
         0
       ],
       "vae": [
@@ -442,11 +428,11 @@
         2
       ],
       "image": [
-        "26",
+        "25",
         0
       ],
       "target_latent": [
-        "27",
+        "26",
         0
       ],
       "strength": 1.0,
@@ -454,79 +440,79 @@
       "verbose": false
     }
   },
-  "30": {
+  "29": {
     "class_type": "KSamplerSelect",
     "_meta": {
       "title": "I2V upscale-pass sampler"
     },
     "inputs": {
-      "sampler_name": "lcm"
+      "sampler_name": "euler_ancestral_cfg_pp"
     }
   },
-  "31": {
+  "30": {
     "class_type": "ManualSigmas",
     "_meta": {
       "title": "Verified upscale-pass sigmas"
     },
     "inputs": {
-      "sigmas": "0.909375, 0.725, 0.421875, 0"
+      "sigmas": "0.92, 0.725, 0.421875, 0"
     }
   },
-  "32": {
+  "31": {
     "class_type": "SamplerCustom",
     "_meta": {
-      "title": "Second LCM pass"
+      "title": "Second sampling pass"
     },
     "inputs": {
       "model": [
-        "29",
+        "28",
         0
       ],
       "add_noise": true,
       "noise_seed": 2472348977,
       "cfg": 1.0,
       "positive": [
-        "10",
+        "9",
         0
       ],
       "negative": [
-        "10",
+        "9",
         1
       ],
       "sampler": [
-        "30",
+        "29",
         0
       ],
       "sigmas": [
-        "31",
+        "30",
         0
       ],
       "latent_image": [
-        "28",
+        "27",
         0
       ]
     }
   },
-  "33": {
+  "32": {
     "class_type": "LTXVSeparateAVLatent",
     "_meta": {
       "title": "Split final AV latent"
     },
     "inputs": {
       "av_latent": [
-        "32",
+        "31",
         1
       ]
     }
   },
-  "34": {
+  "33": {
     "class_type": "VAEDecode",
     "_meta": {
       "title": "Decode spatial-upscale video"
     },
     "inputs": {
       "samples": [
-        "33",
+        "32",
         0
       ],
       "vae": [
@@ -535,14 +521,14 @@
       ]
     }
   },
-  "35": {
+  "34": {
     "class_type": "LTXVAudioVAEDecode",
     "_meta": {
       "title": "Decode generated audio"
     },
     "inputs": {
       "samples": [
-        "33",
+        "32",
         1
       ],
       "audio_vae": [
@@ -551,18 +537,18 @@
       ]
     }
   },
-  "36": {
+  "35": {
     "class_type": "VHS_VideoCombine",
     "_meta": {
       "title": "Save 768x1344 24 fps scene clip"
     },
     "inputs": {
       "images": [
-        "34",
+        "33",
         0
       ],
       "audio": [
-        "35",
+        "34",
         0
       ],
       "frame_rate": 24.0,
@@ -577,14 +563,14 @@
       "trim_to_audio": false
     }
   },
-  "37": {
+  "36": {
     "class_type": "DaSiWa_Watermark",
     "_meta": {
       "title": "Watermark Discord scene video"
     },
     "inputs": {
       "images": [
-        "34",
+        "33",
         0
       ],
       "watermark_path": "wm.png",
@@ -604,18 +590,18 @@
       "random_seed": 0
     }
   },
-  "38": {
+  "37": {
     "class_type": "DiscordSendSaveVideo",
     "_meta": {
       "title": "Send metadata-free watermarked video to Discord"
     },
     "inputs": {
       "images": [
-        "37",
+        "36",
         0
       ],
       "audio": [
-        "35",
+        "34",
         0
       ],
       "filename_prefix": "10MinVideoMaker-example-20260724-1610-scene-0001",

@@ -43,8 +43,11 @@ TIER_A_PRESETS: Mapping[str, Mapping[str, Any]] = {
         "i2v.first_pass.image_strength": 0.95,
     },
     "lower_distillation_influence": {
-        "i2v.first_pass.sigmas": [1.0, 0.99375, 0.9875, 0.98125, 0.975,
-                                   0.909375, 0.725, 0.421875, 0.2, 0.0],
+        # TenStrip's published higher-quality hybrid-DMD schedule.
+        "i2v.first_pass.sigmas": [
+            1.0, 0.968, 0.926, 0.875, 0.812, 0.741,
+            0.661, 0.574, 0.482, 0.241, 0.121, 0.0,
+        ],
     },
     "detail_stability": {
         "i2v.first_pass.reference_strength": 0.9,
