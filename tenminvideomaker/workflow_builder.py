@@ -32,6 +32,7 @@ from .contracts import (
 from .delivery import DiscordDeliverySettings
 from .qc_contracts import QcArtifactStage
 from .review import SceneWorkflowOverrides
+from .storage import StorageLayout
 
 ANIMA_UNET = "CyberRealistic_AnimaSemi_V6.0.safetensors"
 ANIMA_TEXT_ENCODER = "cyberrealisticAnima_v30_txt.safetensors"
@@ -684,6 +685,7 @@ def build_i2v_api_workflow(
             attempt_number=attempt_number,
             artifact_kind="stage1_handoff",
             expected_temporal_tokens=temporal_tokens,
+            storage_root=str(StorageLayout.configured().root),
         )
         draft_audio = graph.add(
             "10MinVideoMaker_LoadChunkLatent",
@@ -695,6 +697,7 @@ def build_i2v_api_workflow(
             attempt_number=attempt_number,
             artifact_kind="stage1_audio",
             expected_temporal_tokens=1,
+            storage_root=str(StorageLayout.configured().root),
         )
         draft_video_latent = graph.output(draft_video)
         draft_audio_latent = graph.output(draft_audio)
@@ -801,6 +804,7 @@ def build_i2v_api_workflow(
                 chunk_index=0,
                 attempt_number=attempt_number,
                 artifact_kind="stage1_handoff",
+                storage_root=str(StorageLayout.configured().root),
             )
             saved_audio = graph.add(
                 "10MinVideoMaker_SaveChunkLatent",
@@ -812,6 +816,7 @@ def build_i2v_api_workflow(
                 chunk_index=0,
                 attempt_number=attempt_number,
                 artifact_kind="stage1_audio",
+                storage_root=str(StorageLayout.configured().root),
             )
             draft_decoded_video = graph.add(
                 "VAEDecode",

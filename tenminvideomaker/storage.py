@@ -330,6 +330,7 @@ class StorageLayout:
     ) -> Path:
         if artifact_kind not in {
             "stage1_handoff",
+            "stage1_audio",
             "stage2_video",
             "stage2_audio",
         }:

@@ -9,6 +9,7 @@ import unittest
 
 from tenminvideomaker.contracts import parse_job_payload
 from tenminvideomaker.qc_contracts import (
+    QcArtifactStage,
     QcCandidateState,
     QcDecision,
     QcHumanDecision,
@@ -97,7 +98,10 @@ class StateStoreTests(unittest.TestCase):
             attempt.attempt_number,
         )
 
-    def _create_qc_candidate(self, *, tier: QcTier = QcTier.ORIGINAL):
+    def _create_qc_candidate(
+        self, *, tier: QcTier = QcTier.ORIGINAL,
+        artifact_stage: QcArtifactStage = QcArtifactStage.LEGACY_FINAL,
+    ):
         self.store.claim_job(self.job)
         frame = Path(self.temporary_directory.name) / "frame.png"
         video = Path(self.temporary_directory.name) / "video.mp4"
@@ -138,6 +142,7 @@ class StateStoreTests(unittest.TestCase):
             ).hexdigest(),
             state=QcCandidateState.PENDING_QC,
             next_action="evaluate",
+            artifact_stage=artifact_stage,
         )
 
     def test_claiming_a_job_creates_pending_scene_and_asset_state(self) -> None:
@@ -2202,7 +2207,8 @@ class StateStoreTests(unittest.TestCase):
         )
 
         self.assertEqual(result.decision.decision, QcHumanDecision.HOLD)
-        self.assertEqual(result.candidate.state, QcCandidateState.HOLD_FOR_REVIEW)
+        self.assertEqual(result.candidate.state, QcCandidateState.PAUSED)
+        self.assertEqual(result.candidate.next_action, "human_hold")
 
     def test_human_reject_persists_distinct_operator_decision(self) -> None:
         candidate = self._create_qc_candidate()
@@ -2218,7 +2224,36 @@ class StateStoreTests(unittest.TestCase):
         )
 
         self.assertEqual(result.decision.decision, QcHumanDecision.REJECT)
-        self.assertEqual(result.candidate.state, QcCandidateState.HOLD_FOR_REVIEW)
+        self.assertEqual(result.candidate.state, QcCandidateState.DEFERRED_AUTOMATED_REPAIR)
+        self.assertEqual(result.candidate.next_action, "resume_adaptive")
+
+    def test_approved_draft_schedules_one_final_and_only_final_is_selectable(self) -> None:
+        candidate = self._create_qc_candidate(artifact_stage=QcArtifactStage.DRAFT)
+        self._complete_pass_for_candidate(candidate.candidate_id)
+        self._await_qc_review()
+        approved = self.store.decide_qc_candidate(
+            job_id=candidate.job_id, scene_id=candidate.scene_id,
+            candidate_id=candidate.candidate_id, decision=QcHumanDecision.APPROVE,
+            note=None,
+        )
+        self.assertEqual(approved.candidate.state, QcCandidateState.FINAL_PENDING)
+        final_path = Path(self.temporary_directory.name) / "final.mp4"
+        intent = self.store.ensure_qc_final_artifact(
+            candidate.candidate_id, final_video_path=str(final_path)
+        )
+        self.assertEqual(
+            intent,
+            self.store.ensure_qc_final_artifact(candidate.candidate_id, final_video_path=str(final_path)),
+        )
+        with self.assertRaises(StateTransitionError):
+            self.store.qc_final_selection(candidate.job_id, [candidate.scene_id])
+        final_path.write_bytes(b"final")
+        self.store.update_qc_final_artifact(
+            candidate.candidate_id, state="COMPLETE",
+            final_video_sha256=hashlib.sha256(b"final").hexdigest(),
+        )
+        selection = self.store.qc_final_selection(candidate.job_id, [candidate.scene_id])
+        self.assertEqual(selection[0].video_path, str(final_path))
 
     def test_automatic_hold_override_accepts_and_persists_evidence(self) -> None:
         candidate = self._create_qc_candidate()

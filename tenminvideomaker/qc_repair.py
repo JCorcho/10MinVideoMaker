@@ -10,7 +10,9 @@ import re
 from typing import Any, Mapping, Sequence
 
 from .contracts import JobPayload
-from .qc_contracts import QcCandidateState, QcTier, canonical_json, derive_retry_seed
+from .qc_contracts import (
+    QcArtifactStage, QcCandidateState, QcTier, canonical_json, derive_retry_seed,
+)
 from .review import ReviewValidationError, validate_scene_edit
 from .state_store import (
     PipelineStateStore,
@@ -344,8 +346,8 @@ def schedule_b1_retry(
 ) -> B1Retry:
     """Persist one B1 plan before idempotently allocating its render revision."""
     source = store.qc_candidate(source_candidate_id)
-    if source.tier != QcTier.A1:
-        raise StateTransitionError("B1 can descend only from the A1 candidate.")
+    if source.tier not in {QcTier.A1, QcTier.A2}:
+        raise StateTransitionError("B1 can descend only from a Tier-A candidate.")
     if source.job_id != original_job.job_id or source.source_video_sha256 is None:
         raise StateTransitionError("B1 source candidate identity/video is incomplete.")
     evaluations = {
@@ -356,9 +358,9 @@ def schedule_b1_retry(
         evaluation is None
         or evaluation.state != "COMPLETE"
         or evaluation.normalized_decision is None
-        or evaluation.normalized_decision.value != "FAIL"
+        or evaluation.normalized_decision.value not in {"FAIL", "UNCERTAIN"}
     ):
-        raise StateTransitionError("B1 requires the completed FAIL evaluation for A1.")
+        raise StateTransitionError("B1 requires completed quality evidence for Tier A.")
     if source_document.get("job_id") != source.job_id or source_document.get(
         "scene_id"
     ) != source.scene_id:
@@ -543,7 +545,9 @@ def schedule_b1_retry(
         parameters=validated.document,
         frame_path=source_revision.frame_path,
         source_video_path=str(
-            layout.scene_clip_path(source.job_id, source.scene_id, result_revision)
+            layout.scene_draft_path(source.job_id, source.scene_id, result_revision)
+            if source.artifact_stage == QcArtifactStage.DRAFT
+            else layout.scene_clip_path(source.job_id, source.scene_id, result_revision)
         ),
         original_prompt=source.original_prompt,
         current_prompt=validated_patch.prompt,
@@ -666,7 +670,9 @@ def schedule_a1_retry(
         parameters=validated.document,
         frame_path=source_revision.frame_path,
         source_video_path=str(
-            layout.scene_clip_path(source.job_id, source.scene_id, expected_revision)
+            layout.scene_draft_path(source.job_id, source.scene_id, expected_revision)
+            if source.artifact_stage == QcArtifactStage.DRAFT
+            else layout.scene_clip_path(source.job_id, source.scene_id, expected_revision)
         ),
         original_prompt=source.original_prompt,
         current_prompt=source.current_prompt,

@@ -73,10 +73,12 @@ def _chunk_checkpoint_fingerprint(
     attempt_number: int,
     artifact_kind: str,
     expected_temporal_tokens: int,
+    storage_root: str = "",
 ) -> str | float:
     """Return a verified content hash, or NaN so an invalid checkpoint is never cached."""
     try:
-        checkpoint = STORAGE.chunk_checkpoint_path(
+        storage = _checkpoint_storage(storage_root)
+        checkpoint = storage.chunk_checkpoint_path(
             job_id,
             scene_id,
             revision,
@@ -84,7 +86,7 @@ def _chunk_checkpoint_fingerprint(
             attempt_number,
             artifact_kind,
         )
-        manifest_path = STORAGE.chunk_checkpoint_manifest_path(
+        manifest_path = storage.chunk_checkpoint_manifest_path(
             job_id,
             scene_id,
             revision,
@@ -133,6 +135,19 @@ def _chunk_checkpoint_fingerprint(
         return f"{declared_hash}:{expected_temporal_tokens}"
     except (OSError, json.JSONDecodeError, StorageError):
         return float("nan")
+
+
+def _checkpoint_storage(storage_root: str = "") -> StorageLayout:
+    if not storage_root:
+        return STORAGE
+    requested = Path(storage_root).resolve()
+    configured = STORAGE.root.resolve()
+    canary_root = (configured / "canary").resolve()
+    if requested != configured and not requested.is_relative_to(canary_root):
+        raise StorageError(
+            "Checkpoint storage override must be the configured root or its canary subtree."
+        )
+    return StorageLayout(requested)
 
 
 class _AlwaysRun:
@@ -386,7 +401,8 @@ class TenMinSaveChunkLatentNode(_AlwaysRun):
                     CHUNK_ARTIFACT_KINDS,
                     {"default": "stage1_handoff"},
                 ),
-            }
+            },
+            "optional": {"storage_root": ("STRING", {"default": ""})},
         }
 
     def execute(
@@ -398,10 +414,12 @@ class TenMinSaveChunkLatentNode(_AlwaysRun):
         chunk_index: int,
         attempt_number: int,
         artifact_kind: str = "stage1_handoff",
+        storage_root: str = "",
     ):
         try:
+            storage = _checkpoint_storage(storage_root)
             checkpoint, manifest = save_latent_checkpoint(
-                STORAGE,
+                storage,
                 latent,
                 job_id=job_id,
                 scene_id=scene_id,
@@ -442,7 +460,8 @@ class TenMinLoadChunkLatentNode:
                     "INT",
                     {"default": 16, "min": 1},
                 ),
-            }
+            },
+            "optional": {"storage_root": ("STRING", {"default": ""})},
         }
 
     @classmethod
@@ -455,6 +474,7 @@ class TenMinLoadChunkLatentNode:
         attempt_number: int,
         artifact_kind: str = "stage1_handoff",
         expected_temporal_tokens: int = 16,
+        storage_root: str = "",
     ):
         return _chunk_checkpoint_fingerprint(
             job_id,
@@ -464,6 +484,7 @@ class TenMinLoadChunkLatentNode:
             attempt_number,
             artifact_kind,
             expected_temporal_tokens,
+            storage_root,
         )
 
     def execute(
@@ -475,10 +496,12 @@ class TenMinLoadChunkLatentNode:
         attempt_number: int,
         artifact_kind: str = "stage1_handoff",
         expected_temporal_tokens: int = 16,
+        storage_root: str = "",
     ):
         try:
+            storage = _checkpoint_storage(storage_root)
             latent, manifest = load_latent_checkpoint(
-                STORAGE,
+                storage,
                 job_id=job_id,
                 scene_id=scene_id,
                 revision=revision,
@@ -487,7 +510,7 @@ class TenMinLoadChunkLatentNode:
                 artifact_kind=artifact_kind,
                 expected_temporal_tokens=expected_temporal_tokens,
             )
-            checkpoint = STORAGE.chunk_checkpoint_path(
+            checkpoint = storage.chunk_checkpoint_path(
                 job_id,
                 scene_id,
                 revision,

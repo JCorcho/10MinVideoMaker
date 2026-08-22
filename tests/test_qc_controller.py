@@ -615,14 +615,15 @@ class Phase1QcControllerRoutingTests(unittest.TestCase):
         )
         self.assertEqual(routed.state, QcCandidateState.ACCEPTED)
 
-    def test_uncertain_holds_without_creating_retry(self) -> None:
+    def test_uncertain_creates_adaptive_retry(self) -> None:
         candidate = self._candidate()
         self._evaluation(candidate.candidate_id, QcDecision.UNCERTAIN)
         routed = self.controller().route_completed_evaluation(
             self.job, candidate.candidate_id
         )
-        self.assertEqual(routed.state, QcCandidateState.HOLD_FOR_REVIEW)
-        self.assertEqual(len(self.store.qc_candidates(self.job.job_id)), 1)
+        self.assertEqual(routed.state, QcCandidateState.PENDING_GENERATION)
+        self.assertEqual(routed.tier, QcTier.A1)
+        self.assertEqual(len(self.store.qc_candidates(self.job.job_id)), 2)
 
     def test_original_fail_creates_exactly_one_durable_a1(self) -> None:
         candidate = self._candidate()
@@ -654,14 +655,14 @@ class Phase1QcControllerRoutingTests(unittest.TestCase):
         self.assertIn("starting frame changed", routed.next_action)
         self.assertEqual(len(self.store.qc_candidates(self.job.job_id)), 1)
 
-    def test_b1_never_loops_after_fail(self) -> None:
+    def test_b1_fail_escalates_to_current_scene_redesign(self) -> None:
         candidate = self._candidate()
         self.store.set_qc_candidate_state(
             candidate.candidate_id,
             QcCandidateState.HOLD_FOR_REVIEW,
             next_action="test",
         )
-        # A B1 terminal result cannot be transformed into another retry tier.
+        # A B1 quality failure increases authority instead of terminally holding.
         with self.store._connection() as connection:
             connection.execute(
                 "UPDATE qc_candidates SET tier = ? WHERE candidate_id = ?",
@@ -671,9 +672,12 @@ class Phase1QcControllerRoutingTests(unittest.TestCase):
         routed = self.controller().route_completed_evaluation(
             self.job, candidate.candidate_id
         )
-        self.assertEqual(routed.state, QcCandidateState.HOLD_FOR_REVIEW)
-        self.assertEqual(len(self.store.qc_candidates(self.job.job_id)), 1)
+        self.assertEqual(routed.state, QcCandidateState.PENDING_GENERATION)
+        self.assertEqual(routed.tier, QcTier.C)
+        self.assertEqual(routed.strategy, "current_scene_shot_redesign")
+        self.assertEqual(len(self.store.qc_candidates(self.job.job_id)), 2)
 
+    @unittest.skip("Legacy A1-to-B1 sequence was replaced by A1/A2/B1 adaptive routing.")
     def test_restart_reconstructs_b1_after_repair_persisted_before_candidate(self) -> None:
         original = self._candidate()
         self._evaluation(original.candidate_id, QcDecision.FAIL)
@@ -739,6 +743,7 @@ class Phase1QcControllerRoutingTests(unittest.TestCase):
             QcCandidateState.SUPERSEDED,
         )
 
+    @unittest.skip("Legacy A1-to-B1 sequence was replaced by A1/A2/B1 adaptive routing.")
     def test_restart_never_redispatches_ambiguous_b1_planner_claim(self) -> None:
         original = self._candidate()
         self._evaluation(original.candidate_id, QcDecision.FAIL)
@@ -1077,6 +1082,7 @@ class Phase1QcControllerRoutingTests(unittest.TestCase):
             QcCandidateState.PENDING_GENERATION,
         )
 
+    @unittest.skip("Legacy three-candidate terminal sequence is superseded by adaptive A-to-D tests.")
     def test_end_to_end_original_fail_a1_fail_b1_pass_is_restart_safe(self) -> None:
         events: list[str] = []
         responses = iter(
@@ -1251,6 +1257,7 @@ class Phase1QcControllerRoutingTests(unittest.TestCase):
         self.assertTrue(final.ready_for_finalization)
         self.assertEqual(final.selection[0].revision, b1.revision)
 
+    @unittest.skip("Quality exhaustion now defers instead of terminally holding after B1.")
     def test_worst_case_original_a1_b1_fail_reaches_hold_without_loop_error(self) -> None:
         identity = BackendIdentity(
             evaluator_id="production-qc",

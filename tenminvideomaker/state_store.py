@@ -595,10 +595,10 @@ def canonical_draft_recipe_sha256(
         "source_frame_sha256": _sha256(
             source_frame_sha256, "source_frame_sha256"
         ),
-        "t2i": document.get("t2i"),
-        "i2v": document.get("i2v"),
-        "production_profile": document.get("production_profile"),
-        "scene_context": document.get("scene_context"),
+        # The canonical review document contains prompts, negative safety text,
+        # seeds, sampler/sigmas/CFG/conditioning, LoRAs, duration/frame count,
+        # camera/staging/split/continuity data, and contract identity.
+        "effective_scene_document": json.loads(_canonical_json(document)),
     }
     return hashlib.sha256(_canonical_json(identity).encode("utf-8")).hexdigest()
 
@@ -1062,6 +1062,88 @@ class PipelineStateStore:
                     connection.execute(
                         f"ALTER TABLE qc_candidates ADD COLUMN {column} {declaration}"
                     )
+            candidate_schema = connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'qc_candidates'"
+            ).fetchone()["sql"]
+            if "UNIQUE (job_id, scene_id, tier)" in candidate_schema:
+                # The bounded Phase-1 ladder allowed one row per tier. Adaptive
+                # repair needs multiple materially different C/D candidates.
+                connection.commit()
+                connection.execute("PRAGMA foreign_keys = OFF")
+                connection.execute("PRAGMA legacy_alter_table = ON")
+                try:
+                    connection.execute("BEGIN IMMEDIATE")
+                    connection.execute(
+                        "ALTER TABLE qc_candidates RENAME TO qc_candidates_phase1"
+                    )
+                    connection.execute(
+                        """
+                        CREATE TABLE qc_candidates (
+                            candidate_id TEXT PRIMARY KEY,
+                            job_id TEXT NOT NULL,
+                            scene_id INTEGER NOT NULL CHECK (scene_id >= 1),
+                            revision INTEGER NOT NULL CHECK (revision >= 1),
+                            tier TEXT NOT NULL,
+                            parent_candidate_id TEXT,
+                            source_video_path TEXT NOT NULL,
+                            source_video_sha256 TEXT,
+                            original_prompt TEXT NOT NULL,
+                            current_prompt TEXT NOT NULL,
+                            original_seed TEXT NOT NULL,
+                            current_seed TEXT NOT NULL,
+                            negative_prompt TEXT NOT NULL,
+                            negative_prompt_sha256 TEXT NOT NULL,
+                            state TEXT NOT NULL,
+                            next_action TEXT,
+                            infrastructure_failure_count INTEGER NOT NULL DEFAULT 0
+                                CHECK (infrastructure_failure_count >= 0),
+                            last_failure_json TEXT,
+                            generation_prompt_id TEXT,
+                            generation_prompt_stage TEXT,
+                            generation_route TEXT,
+                            artifact_stage TEXT NOT NULL DEFAULT 'LEGACY_FINAL',
+                            attempt_number INTEGER NOT NULL DEFAULT 1,
+                            authority_tier TEXT NOT NULL DEFAULT 'A',
+                            strategy TEXT NOT NULL DEFAULT 'legacy_original',
+                            recipe_sha256 TEXT,
+                            created_at TEXT NOT NULL,
+                            updated_at TEXT NOT NULL,
+                            FOREIGN KEY (job_id, scene_id, revision)
+                                REFERENCES scene_revisions(job_id, scene_id, revision),
+                            FOREIGN KEY (parent_candidate_id) REFERENCES qc_candidates(candidate_id)
+                        )
+                        """
+                    )
+                    columns = (
+                        "candidate_id,job_id,scene_id,revision,tier,parent_candidate_id,"
+                        "source_video_path,source_video_sha256,original_prompt,current_prompt,"
+                        "original_seed,current_seed,negative_prompt,negative_prompt_sha256,state,"
+                        "next_action,infrastructure_failure_count,last_failure_json,"
+                        "generation_prompt_id,generation_prompt_stage,generation_route,"
+                        "artifact_stage,attempt_number,authority_tier,strategy,recipe_sha256,"
+                        "created_at,updated_at"
+                    )
+                    connection.execute(
+                        f"INSERT INTO qc_candidates ({columns}) SELECT {columns} "
+                        "FROM qc_candidates_phase1"
+                    )
+                    connection.execute("DROP TABLE qc_candidates_phase1")
+                    connection.commit()
+                except Exception:
+                    connection.rollback()
+                    raise
+                finally:
+                    connection.execute("PRAGMA legacy_alter_table = OFF")
+                    connection.execute("PRAGMA foreign_keys = ON")
+                violations = connection.execute("PRAGMA foreign_key_check").fetchall()
+                if violations:
+                    raise StateTransitionError(
+                        "Adaptive QC candidate migration failed foreign-key validation."
+                    )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_qc_candidates_state "
+                    "ON qc_candidates(job_id, scene_id, state, tier)"
+                )
             connection.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_qc_candidate_recipe "
                 "ON qc_candidates(job_id, scene_id, recipe_sha256) "
@@ -2912,8 +2994,10 @@ class PipelineStateStore:
                     original_prompt, current_prompt, original_seed, current_seed,
                     negative_prompt, negative_prompt_sha256, state, next_action,
                     infrastructure_failure_count, last_failure_json,
+                    artifact_stage, attempt_number, authority_tier, strategy,
+                    recipe_sha256,
                     created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     candidate_id,
@@ -2931,6 +3015,13 @@ class PipelineStateStore:
                     negative_prompt_sha256,
                     QcCandidateState.PENDING_GENERATION.value,
                     "render_a1",
+                    QcArtifactStage.DRAFT.value,
+                    int(parent["attempt_number"]) + 1,
+                    "A",
+                    "new_seed",
+                    canonical_draft_recipe_sha256(
+                        parameters, source_frame_sha256=_file_sha256(frame_path)
+                    ),
                     now,
                     now,
                 ),
@@ -3031,9 +3122,9 @@ class PipelineStateStore:
                 parent is None
                 or parent["job_id"] != job_id
                 or int(parent["scene_id"]) != scene_id
-                or QcTier(parent["tier"]) != QcTier.A1
+                or QcTier(parent["tier"]) not in {QcTier.A1, QcTier.A2}
             ):
-                raise StateTransitionError("B1 must descend from this scene's A1 candidate.")
+                raise StateTransitionError("B1 must descend from this scene's Tier-A candidate.")
             self._assert_qc_source_lineage_connection(
                 connection,
                 parent_candidate_id,
@@ -3083,15 +3174,22 @@ class PipelineStateStore:
                     parent_candidate_id, source_video_path, source_video_sha256,
                     original_prompt, current_prompt, original_seed, current_seed,
                     negative_prompt, negative_prompt_sha256, state, next_action,
-                    infrastructure_failure_count, last_failure_json, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?)
+                    infrastructure_failure_count, last_failure_json,
+                    artifact_stage, attempt_number, authority_tier, strategy,
+                    recipe_sha256, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     candidate_id, job_id, scene_id, expected_revision, QcTier.B1.value,
                     parent_candidate_id, source_video_path, original_prompt,
                     current_prompt, str(original_seed), str(current_seed), negative_prompt,
                     negative_prompt_sha256, QcCandidateState.PENDING_GENERATION.value,
-                    "render_b1", now, now,
+                    "render_b1", QcArtifactStage.DRAFT.value,
+                    int(parent["attempt_number"]) + 1, "B", "constrained_prompt_repair",
+                    canonical_draft_recipe_sha256(
+                        parameters, source_frame_sha256=_file_sha256(frame_path)
+                    ),
+                    now, now,
                 ),
             )
             connection.execute(
@@ -3114,6 +3212,294 @@ class PipelineStateStore:
                 "SELECT * FROM qc_candidates WHERE candidate_id = ?", (candidate_id,)
             ).fetchone()
         return self._qc_candidate_record(row)
+
+    def create_adaptive_candidate_revision(
+        self,
+        *,
+        parent_candidate_id: str,
+        tier: QcTier,
+        parameters: Mapping[str, Any],
+        frame_path: str,
+        source_video_path: str,
+        authority_tier: str,
+        strategy: str,
+        defect_family: str,
+        intervention: Mapping[str, Any],
+        human_feedback: Mapping[str, Any] | None = None,
+    ) -> QcCandidateRecord:
+        """Atomically persist a recipe-unique adaptive revision and ledger row."""
+        parent_candidate_id = _evidence_id(parent_candidate_id, "parent_candidate_id")
+        tier = QcTier(tier)
+        if tier in {QcTier.ORIGINAL, QcTier.A1, QcTier.B1}:
+            raise StateTransitionError("This scheduler owns only A2/B2/C/D candidates.")
+        if authority_tier not in {"A", "B", "C", "D"}:
+            raise StateTransitionError("authority_tier must be A, B, C, or D.")
+        strategy = _required_text(strategy, "strategy")
+        defect_family = _required_text(defect_family, "defect_family")
+        frame_path = _required_text(frame_path, "frame_path")
+        source_video_path = _required_text(source_video_path, "source_video_path")
+        if not Path(frame_path).is_file():
+            raise StateTransitionError("Adaptive draft requires an immutable starting frame.")
+        parameters_json = _canonical_json(parameters)
+        t2i = parameters.get("t2i")
+        i2v = parameters.get("i2v")
+        if not isinstance(t2i, Mapping) or not isinstance(i2v, Mapping):
+            raise StateTransitionError("Adaptive revision lacks its T2I/I2V contract.")
+        current_prompt = _required_text(i2v.get("prompt"), "i2v.prompt")
+        negative_prompt = i2v.get("negative")
+        if not isinstance(negative_prompt, str):
+            raise StateTransitionError("i2v.negative must be text.")
+        current_seed = _qc_document_seed(i2v.get("seed"))
+        frame_sha256 = _file_sha256(frame_path)
+        recipe_sha256 = canonical_draft_recipe_sha256(
+            parameters, source_frame_sha256=frame_sha256
+        )
+        intervention_json = _canonical_json(intervention)
+        feedback_json = None if human_feedback is None else _canonical_json(human_feedback)
+        self.initialize()
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            parent = connection.execute(
+                "SELECT * FROM qc_candidates WHERE candidate_id = ?",
+                (parent_candidate_id,),
+            ).fetchone()
+            if parent is None:
+                raise StateTransitionError("Adaptive parent candidate does not exist.")
+            if QcCandidateState(parent["state"]) == QcCandidateState.PAUSED:
+                raise StateTransitionError("A human-paused scene cannot schedule repair.")
+            authority_order = {"A": 0, "B": 1, "C": 2, "D": 3}
+            if authority_order[authority_tier] < authority_order[parent["authority_tier"]]:
+                raise StateTransitionError("Adaptive authority may not move backward.")
+            duplicate = connection.execute(
+                "SELECT * FROM qc_candidates WHERE job_id = ? AND scene_id = ? "
+                "AND recipe_sha256 = ?",
+                (parent["job_id"], parent["scene_id"], recipe_sha256),
+            ).fetchone()
+            if duplicate is not None:
+                if (
+                    duplicate["parent_candidate_id"] == parent_candidate_id
+                    and duplicate["strategy"] == strategy
+                    and duplicate["tier"] == tier.value
+                ):
+                    return self._qc_candidate_record(duplicate)
+                raise StateTransitionError(
+                    "An identical effective draft recipe already exists in this scene lineage."
+                )
+            prior_tier = connection.execute(
+                "SELECT * FROM qc_candidates WHERE job_id = ? AND scene_id = ? AND tier = ?",
+                (parent["job_id"], parent["scene_id"], tier.value),
+            ).fetchone()
+            if prior_tier is not None and tier in {QcTier.A2, QcTier.B2}:
+                if prior_tier["strategy"] == strategy:
+                    return self._qc_candidate_record(prior_tier)
+                raise StateTransitionError("This active strategy tier was already attempted.")
+            revision_row = connection.execute(
+                "SELECT COALESCE(MAX(revision), 0) + 1 AS revision FROM scene_revisions "
+                "WHERE job_id = ? AND scene_id = ?",
+                (parent["job_id"], parent["scene_id"]),
+            ).fetchone()
+            revision = int(revision_row["revision"])
+            attempt_row = connection.execute(
+                "SELECT COALESCE(MAX(attempt_number), 0) + 1 AS attempt_number "
+                "FROM qc_candidates WHERE job_id = ? AND scene_id = ?",
+                (parent["job_id"], parent["scene_id"]),
+            ).fetchone()
+            attempt_number = int(attempt_row["attempt_number"])
+            candidate_id = "candidate-adaptive-" + hashlib.sha256(
+                f"{parent_candidate_id}|{strategy}|{recipe_sha256}".encode("utf-8")
+            ).hexdigest()[:32]
+            attempt_id = "adaptive-attempt-" + hashlib.sha256(
+                candidate_id.encode("utf-8")
+            ).hexdigest()[:32]
+            now = _utc_now()
+            connection.execute(
+                "INSERT INTO scene_revisions (job_id, scene_id, revision, remake_mode, "
+                "parameters_json, state, frame_path, video_path, error, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?)",
+                (parent["job_id"], parent["scene_id"], revision,
+                 RemakeMode.VIDEO_ONLY.value, parameters_json, SceneState.PENDING.value,
+                 frame_path, now, now),
+            )
+            connection.execute(
+                "INSERT INTO qc_candidates (candidate_id, job_id, scene_id, revision, tier, "
+                "parent_candidate_id, source_video_path, source_video_sha256, original_prompt, "
+                "current_prompt, original_seed, current_seed, negative_prompt, "
+                "negative_prompt_sha256, state, next_action, infrastructure_failure_count, "
+                "last_failure_json, artifact_stage, attempt_number, authority_tier, strategy, "
+                "recipe_sha256, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, 'render_adaptive_draft', "
+                "0, NULL, ?, ?, ?, ?, ?, ?, ?)",
+                (candidate_id, parent["job_id"], parent["scene_id"], revision, tier.value,
+                 parent_candidate_id, source_video_path, parent["original_prompt"], current_prompt,
+                 parent["original_seed"], str(current_seed), negative_prompt,
+                 hashlib.sha256(negative_prompt.encode("utf-8")).hexdigest(),
+                 QcCandidateState.PENDING_GENERATION.value, QcArtifactStage.DRAFT.value,
+                 attempt_number, authority_tier, strategy, recipe_sha256, now, now),
+            )
+            connection.execute(
+                "INSERT INTO qc_candidate_source_identities (candidate_id, "
+                "revision_document_sha256, source_frame_path, source_frame_sha256, "
+                "generation_config_sha256, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (candidate_id, hashlib.sha256(parameters_json.encode("utf-8")).hexdigest(),
+                 frame_path, frame_sha256, _qc_generation_config_sha256(parameters), now),
+            )
+            connection.execute(
+                "INSERT INTO qc_adaptive_attempts (attempt_id, candidate_id, parent_candidate_id, "
+                "attempt_number, authority_tier, strategy, recipe_sha256, source_recipe_sha256, "
+                "defect_family, intervention_json, state, human_feedback_json, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PLANNED', ?, ?, ?)",
+                (attempt_id, candidate_id, parent_candidate_id, attempt_number, authority_tier,
+                 strategy, recipe_sha256, parent["recipe_sha256"], defect_family,
+                 intervention_json, feedback_json, now, now),
+            )
+            row = connection.execute(
+                "SELECT * FROM qc_candidates WHERE candidate_id = ?", (candidate_id,)
+            ).fetchone()
+        return self._qc_candidate_record(row)
+
+    def adaptive_attempts(
+        self, job_id: str, scene_id: int
+    ) -> tuple[AdaptiveAttemptRecord, ...]:
+        self.initialize()
+        with self._connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM qc_adaptive_attempts WHERE candidate_id IN "
+                "(SELECT candidate_id FROM qc_candidates WHERE job_id = ? AND scene_id = ?) "
+                "ORDER BY attempt_number, created_at",
+                (job_id, scene_id),
+            ).fetchall()
+        return tuple(_adaptive_attempt_record(row) for row in rows)
+
+    def ensure_adaptive_attempt(
+        self,
+        candidate_id: str,
+        *,
+        defect_family: str,
+        intervention: Mapping[str, Any],
+        human_feedback: Mapping[str, Any] | None = None,
+    ) -> AdaptiveAttemptRecord:
+        candidate_id = _evidence_id(candidate_id, "candidate_id")
+        defect_family = _required_text(defect_family, "defect_family")
+        self.initialize()
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            candidate = connection.execute(
+                "SELECT * FROM qc_candidates WHERE candidate_id = ?", (candidate_id,)
+            ).fetchone()
+            if candidate is None or candidate["parent_candidate_id"] is None:
+                raise StateTransitionError("Adaptive ledger requires a repair candidate.")
+            existing = connection.execute(
+                "SELECT * FROM qc_adaptive_attempts WHERE candidate_id = ?", (candidate_id,)
+            ).fetchone()
+            if existing is not None:
+                return _adaptive_attempt_record(existing)
+            if not candidate["recipe_sha256"]:
+                raise StateTransitionError("Adaptive ledger requires a bound recipe hash.")
+            parent = connection.execute(
+                "SELECT recipe_sha256 FROM qc_candidates WHERE candidate_id = ?",
+                (candidate["parent_candidate_id"],),
+            ).fetchone()
+            now = _utc_now()
+            attempt_id = "adaptive-attempt-" + hashlib.sha256(
+                candidate_id.encode("utf-8")
+            ).hexdigest()[:32]
+            connection.execute(
+                "INSERT INTO qc_adaptive_attempts (attempt_id, candidate_id, parent_candidate_id, "
+                "attempt_number, authority_tier, strategy, recipe_sha256, source_recipe_sha256, "
+                "defect_family, intervention_json, state, human_feedback_json, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PLANNED', ?, ?, ?)",
+                (attempt_id, candidate_id, candidate["parent_candidate_id"],
+                 candidate["attempt_number"], candidate["authority_tier"], candidate["strategy"],
+                 candidate["recipe_sha256"], None if parent is None else parent["recipe_sha256"],
+                 defect_family, _canonical_json(intervention),
+                 None if human_feedback is None else _canonical_json(human_feedback), now, now),
+            )
+            row = connection.execute(
+                "SELECT * FROM qc_adaptive_attempts WHERE candidate_id = ?", (candidate_id,)
+            ).fetchone()
+        return _adaptive_attempt_record(row)
+
+    def bind_qc_draft_recipe(self, candidate_id: str) -> QcCandidateRecord:
+        """Bind the exact post-T2I frame and reject duplicate recipes before I2V."""
+        candidate_id = _evidence_id(candidate_id, "candidate_id")
+        self.initialize()
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT c.*, r.parameters_json, r.frame_path FROM qc_candidates c "
+                "JOIN scene_revisions r ON r.job_id = c.job_id AND r.scene_id = c.scene_id "
+                "AND r.revision = c.revision WHERE c.candidate_id = ?",
+                (candidate_id,),
+            ).fetchone()
+            if row is None or QcArtifactStage(row["artifact_stage"]) != QcArtifactStage.DRAFT:
+                raise StateTransitionError("Only a DRAFT candidate can bind a draft recipe.")
+            frame_path = row["frame_path"]
+            if not frame_path or not Path(frame_path).is_file():
+                raise StateTransitionError("Draft recipe binding requires the exact starting frame.")
+            document = json.loads(row["parameters_json"])
+            frame_sha256 = _file_sha256(frame_path)
+            recipe_sha256 = canonical_draft_recipe_sha256(
+                document, source_frame_sha256=frame_sha256
+            )
+            duplicate = connection.execute(
+                "SELECT candidate_id FROM qc_candidates WHERE job_id = ? AND scene_id = ? "
+                "AND recipe_sha256 = ? AND candidate_id != ?",
+                (row["job_id"], row["scene_id"], recipe_sha256, candidate_id),
+            ).fetchone()
+            if duplicate is not None:
+                raise StateTransitionError("An identical draft recipe already exists in this lineage.")
+            if row["recipe_sha256"] not in {None, recipe_sha256} and QcTier(row["tier"]) != QcTier.B2:
+                raise StateTransitionError("A bound draft recipe is immutable.")
+            now = _utc_now()
+            connection.execute(
+                "UPDATE qc_candidates SET recipe_sha256 = ?, updated_at = ? WHERE candidate_id = ?",
+                (recipe_sha256, now, candidate_id),
+            )
+            connection.execute(
+                "INSERT INTO qc_candidate_source_identities (candidate_id, revision_document_sha256, "
+                "source_frame_path, source_frame_sha256, generation_config_sha256, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(candidate_id) DO UPDATE SET "
+                "revision_document_sha256=excluded.revision_document_sha256, "
+                "source_frame_path=excluded.source_frame_path, source_frame_sha256=excluded.source_frame_sha256, "
+                "generation_config_sha256=excluded.generation_config_sha256",
+                (candidate_id, hashlib.sha256(_canonical_json(document).encode("utf-8")).hexdigest(),
+                 frame_path, frame_sha256, _qc_generation_config_sha256(document), now),
+            )
+            connection.execute(
+                "UPDATE qc_adaptive_attempts SET recipe_sha256 = ?, state = 'RECIPE_BOUND', "
+                "updated_at = ? WHERE candidate_id = ?",
+                (recipe_sha256, now, candidate_id),
+            )
+            stored = connection.execute(
+                "SELECT * FROM qc_candidates WHERE candidate_id = ?", (candidate_id,)
+            ).fetchone()
+        return self._qc_candidate_record(stored)
+
+    def update_adaptive_attempt(
+        self, candidate_id: str, *, state: str, result: Mapping[str, Any] | None = None
+    ) -> AdaptiveAttemptRecord | None:
+        candidate_id = _evidence_id(candidate_id, "candidate_id")
+        self.initialize()
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM qc_adaptive_attempts WHERE candidate_id = ?", (candidate_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            intervention = _json_load(row["intervention_json"], {})
+            if result is not None:
+                intervention = {**dict(intervention), "result": dict(result)}
+            now = _utc_now()
+            connection.execute(
+                "UPDATE qc_adaptive_attempts SET state = ?, intervention_json = ?, "
+                "updated_at = ? WHERE candidate_id = ?",
+                (state, _canonical_json(intervention), now, candidate_id),
+            )
+            row = connection.execute(
+                "SELECT * FROM qc_adaptive_attempts WHERE candidate_id = ?", (candidate_id,)
+            ).fetchone()
+        return _adaptive_attempt_record(row)
 
     def complete_qc_candidate_generation(
         self,
@@ -4425,6 +4811,60 @@ class PipelineStateStore:
                     ],
                 )
         return ids
+
+    def pause_qc_candidate(self, candidate_id: str) -> QcCandidateRecord:
+        candidate_id = _evidence_id(candidate_id, "candidate_id")
+        self.initialize()
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM qc_candidates WHERE candidate_id = ?", (candidate_id,)
+            ).fetchone()
+            if row is None:
+                raise StateTransitionError("Unknown QC candidate.")
+            if QcCandidateState(row["state"]) in {
+                QcCandidateState.ACCEPTED, QcCandidateState.SUPERSEDED,
+                QcCandidateState.FINAL_RENDERING,
+            }:
+                raise StateTransitionError("This QC candidate cannot be paused.")
+            now = _utc_now()
+            connection.execute(
+                "UPDATE qc_candidates SET state = ?, next_action = 'operator_pause', "
+                "updated_at = ? WHERE candidate_id = ?",
+                (QcCandidateState.PAUSED.value, now, candidate_id),
+            )
+            stored = connection.execute(
+                "SELECT * FROM qc_candidates WHERE candidate_id = ?", (candidate_id,)
+            ).fetchone()
+        return self._qc_candidate_record(stored)
+
+    def resume_qc_candidate(self, candidate_id: str) -> QcCandidateRecord:
+        """Resume a paused/deferred scene without overwriting human history."""
+        candidate_id = _evidence_id(candidate_id, "candidate_id")
+        self.initialize()
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM qc_candidates WHERE candidate_id = ?", (candidate_id,)
+            ).fetchone()
+            if row is None:
+                raise StateTransitionError("Unknown QC candidate.")
+            if QcCandidateState(row["state"]) not in {
+                QcCandidateState.PAUSED,
+                QcCandidateState.HOLD_FOR_REVIEW,
+                QcCandidateState.DEFERRED_AUTOMATED_REPAIR,
+            }:
+                raise StateTransitionError("Only paused or deferred QC work can resume.")
+            now = _utc_now()
+            connection.execute(
+                "UPDATE qc_candidates SET state = ?, next_action = 'resume_adaptive', "
+                "updated_at = ? WHERE candidate_id = ?",
+                (QcCandidateState.DEFERRED_AUTOMATED_REPAIR.value, now, candidate_id),
+            )
+            stored = connection.execute(
+                "SELECT * FROM qc_candidates WHERE candidate_id = ?", (candidate_id,)
+            ).fetchone()
+        return self._qc_candidate_record(stored)
 
     def qc_final_selection(
         self,

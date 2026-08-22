@@ -7,10 +7,19 @@ import hashlib
 import json
 import logging
 from pathlib import Path
+import shutil
 from datetime import datetime, timezone
 import socket
 from tempfile import TemporaryDirectory
 from typing import Any, Callable, Mapping, Sequence
+
+from .adaptive_qc import (
+    apply_repair_plan,
+    deterministic_adaptive_seed,
+    next_active_strategy,
+    normalized_defect_family,
+    validate_repair_plan,
+)
 
 from .contracts import JobPayload
 from .qc_backend import (
@@ -28,6 +37,7 @@ from .qc_contracts import (
     QcDecision,
     QcError,
     QcEvidencePolicy,
+    QcHumanDecision,
     QcTier,
     canonical_json,
     evaluation_idempotency_key,
@@ -326,7 +336,10 @@ class Phase1QcController:
                     continue
                 if any(
                     token in category
-                    for token in ("anatomy", "morph", "topology", "limb")
+                    for token in (
+                        "anatomy", "morph", "topology", "limb", "hand",
+                        "finger", "face", "eye", "identity",
+                    )
                 ):
                     return True
                 if severity >= 5 and "temporal" in category:
@@ -462,7 +475,20 @@ class Phase1QcController:
         b2_document = validated.document
 
         frame_path = str(self.layout.scene_frame_path(source.job_id, source.scene_id, revision))
-        source_video_path = str(self.layout.scene_clip_path(source.job_id, source.scene_id, revision))
+        source_video_path = str(
+            self.layout.scene_draft_path(source.job_id, source.scene_id, revision)
+            if source.artifact_stage == QcArtifactStage.DRAFT
+            else self.layout.scene_clip_path(source.job_id, source.scene_id, revision)
+        )
+        source_revision = next(
+            item for item in self.store.scene_revisions(source.job_id, source.scene_id)
+            if item.revision == source.revision
+        )
+        if not source_revision.frame_path or not Path(source_revision.frame_path).is_file():
+            raise StateTransitionError("B2 source lost its immutable starting frame.")
+        Path(frame_path).parent.mkdir(parents=True, exist_ok=True)
+        if not Path(frame_path).is_file():
+            shutil.copyfile(source_revision.frame_path, frame_path)
         self._ensure_qc_b2_revision(
             job_id=source.job_id,
             scene_id=source.scene_id,
@@ -514,6 +540,14 @@ class Phase1QcController:
             negative_prompt_sha256=source.negative_prompt_sha256,
             state=QcCandidateState.PENDING_GENERATION,
             next_action="render_b2",
+            artifact_stage=(
+                QcArtifactStage.DRAFT
+                if source.artifact_stage == QcArtifactStage.DRAFT
+                else QcArtifactStage.LEGACY_FINAL
+            ),
+            attempt_number=source.attempt_number + 1,
+            authority_tier="B",
+            strategy="regenerate_start_frame",
         )
 
     def register_original_candidates(self, job: JobPayload) -> tuple[QcCandidateRecord, ...]:
@@ -621,6 +655,223 @@ class Phase1QcController:
             raise StateTransitionError("QC routing requires completed durable evidence.")
         return completed[-1]
 
+    @staticmethod
+    def _evaluation_defects(
+        evaluation: QcEvaluationRecord,
+    ) -> tuple[Mapping[str, Any], ...]:
+        defects: list[Mapping[str, Any]] = []
+        for window in _normalized_planner_windows(evaluation.suspect_windows):
+            defects.extend(window["defects"])
+        return tuple(defects)
+
+    def _adaptive_strategy_history(self, candidate: QcCandidateRecord) -> tuple[str, ...]:
+        aliases = {
+            QcTier.A1: "new_seed",
+            QcTier.A2: "reduced_motion_pressure",
+            QcTier.B1: "constrained_prompt_repair",
+            QcTier.B2: "regenerate_start_frame",
+            QcTier.C: "current_scene_shot_redesign",
+            QcTier.D: "current_scene_semantic_replan",
+        }
+        return tuple(
+            item.strategy
+            if item.strategy not in {item.tier.value.casefold(), "legacy_original"}
+            else aliases.get(item.tier, item.strategy)
+            for item in self.store.qc_candidates(candidate.job_id, candidate.scene_id)
+            if item.tier != QcTier.ORIGINAL
+        )
+
+    def _schedule_server_validated_strategy(
+        self,
+        job: JobPayload,
+        candidate: QcCandidateRecord,
+        evaluation: QcEvaluationRecord,
+        *,
+        tier: QcTier,
+        strategy: str,
+        authority: str,
+    ) -> QcCandidateRecord:
+        source_document = self._revision_document(self.store, candidate)
+        attempt_number = max(
+            (item.attempt_number for item in self.store.qc_candidates(candidate.job_id, candidate.scene_id)),
+            default=0,
+        ) + 1
+        seed = deterministic_adaptive_seed(
+            job_id=candidate.job_id,
+            scene_id=candidate.scene_id,
+            parent_candidate_id=candidate.candidate_id,
+            strategy=strategy,
+            attempt_number=attempt_number,
+        )
+        if strategy == "reduced_motion_pressure":
+            raw_plan = {
+                "schema_version": "adaptive_repair_plan_v1",
+                "authority_tier": "A",
+                "strategy": strategy,
+                "hypothesis": "The defect survived a seed retry and needs stronger source conditioning.",
+                "preserve_start_frame": True,
+                "changes": [{"path": "i2v.first_pass.preset", "operation": "replace", "value": strategy}],
+                "failure_addressed": [normalized_defect_family(self._evaluation_defects(evaluation))],
+                "difference_from_prior_attempts": "Changes verified first-pass conditioning controls as well as seed.",
+                "expected_effect": "Reduced stochastic motion pressure with stronger start-frame adherence.",
+            }
+        else:
+            if tier == QcTier.C:
+                suffix = (
+                    "Use one stable camera angle and simplified, sequential subject motion; "
+                    "preserve every required identity, action, location, and transition."
+                )
+            else:
+                variant = sum(
+                    1 for item in self.store.qc_candidates(candidate.job_id, candidate.scene_id)
+                    if item.tier == QcTier.D
+                ) + 1
+                patterns = (
+                    "Use explicit chronological beats with unambiguous subject and body-part ownership.",
+                    "Use continuity-preserving static staging and one clearly bounded action per beat.",
+                    "Use simplified motion with the required transition shown before any secondary action.",
+                )
+                suffix = (
+                    f"Current-scene semantic replan {variant}: "
+                    f"{patterns[(variant - 1) % len(patterns)]} Preserve every identity and location."
+                )
+            raw_plan = {
+                "schema_version": "adaptive_repair_plan_v1",
+                "authority_tier": authority,
+                "strategy": strategy,
+                "hypothesis": "Repeated geometry or continuity evidence requires a higher-authority current-scene design.",
+                "preserve_start_frame": True,
+                "changes": [{"path": "i2v.prompt", "operation": "append", "value": suffix}],
+                "failure_addressed": [normalized_defect_family(self._evaluation_defects(evaluation))],
+                "difference_from_prior_attempts": "Escalates from sampling/prompt repair to a constrained current-scene redesign.",
+                "expected_effect": "A simpler, explicit shot that retains the original scene contract.",
+            }
+        plan = validate_repair_plan(
+            raw_plan,
+            minimum_authority=candidate.authority_tier,
+            failed_strategies=self._adaptive_strategy_history(candidate),
+        )
+        document, changed = apply_repair_plan(source_document, plan, controller_seed=seed)
+        validated = validate_scene_edit(job, candidate.scene_id, document)
+        revision = next(
+            item for item in self.store.scene_revisions(candidate.job_id, candidate.scene_id)
+            if item.revision == candidate.revision
+        )
+        if not revision.frame_path:
+            raise StateTransitionError("Adaptive repair lost its starting frame.")
+        next_revision = max(
+            item.revision for item in self.store.scene_revisions(candidate.job_id, candidate.scene_id)
+        ) + 1
+        child = self.store.create_adaptive_candidate_revision(
+            parent_candidate_id=candidate.candidate_id,
+            tier=tier,
+            parameters=validated.document,
+            frame_path=revision.frame_path,
+            source_video_path=str(
+                self.layout.scene_draft_path(candidate.job_id, candidate.scene_id, next_revision)
+            ),
+            authority_tier=authority,
+            strategy=strategy,
+            defect_family=normalized_defect_family(self._evaluation_defects(evaluation)),
+            intervention={
+                "schema_version": "adaptive_attempt_v1",
+                "plan": raw_plan,
+                "hypothesis": plan.hypothesis,
+                "fields_changed": changed,
+                "source_evaluation_id": evaluation.evaluation_id,
+                "source_recipe_sha256": candidate.recipe_sha256,
+                "planner": "controller_validated_strategy",
+            },
+            human_feedback=(
+                None
+                if self.store.qc_human_decision(candidate.candidate_id) is None
+                else {
+                    "decision": self.store.qc_human_decision(candidate.candidate_id).decision.value,
+                    "note": self.store.qc_human_decision(candidate.candidate_id).note,
+                }
+            ),
+        )
+        self.store.set_qc_candidate_state(
+            candidate.candidate_id, QcCandidateState.SUPERSEDED, next_action=None
+        )
+        return child
+
+    def _schedule_start_frame_regeneration(
+        self,
+        job: JobPayload,
+        candidate: QcCandidateRecord,
+        evaluation: QcEvaluationRecord,
+    ) -> QcCandidateRecord:
+        """Skip seed spinning when frame-zero evidence is already defective."""
+        document = json.loads(canonical_json(self._revision_document(self.store, candidate)))
+        attempt_number = max(
+            (item.attempt_number for item in self.store.qc_candidates(candidate.job_id, candidate.scene_id)),
+            default=0,
+        ) + 1
+        t2i_seed = deterministic_adaptive_seed(
+            job_id=candidate.job_id, scene_id=candidate.scene_id,
+            parent_candidate_id=candidate.candidate_id,
+            strategy="regenerate_start_frame_t2i", attempt_number=attempt_number,
+        )
+        i2v_seed = deterministic_adaptive_seed(
+            job_id=candidate.job_id, scene_id=candidate.scene_id,
+            parent_candidate_id=candidate.candidate_id,
+            strategy="regenerate_start_frame_i2v", attempt_number=attempt_number,
+        )
+        t2i = document.get("t2i")
+        i2v = document.get("i2v")
+        if not isinstance(t2i, dict) or not isinstance(i2v, dict):
+            raise StateTransitionError("B2 requires the full T2I/I2V contract.")
+        prior_t2i_seed, prior_i2v_seed = t2i.get("seed"), i2v.get("seed")
+        t2i["seed"] = str(t2i_seed) if isinstance(prior_t2i_seed, str) else t2i_seed
+        i2v["seed"] = str(i2v_seed) if isinstance(prior_i2v_seed, str) else i2v_seed
+        validated = validate_scene_edit(job, candidate.scene_id, document)
+        source_revision = next(
+            item for item in self.store.scene_revisions(candidate.job_id, candidate.scene_id)
+            if item.revision == candidate.revision
+        )
+        if not source_revision.frame_path or not Path(source_revision.frame_path).is_file():
+            raise StateTransitionError("B2 source lost its immutable starting frame.")
+        next_revision = max(
+            item.revision for item in self.store.scene_revisions(candidate.job_id, candidate.scene_id)
+        ) + 1
+        frame_path = self.layout.scene_frame_path(
+            candidate.job_id, candidate.scene_id, next_revision
+        )
+        frame_path.parent.mkdir(parents=True, exist_ok=True)
+        if not frame_path.is_file():
+            shutil.copyfile(source_revision.frame_path, frame_path)
+        defects = self._evaluation_defects(evaluation)
+        child = self.store.create_adaptive_candidate_revision(
+            parent_candidate_id=candidate.candidate_id,
+            tier=QcTier.B2,
+            parameters=validated.document,
+            frame_path=str(frame_path),
+            source_video_path=str(
+                self.layout.scene_draft_path(
+                    candidate.job_id, candidate.scene_id, next_revision
+                )
+            ),
+            authority_tier="B",
+            strategy="regenerate_start_frame",
+            defect_family=normalized_defect_family(defects),
+            intervention={
+                "schema_version": "adaptive_attempt_v1",
+                "strategy": "regenerate_start_frame",
+                "hypothesis": "The defect is visible before meaningful motion, so the starting image must change.",
+                "preserve_start_frame": False,
+                "fields_changed": {
+                    "t2i.seed": {"before": prior_t2i_seed, "after": t2i["seed"]},
+                    "i2v.seed": {"before": prior_i2v_seed, "after": i2v["seed"]},
+                },
+                "source_evaluation_id": evaluation.evaluation_id,
+            },
+        )
+        self.store.set_qc_candidate_state(
+            candidate.candidate_id, QcCandidateState.SUPERSEDED, next_action=None
+        )
+        return child
+
     def route_completed_evaluation(
         self,
         job: JobPayload,
@@ -629,12 +880,33 @@ class Phase1QcController:
         backend: Any | None = None,
         planner_identity: Mapping[str, Any] | None = None,
     ) -> QcCandidateRecord:
-        """Apply the bounded ORIGINAL -> A1 -> B1 state table idempotently."""
+        """Route PASS to humans and quality defects through monotonic A-to-D repair."""
         candidate = self.store.qc_candidate(candidate_id)
         evaluation = self._completed_evaluation(candidate_id)
         decision = evaluation.normalized_decision
         if decision is None:
             raise StateTransitionError("Completed QC evidence lacks a normalized decision.")
+        defects = self._evaluation_defects(evaluation)
+        self.store.update_adaptive_attempt(
+            candidate_id,
+            state="QC_COMPLETE",
+            result={
+                "qwen_decision": decision.value,
+                "defect_categories": sorted({str(item.get("category", "other")) for item in defects}),
+                "suspect_windows": list(_normalized_planner_windows(evaluation.suspect_windows)),
+                "maximum_severity": max((int(item.get("severity", 0)) for item in defects), default=0),
+                "maximum_confidence": max((float(item.get("confidence", 0.0)) for item in defects), default=0.0),
+            },
+        )
+        human_decision = self.store.qc_human_decision(candidate_id)
+        if (
+            human_decision is not None
+            and human_decision.decision in {QcHumanDecision.REJECT, QcHumanDecision.HOLD}
+            and candidate.state == QcCandidateState.PENDING_QC
+            and candidate.next_action == "route_existing_evidence"
+        ):
+            # Human defect evidence outranks a prior Qwen PASS after explicit Resume.
+            decision = QcDecision.FAIL
 
         if decision == QcDecision.PASS:
             state = (
@@ -651,37 +923,66 @@ class Phase1QcController:
                 self.store.promote_accepted_qc_candidate(candidate_id)
             return routed
 
-        if decision == QcDecision.UNCERTAIN:
-            return self.store.set_qc_candidate_state(
-                candidate_id,
-                QcCandidateState.HOLD_FOR_REVIEW,
-                next_action="hold_for_review",
-            )
+        if (
+            candidate.tier in {QcTier.ORIGINAL, QcTier.A1, QcTier.A2}
+            and self._b2_start_frame_detected(evaluation)
+        ):
+            return self._schedule_start_frame_regeneration(job, candidate, evaluation)
 
         if candidate.tier == QcTier.B1:
-            if not self._b2_start_frame_detected(evaluation):
-                return self.store.set_qc_candidate_state(
-                    candidate_id,
-                    QcCandidateState.HOLD_FOR_REVIEW,
-                    next_action="hold_for_review",
+            if self._b2_start_frame_detected(evaluation):
+                candidate_b2 = self.schedule_b2_retry(
+                    original_job=job,
+                    source_candidate_id=candidate.candidate_id,
+                    source_document=self._revision_document(self.store, candidate),
                 )
-            candidate_b2 = self.schedule_b2_retry(
-                original_job=job,
-                source_candidate_id=candidate.candidate_id,
-                source_document=self._revision_document(self.store, candidate),
+                if candidate_b2.recipe_sha256:
+                    self.store.ensure_adaptive_attempt(
+                        candidate_b2.candidate_id,
+                        defect_family=normalized_defect_family(defects),
+                        intervention={
+                            "schema_version": "adaptive_attempt_v1",
+                            "strategy": "regenerate_start_frame",
+                            "source_evaluation_id": evaluation.evaluation_id,
+                        },
+                    )
+                self.store.set_qc_candidate_state(
+                    candidate_id,
+                    QcCandidateState.SUPERSEDED,
+                    next_action=None,
+                )
+                return candidate_b2
+            return self._schedule_server_validated_strategy(
+                job, candidate, evaluation, tier=QcTier.C,
+                strategy="current_scene_shot_redesign", authority="C",
             )
-            self.store.set_qc_candidate_state(
-                candidate_id,
-                QcCandidateState.SUPERSEDED,
-                next_action=None,
-            )
-            return candidate_b2
 
         if candidate.tier == QcTier.B2:
+            return self._schedule_server_validated_strategy(
+                job, candidate, evaluation, tier=QcTier.C,
+                strategy="current_scene_shot_redesign", authority="C",
+            )
+
+        if candidate.tier == QcTier.C:
+            return self._schedule_server_validated_strategy(
+                job, candidate, evaluation, tier=QcTier.D,
+                strategy="current_scene_semantic_replan", authority="D",
+            )
+
+        if candidate.tier == QcTier.D:
+            if candidate.next_action == "route_existing_evidence":
+                variant = sum(
+                    1 for item in self.store.qc_candidates(candidate.job_id, candidate.scene_id)
+                    if item.tier == QcTier.D
+                ) + 1
+                return self._schedule_server_validated_strategy(
+                    job, candidate, evaluation, tier=QcTier.D,
+                    strategy=f"deferred_current_scene_replan_v{variant}", authority="D",
+                )
             return self.store.set_qc_candidate_state(
                 candidate_id,
-                QcCandidateState.HOLD_FOR_REVIEW,
-                next_action="hold_for_review",
+                QcCandidateState.DEFERRED_AUTOMATED_REPAIR,
+                next_action="deferred_untried_strategy_required",
             )
 
         source_document = self._revision_document(self.store, candidate)
@@ -704,6 +1005,20 @@ class Phase1QcController:
                 source_candidate_id=candidate_id,
                 source_document=source_document,
             )
+            self.store.ensure_adaptive_attempt(
+                retry.candidate.candidate_id,
+                defect_family=normalized_defect_family(defects),
+                intervention={
+                    "schema_version": "adaptive_attempt_v1",
+                    "strategy": "new_seed",
+                    "source_evaluation_id": evaluation.evaluation_id,
+                    "fields_changed": {"i2v.seed": {"before": candidate.current_seed, "after": retry.candidate.current_seed}},
+                },
+                human_feedback=(
+                    None if human_decision is None
+                    else {"decision": human_decision.decision.value, "note": human_decision.note}
+                ),
+            )
             self.store.set_qc_candidate_state(
                 candidate_id,
                 QcCandidateState.SUPERSEDED,
@@ -711,16 +1026,20 @@ class Phase1QcController:
             )
             return retry.candidate
 
-        if candidate.tier != QcTier.A1:
-            raise StateTransitionError("Phase 1 has no retry tier after B1.")
+        if candidate.tier == QcTier.A1:
+            return self._schedule_server_validated_strategy(
+                job, candidate, evaluation, tier=QcTier.A2,
+                strategy="reduced_motion_pressure", authority="A",
+            )
+        if candidate.tier != QcTier.A2:
+            raise StateTransitionError("Adaptive repair has no route for this candidate tier.")
         existing = self.store.qc_repairs(candidate_id)
         if existing:
             repair = existing[0]
             if repair.status != "ACCEPTED":
-                return self.store.set_qc_candidate_state(
-                    candidate_id,
-                    QcCandidateState.HOLD_FOR_REVIEW,
-                    next_action="hold_for_review",
+                return self._schedule_server_validated_strategy(
+                    job, candidate, evaluation, tier=QcTier.C,
+                    strategy="current_scene_shot_redesign", authority="C",
                 )
             # The repair evidence is deliberately durable before the child
             # revision is allocated.  Re-enter the idempotent scheduler so a
@@ -740,6 +1059,19 @@ class Phase1QcController:
             )
             if retry.candidate is None:
                 return self.store.qc_candidate(candidate_id)
+            self.store.ensure_adaptive_attempt(
+                retry.candidate.candidate_id,
+                defect_family=normalized_defect_family(defects),
+                intervention={
+                    "schema_version": "adaptive_attempt_v1",
+                    "strategy": "constrained_prompt_repair",
+                    "source_evaluation_id": evaluation.evaluation_id,
+                    "planner_identity": dict(repair.planner_identity),
+                    "planner_prompt_sha256": repair.planner_identity.get("planner_prompt_sha256"),
+                    "repair_input_sha256": repair.repair_input_sha256,
+                    "prior_history": list(repair.prior_repair_summaries),
+                },
+            )
             self.store.set_qc_candidate_state(
                 candidate_id,
                 QcCandidateState.SUPERSEDED,
@@ -836,7 +1168,23 @@ class Phase1QcController:
             candidate_id, state="COMPLETED"
         )
         if retry.candidate is None:
-            return self.store.qc_candidate(candidate_id)
+            return self._schedule_server_validated_strategy(
+                job, candidate, evaluation, tier=QcTier.C,
+                strategy="current_scene_shot_redesign", authority="C",
+            )
+        self.store.ensure_adaptive_attempt(
+            retry.candidate.candidate_id,
+            defect_family=normalized_defect_family(defects),
+            intervention={
+                "schema_version": "adaptive_attempt_v1",
+                "strategy": "constrained_prompt_repair",
+                "source_evaluation_id": evaluation.evaluation_id,
+                "planner_identity": durable_planner_identity,
+                "planner_prompt_sha256": request.prompt.sha256,
+                "repair_input_sha256": request.repair_input_sha256,
+                "prior_history": list(request.previous_repairs),
+            },
+        )
         self.store.set_qc_candidate_state(
             candidate_id,
             QcCandidateState.SUPERSEDED,
@@ -876,13 +1224,65 @@ class Phase1QcController:
             ),
             "evaluation_state": evaluation.state,
         }
-        previous = tuple(
-            {
-                "status": item.status,
-                "repair_input_sha256": item.repair_input_sha256,
-            }
-            for item in self.store.qc_repairs(candidate.candidate_id)
-        )
+        previous_items: list[Mapping[str, Any]] = []
+        for lineage_candidate in self.store.qc_candidates(candidate.job_id, candidate.scene_id):
+            evaluations = []
+            for prior_evaluation in self.store.qc_evaluations(lineage_candidate.candidate_id):
+                prior_windows = _normalized_planner_windows(prior_evaluation.suspect_windows)
+                evaluations.append(
+                    {
+                        "evaluation_id": prior_evaluation.evaluation_id,
+                        "decision": (
+                            None if prior_evaluation.normalized_decision is None
+                            else prior_evaluation.normalized_decision.value
+                        ),
+                        "defect_categories": sorted({
+                            str(defect["category"])
+                            for window in prior_windows for defect in window["defects"]
+                        }),
+                        "suspect_windows": list(prior_windows),
+                    }
+                )
+            human = self.store.qc_human_decision(lineage_candidate.candidate_id)
+            previous_items.append(
+                {
+                    "candidate_id": lineage_candidate.candidate_id,
+                    "parent_candidate_id": lineage_candidate.parent_candidate_id,
+                    "attempt_number": lineage_candidate.attempt_number,
+                    "authority_tier": lineage_candidate.authority_tier,
+                    "strategy": lineage_candidate.strategy,
+                    "recipe_sha256": lineage_candidate.recipe_sha256,
+                    "artifact_stage": lineage_candidate.artifact_stage.value,
+                    "qwen_evaluations": evaluations,
+                    "planner_repairs": [
+                        {
+                            "status": repair.status,
+                            "reason": repair.reason,
+                            "repair_input_sha256": repair.repair_input_sha256,
+                            "proposed_patch": dict(repair.proposed_patch),
+                        }
+                        for repair in self.store.qc_repairs(lineage_candidate.candidate_id)
+                    ],
+                    "human_feedback": (
+                        None if human is None else {"decision": human.decision.value, "note": human.note}
+                    ),
+                }
+            )
+        for attempt in self.store.adaptive_attempts(candidate.job_id, candidate.scene_id):
+            previous_items.append(
+                {
+                    "adaptive_attempt_id": attempt.attempt_id,
+                    "candidate_id": attempt.candidate_id,
+                    "attempt_number": attempt.attempt_number,
+                    "authority_tier": attempt.authority_tier,
+                    "strategy": attempt.strategy,
+                    "defect_family": attempt.defect_family,
+                    "state": attempt.state,
+                    "intervention": dict(attempt.intervention),
+                    "human_feedback": attempt.human_feedback,
+                }
+            )
+        previous = tuple(previous_items)
         prompt = load_repair_planner_prompt(
             self.prompt_root / "production_i2v_repair_v1.txt"
         )
@@ -1137,6 +1537,7 @@ class Phase1QcController:
                 item
                 for item in candidates
                 if item.state == QcCandidateState.DEFERRED_AUTOMATED_REPAIR
+                and item.next_action == "resume_adaptive"
             ]
             if deferred:
                 for item in deferred:
@@ -1322,6 +1723,8 @@ class Phase1QcController:
             item.state in {
                 QcCandidateState.PASS_PENDING_HUMAN,
                 QcCandidateState.HOLD_FOR_REVIEW,
+                QcCandidateState.PAUSED,
+                QcCandidateState.NEEDS_ADJACENT_SCENE_APPROVAL,
             }
             for item in candidates
         )

@@ -43,6 +43,10 @@ class CanarySafetyError(RuntimeError):
     """Raised when the canary attempts disallowed external effects."""
 
 
+class CanaryCycleComplete(RuntimeError):
+    """Intentional stop after the requested real adaptive cycle is durable."""
+
+
 class CanarySafetyMailClient:
     """Fail-closed mail client used to guard all outbound mail-like effects."""
 
@@ -89,6 +93,26 @@ class CanarySafetyMailClient:
 
 class CanaryPipelineSupervisor(PipelineSupervisor):
     """Supervisor guardrail for a single canary run."""
+
+    canary_max_adaptive_drafts: int = 0
+    canary_adaptive_drafts: int = 0
+
+    def render_qc_candidates(self, job: JobPayload, candidates: Any) -> None:
+        super().render_qc_candidates(job, candidates)
+        self.canary_adaptive_drafts += len(candidates)
+        if (
+            self.canary_max_adaptive_drafts > 0
+            and self.canary_adaptive_drafts >= self.canary_max_adaptive_drafts
+        ):
+            for candidate in self.store.qc_candidates(job.job_id):
+                if candidate.state in {
+                    QcCandidateState.PENDING_GENERATION,
+                    QcCandidateState.GENERATING,
+                    QcCandidateState.PENDING_QC,
+                    QcCandidateState.QC_RUNNING,
+                    QcCandidateState.DEFERRED_AUTOMATED_REPAIR,
+                }:
+                    self.store.pause_qc_candidate(candidate.candidate_id)
 
     def _request_next_job(self, *, previous_job_id: str | None, succeeded: bool | None) -> None:  # noqa: ARG002
         raise CanarySafetyError("Canary safety block: _request_next_job was attempted.")
@@ -729,13 +753,22 @@ def _run_execute(args: argparse.Namespace, scene_ids: tuple[int, ...]) -> dict[s
         ffprobe=ffprobe,
         external_tracker=marker,
     )
+    supervisor.canary_max_adaptive_drafts = args.max_adaptive_drafts
 
     start = time.perf_counter()
     qc_execute_status = "started"
     error: str | None = None
     try:
         supervisor.process_job(payload)
-        qc_execute_status = "completed"
+        qc_execute_status = (
+            "adaptive_cycle_proven"
+            if args.max_adaptive_drafts
+            and supervisor.canary_adaptive_drafts >= args.max_adaptive_drafts
+            else "completed"
+        )
+    except CanaryCycleComplete as exc:
+        qc_execute_status = "adaptive_cycle_proven"
+        error = None
     except CanarySafetyError as exc:
         qc_execute_status = "blocked"
         error = str(exc)
@@ -757,6 +790,7 @@ def _run_execute(args: argparse.Namespace, scene_ids: tuple[int, ...]) -> dict[s
         "qc_execute_status": qc_execute_status,
         "runtime_seconds": time.perf_counter() - start,
         "external_effects_attempted": marker["external_effects_attempted"],
+        "adaptive_drafts_generated": supervisor.canary_adaptive_drafts,
         "error": error,
         "snapshot_state": str(snapshot.state),
         "snapshot_job_id": snapshot.job_id,
@@ -787,6 +821,10 @@ def parse_args() -> argparse.Namespace:
     mode.add_argument("--prepare-only", action="store_true")
     mode.add_argument("--execute", action="store_true")
     parser.add_argument("--comfy-url", default=None)
+    parser.add_argument(
+        "--max-adaptive-drafts", type=int, default=0,
+        help="Intentionally stop after this many post-QC adaptive drafts (0 runs normally).",
+    )
     return parser.parse_args()
 
 

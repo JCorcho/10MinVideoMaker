@@ -340,6 +340,21 @@ class SupervisorController:
         self.wake()
         return result
 
+    def pause_qc_candidate(self, candidate_id: str):
+        result = self.store.pause_qc_candidate(candidate_id)
+        self.wake()
+        return result
+
+    def resume_qc_candidate(self, candidate_id: str):
+        result = self.store.resume_qc_candidate(candidate_id)
+        self.wake()
+        return result
+
+    def resume_all_automatic_holds(self, job_id: str) -> tuple[str, ...]:
+        result = self.store.resume_automatic_holds(job_id)
+        self.wake()
+        return result
+
     def qc_feedback_export_rows(self, job_id: str) -> tuple[dict[str, Any], ...]:
         """Project durable human decisions and their latest Qwen evidence."""
         self.store.load_job(job_id)
@@ -608,6 +623,10 @@ class SupervisorController:
                         "candidate_id": candidate.candidate_id,
                         "revision": candidate.revision,
                         "tier": candidate.tier.value,
+                        "artifact_stage": candidate.artifact_stage.value,
+                        "attempt_number": candidate.attempt_number,
+                        "authority_tier": candidate.authority_tier,
+                        "strategy": candidate.strategy,
                         "candidate_state": candidate.state.value,
                         "video_url": (
                             f"/api/media/{job.job_id}/"
@@ -635,6 +654,10 @@ class SupervisorController:
                                 "candidate_id": prior.candidate_id,
                                 "revision": prior.revision,
                                 "tier": prior.tier.value,
+                                "artifact_stage": prior.artifact_stage.value,
+                                "attempt_number": prior.attempt_number,
+                                "authority_tier": prior.authority_tier,
+                                "strategy": prior.strategy,
                                 "state": prior.state.value,
                                 "seed": str(prior.current_seed),
                             }
@@ -865,6 +888,7 @@ class SupervisorController:
         active_tier = None
         active_revision = None
         candidate_state: QcCandidateState | None = None
+        selected = None
         if active_candidates:
             selected = max(
                 active_candidates,
@@ -874,25 +898,49 @@ class SupervisorController:
             active_tier = selected.tier.value
             active_revision = selected.revision
             candidate_state = selected.state
+        elif active_scene_id in latest_candidates:
+            selected = latest_candidates[active_scene_id]
+        elif latest_candidates:
+            selected = max(
+                latest_candidates.values(),
+                key=lambda item: (item.updated_at, item.created_at, item.revision, item.scene_id),
+            )
+        if selected is not None and candidate_state is None:
+            active_scene_id = selected.scene_id
+            active_tier = selected.tier.value
+            active_revision = selected.revision
+            candidate_state = selected.state
 
         if candidate_state == QcCandidateState.GENERATING:
-            stage = "repair_generation"
+            stage = "RENDERING_DRAFT"
             stage_label = (
                 f"Generating {active_tier} repair for scene {active_scene_id}"
             )
         elif candidate_state == QcCandidateState.QC_RUNNING:
-            stage = "vlm_evaluation"
+            stage = "QWEN_QC"
             stage_label = (
                 f"Qwen is evaluating scene {active_scene_id} ({active_tier})"
             )
         elif counts["pending_generation"]:
-            stage = "repair_generation_queued"
+            stage = "PLANNING"
             stage_label = f"{counts['pending_generation']} repair render(s) queued"
         elif counts["pending_qc"]:
-            stage = "vlm_evaluation_queued"
+            stage = "QWEN_QC"
             stage_label = f"{counts['pending_qc']} video(s) queued for Qwen review"
+        elif candidate_state in {QcCandidateState.FINAL_PENDING, QcCandidateState.FINAL_RENDERING}:
+            stage = "RENDERING_FINAL"
+            stage_label = f"Rendering approved final for scene {active_scene_id}"
+        elif candidate_state == QcCandidateState.DEFERRED_AUTOMATED_REPAIR:
+            stage = "DEFERRED"
+            stage_label = f"Scene {active_scene_id} is deferred for another adaptive strategy"
+        elif candidate_state == QcCandidateState.PAUSED:
+            stage = "PAUSED"
+            stage_label = f"Scene {active_scene_id} is paused"
+        elif candidate_state == QcCandidateState.NEEDS_ADJACENT_SCENE_APPROVAL:
+            stage = "NEEDS_ADJACENT_SCENE_APPROVAL"
+            stage_label = f"Scene {active_scene_id} needs adjacent-scene approval"
         elif snapshot.state == PipelineState.AWAITING_QC_REVIEW:
-            stage = "human_review"
+            stage = "WAITING_HUMAN"
             stage_label = "Waiting for human approval"
         elif snapshot.state == PipelineState.RUNNING_QC:
             stage = "qc_transition"
@@ -913,6 +961,35 @@ class SupervisorController:
             "active_scene_id": active_scene_id,
             "active_tier": active_tier,
             "active_revision": active_revision,
+            "active_candidate_id": selected.candidate_id if selected is not None else None,
+            "active_artifact_stage": (
+                selected.artifact_stage.value if selected is not None else None
+            ),
+            "active_attempt_number": (
+                selected.attempt_number if selected is not None else None
+            ),
+            "active_authority_tier": (
+                selected.authority_tier if selected is not None else None
+            ),
+            "active_strategy": selected.strategy if selected is not None else None,
+            "active_candidate_state": (
+                candidate_state.value if candidate_state is not None else None
+            ),
+            "attempt_history": (
+                [
+                    {
+                        "attempt_number": item.attempt_number,
+                        "authority_tier": item.authority_tier,
+                        "strategy": item.strategy,
+                        "defect_family": item.defect_family,
+                        "state": item.state,
+                        "fields_changed": dict(item.intervention).get("fields_changed", {}),
+                        "updated_at": item.updated_at,
+                    }
+                    for item in self.store.adaptive_attempts(job_id, active_scene_id)
+                ]
+                if active_scene_id is not None else []
+            ),
             "counts": counts,
             "decisions": decisions,
             "last_activity_at": _most_recent_timestamp(timestamps),

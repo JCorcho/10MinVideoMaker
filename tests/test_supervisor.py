@@ -129,9 +129,16 @@ class FakeComfy:
             self.frame_path.parent.mkdir(parents=True, exist_ok=True)
             self.frame_path.write_bytes(b"png")
             return {"outputs": {}}
+        workflow = self.workflows[int(prompt_id.rsplit("-", 1)[1]) - 1]
+        output_node = next(
+            node_id for node_id, node in workflow.items()
+            if node.get("class_type") == "VHS_VideoCombine"
+        ) if any(
+            node.get("class_type") == "VHS_VideoCombine" for node in workflow.values()
+        ) else "36"
         return {
             "outputs": {
-                "36": {
+                output_node: {
                     "gifs": [
                         {
                             "filename": "scene.mp4",

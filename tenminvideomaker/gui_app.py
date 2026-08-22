@@ -444,6 +444,27 @@ def create_gui_app(
             },
         )
 
+    @app.post("/api/qc/candidates/{candidate_id}/pause")
+    async def pause_qc_candidate(candidate_id: str) -> dict[str, Any]:
+        try:
+            candidate = controller.pause_qc_candidate(candidate_id)
+        except StateTransitionError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        return {"candidate_id": candidate_id, "candidate_state": candidate.state.value}
+
+    @app.post("/api/qc/candidates/{candidate_id}/resume")
+    async def resume_qc_candidate(candidate_id: str) -> dict[str, Any]:
+        try:
+            candidate = controller.resume_qc_candidate(candidate_id)
+        except StateTransitionError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        return {"candidate_id": candidate_id, "candidate_state": candidate.state.value}
+
+    @app.post("/api/qc/jobs/{job_id}/resume-automatic-holds")
+    async def resume_qc_automatic_holds(job_id: str) -> dict[str, Any]:
+        candidate_ids = controller.resume_all_automatic_holds(job_id)
+        return {"job_id": job_id, "candidate_ids": list(candidate_ids), "resumed": len(candidate_ids)}
+
 
     @app.get("/api/jobs/{job_id}")
     async def job_detail(job_id: str) -> dict[str, Any]:

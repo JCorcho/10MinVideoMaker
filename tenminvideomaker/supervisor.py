@@ -639,7 +639,14 @@ class PipelineSupervisor:
                     retryable=False,
                 ) from error
             frame_path = Path(revision.frame_path) if revision.frame_path else None
-            if getattr(candidate, "tier", None) == QcTier.B2:
+            recovered_b2_frame = bool(
+                getattr(candidate, "tier", None) == QcTier.B2
+                and candidate.generation_prompt_id
+                and candidate.generation_prompt_stage == "t2i"
+                and frame_path is not None
+                and frame_path.is_file()
+            )
+            if getattr(candidate, "tier", None) == QcTier.B2 and not recovered_b2_frame:
                 if frame_path is None:
                     raise RepairGenerationError(
                         candidate.candidate_id,
@@ -668,12 +675,17 @@ class PipelineSupervisor:
                     overrides=validated.workflow,
                     revision=candidate.revision,
                 )
+                frame_images = build.api[build.output_node_id]["inputs"]["images"]
+                # The ordinary T2I output node writes through the ComfyUI
+                # process-global production layout. B2 uses this explicit
+                # canary/production revision path instead.
+                del build.api[build.output_node_id]
                 frame_path.parent.mkdir(parents=True, exist_ok=True)
                 frame_dump_node = str(max(int(node_id) for node_id in build.api) + 1)
                 build.api[frame_dump_node] = {
                     "class_type": "SaveImage",
                     "inputs": {
-                        "images": build.api[build.output_node_id]["inputs"]["images"],
+                        "images": frame_images,
                         "filename_prefix": (
                             f"10MinVideoMaker/{validated.job.job_id}/frames/"
                             f"{validated.scene.scene_id:04d}/b2-{candidate.revision}"
@@ -740,16 +752,28 @@ class PipelineSupervisor:
                         f"B2 T2I did not produce the revision-local frame {frame_path}.",
                         retryable=True,
                     )
+                candidate = self.store.bind_qc_draft_recipe(candidate.candidate_id)
             elif not frame_path or not frame_path.is_file():
                 raise RepairGenerationError(
                     candidate.candidate_id,
                     "QC repair lost its immutable starting frame.",
                     retryable=False,
                 )
-            use_continuation = self._uses_continuation(
-                validated.scene, validated.workflow
-            )
+            elif getattr(candidate, "artifact_stage", QcArtifactStage.LEGACY_FINAL) == QcArtifactStage.DRAFT:
+                candidate = self.store.bind_qc_draft_recipe(candidate.candidate_id)
+            # The emergency QC contract uses the proven single-graph first pass.
+            # Continuation/v3 remains deliberately outside this patch.
+            use_continuation = False
             route = "continuation" if use_continuation else "legacy"
+            prompt_stage = (
+                "i2v_continuation" if use_continuation
+                else (
+                    "i2v_draft"
+                    if getattr(candidate, "artifact_stage", QcArtifactStage.LEGACY_FINAL)
+                    == QcArtifactStage.DRAFT
+                    else "i2v_legacy"
+                )
+            )
             destination = Path(candidate.source_video_path)
             if (
                 candidate.state == candidate.state.GENERATING
@@ -771,9 +795,7 @@ class PipelineSupervisor:
             self.store.set_qc_generation_owner(
                 candidate.candidate_id,
                 prompt_id=candidate.generation_prompt_id,
-                prompt_stage=(
-                    "i2v_continuation" if use_continuation else "i2v_legacy"
-                ),
+                prompt_stage=prompt_stage,
                 route=route,
             )
             try:
@@ -786,18 +808,19 @@ class PipelineSupervisor:
                     revision=candidate.revision,
                     overrides=validated.workflow,
                     prompt_id_callback=lambda prompt_id, candidate_id=candidate.candidate_id,
-                        route=route, use_continuation=use_continuation: (
+                        route=route, prompt_stage=prompt_stage: (
                         self.store.set_qc_generation_owner(
                             candidate_id,
                             prompt_id=prompt_id,
-                            prompt_stage=(
-                                "i2v_continuation" if use_continuation else "i2v_legacy"
-                            ),
+                            prompt_stage=prompt_stage,
                             route=route,
                         )
                     ),
                     existing_prompt_id=(
-                        candidate.generation_prompt_id if not use_continuation else None
+                        candidate.generation_prompt_id
+                        if not use_continuation
+                        and getattr(candidate, "generation_prompt_stage", None) == prompt_stage
+                        else None
                     ),
                     deliver_to_discord=False,
                     continuation_route=use_continuation,
@@ -859,6 +882,8 @@ class PipelineSupervisor:
                     "Approved draft lost its immutable starting frame.",
                     retryable=False,
                 )
+            elif candidate.artifact_stage == QcArtifactStage.DRAFT:
+                candidate = self.store.bind_qc_draft_recipe(candidate.candidate_id)
             validated = validate_scene_edit(job, candidate.scene_id, revision.parameters)
             destination = self.storage.scene_clip_path(
                 job.job_id, candidate.scene_id, candidate.revision
@@ -2056,7 +2081,10 @@ class PipelineSupervisor:
             if qc_enabled and self.storage is not None
             else self._clip_path(job.job_id, scene.scene_id)
         )
-        use_continuation = self._automatic_uses_continuation(job.job_id, scene)
+        use_continuation = (
+            False if qc_enabled
+            else self._automatic_uses_continuation(job.job_id, scene)
+        )
         if (
             not use_continuation
             and record.video_path
@@ -2096,10 +2124,11 @@ class PipelineSupervisor:
                 scene.scene_id,
             )
             return
+        expected_single_graph_stage = "i2v_draft" if qc_enabled else "i2v_legacy"
         resume_legacy_prompt = bool(
             not use_continuation
             and record.prompt_id
-            and record.prompt_stage == "i2v_legacy"
+            and record.prompt_stage == expected_single_graph_stage
             and record.i2v_attempts > 0
         )
         if (
@@ -2114,7 +2143,7 @@ class PipelineSupervisor:
         prompt_stage = (
             "i2v_continuation"
             if use_continuation
-            else ("i2v_draft" if qc_enabled else "i2v_legacy")
+            else expected_single_graph_stage
         )
         attempt = self.store.begin_scene_stage(
             job.job_id,

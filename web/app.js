@@ -1885,6 +1885,9 @@ function updateQcProgress(progress) {
       (progress.active_tier
         ? ` (${progress.active_tier} / revision ${progress.active_revision ?? "?"})`
         : "");
+  const adaptive = progress?.active_candidate_id
+    ? `Attempt ${progress.active_attempt_number ?? "?"} · ${progress.active_artifact_stage || "?"} · authority ${progress.active_authority_tier || "?"} · ${progress.active_strategy || "unknown strategy"}`
+    : "No active adaptive attempt.";
   const lastActivityMs = progress?.last_activity_at
     ? Date.parse(progress.last_activity_at)
     : Number.NaN;
@@ -1904,6 +1907,13 @@ function updateQcProgress(progress) {
     stageLabel.textContent = stage;
   }
   $("#qc-progress-active").textContent = noJob ? "No active QC job." : actions;
+  $("#qc-progress-adaptive").textContent = adaptive;
+  const pauseButton = $("#qc-pause-active");
+  const resumeButton = $("#qc-resume-active");
+  const resumeAllButton = $("#qc-resume-all");
+  if (pauseButton) pauseButton.disabled = !progress?.active_candidate_id;
+  if (resumeButton) resumeButton.disabled = !progress?.active_candidate_id || !["PAUSED", "HOLD_FOR_REVIEW", "DEFERRED_AUTOMATED_REPAIR"].includes(progress?.active_candidate_state);
+  if (resumeAllButton) resumeAllButton.disabled = !progress?.job_id;
   $("#qc-progress-count").textContent = `${percent}% complete`;
   $("#qc-progress-rendering").textContent = `rendering: ${counts.generating || 0}`;
   $("#qc-progress-waiting-render").textContent = `waiting for render: ${counts.pending_generation || 0}`;
@@ -1940,6 +1950,21 @@ function updateQcProgress(progress) {
   }
   warning.textContent = warningText;
   panel.classList.toggle("qc-progress-active", !noJob);
+}
+
+async function qcProgressAction(kind) {
+  const progress = state.qcProgress;
+  const path = kind === "resume-all"
+    ? `/api/qc/jobs/${encodeURIComponent(progress?.job_id || "")}/resume-automatic-holds`
+    : `/api/qc/candidates/${encodeURIComponent(progress?.active_candidate_id || "")}/${kind}`;
+  if ((kind === "resume-all" && !progress?.job_id) || (kind !== "resume-all" && !progress?.active_candidate_id)) return;
+  try {
+    await api(path, {method: "POST"});
+    toast(kind === "pause" ? "Adaptive repair paused." : "Adaptive repair resumed.");
+    await refreshStatus();
+  } catch (error) {
+    toast(error.message, true);
+  }
 }
 
 function isQcProgressActive(progress) {
@@ -2109,6 +2134,9 @@ $("#refresh-reviews").addEventListener("click", () =>
 );
 $("#review-updates-apply").addEventListener("click", applyDeferredReviewUpdate);
 $("#export-qc-feedback").addEventListener("click", exportQcFeedback);
+$("#qc-pause-active")?.addEventListener("click", () => qcProgressAction("pause"));
+$("#qc-resume-active")?.addEventListener("click", () => qcProgressAction("resume"));
+$("#qc-resume-all")?.addEventListener("click", () => qcProgressAction("resume-all"));
 $("#cancel-modal").addEventListener("click", () => $("#collision-modal").classList.add("hidden"));
 $("#approve-job").addEventListener("click", async () => {
   try {
