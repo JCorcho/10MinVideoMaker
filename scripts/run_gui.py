@@ -94,6 +94,13 @@ def _required_inputs(comfy: ComfyHttpClient, node_type: str) -> dict:
     return required if isinstance(required, dict) else {}
 
 
+def _optional_inputs(comfy: ComfyHttpClient, node_type: str) -> dict:
+    document = comfy.object_info(node_type)
+    node = document.get(node_type, {})
+    optional = node.get("input", {}).get("optional", {})
+    return optional if isinstance(optional, dict) else {}
+
+
 def _artifact_kind_options(required: dict) -> set[str]:
     specification = required.get("artifact_kind")
     if (
@@ -112,12 +119,15 @@ def _artifact_kind_options(required: dict) -> set[str]:
 def _current_node_contract_loaded(comfy: ComfyHttpClient) -> bool:
     expected_artifacts = {
         "stage1_handoff",
+        "stage1_audio",
         "stage2_video",
         "stage2_audio",
     }
     save_frame = _required_inputs(comfy, "10MinVideoMaker_SaveSceneFrame")
     save_chunk = _required_inputs(comfy, "10MinVideoMaker_SaveChunkLatent")
     load_chunk = _required_inputs(comfy, "10MinVideoMaker_LoadChunkLatent")
+    save_chunk_optional = _optional_inputs(comfy, "10MinVideoMaker_SaveChunkLatent")
+    load_chunk_optional = _optional_inputs(comfy, "10MinVideoMaker_LoadChunkLatent")
     isolate_conditioning = _required_inputs(
         comfy,
         "10MinVideoMaker_IsolateConditioning",
@@ -131,6 +141,8 @@ def _current_node_contract_loaded(comfy: ComfyHttpClient) -> bool:
         "revision" in save_frame
         and _artifact_kind_options(save_chunk) == expected_artifacts
         and _artifact_kind_options(load_chunk) == expected_artifacts
+        and "storage_root" in save_chunk_optional
+        and "storage_root" in load_chunk_optional
         and "expected_temporal_tokens" in load_chunk
         and {"conditioning", "scope"}.issubset(isolate_conditioning)
         and {"model", "scope"}.issubset(isolate_model)

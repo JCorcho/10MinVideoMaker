@@ -639,6 +639,7 @@ class GuiAppTests(unittest.TestCase):
                         "artifact_kind": [
                             [
                                 "stage1_handoff",
+                                "stage1_audio",
                                 "stage2_video",
                                 "stage2_audio",
                             ],
@@ -649,7 +650,8 @@ class GuiAppTests(unittest.TestCase):
                         "model": ["MODEL"],
                         "scope": ["STRING"],
                         "ckpt_name": [["10Eros_v1.4_fp8mixed_learned.safetensors"]],
-                    }
+                    },
+                    "optional": {"storage_root": ["STRING"]},
                 }
             }
         }
@@ -661,6 +663,8 @@ class GuiAppTests(unittest.TestCase):
             [call.args[0] for call in current.object_info.call_args_list],
             [
                 "10MinVideoMaker_SaveSceneFrame",
+                "10MinVideoMaker_SaveChunkLatent",
+                "10MinVideoMaker_LoadChunkLatent",
                 "10MinVideoMaker_SaveChunkLatent",
                 "10MinVideoMaker_LoadChunkLatent",
                 "10MinVideoMaker_IsolateConditioning",
@@ -707,6 +711,7 @@ class GuiAppTests(unittest.TestCase):
                         [["stage1_handoff"]] if not current_after_restart else [
                             [
                                 "stage1_handoff",
+                                "stage1_audio",
                                 "stage2_video",
                                 "stage2_audio",
                             ]
@@ -733,13 +738,22 @@ class GuiAppTests(unittest.TestCase):
                     "artifact_kind": [
                         [
                             "stage1_handoff",
+                            "stage1_audio",
                             "stage2_video",
                             "stage2_audio",
                         ]
                     ],
                     "expected_temporal_tokens": ["INT"],
                 }
-            return {node_type: {"input": {"required": required}}}
+            optional = (
+                {"storage_root": ["STRING"]}
+                if current_after_restart and node_type in {
+                    "10MinVideoMaker_SaveChunkLatent",
+                    "10MinVideoMaker_LoadChunkLatent",
+                }
+                else {}
+            )
+            return {node_type: {"input": {"required": required, "optional": optional}}}
 
         stale.object_info.side_effect = object_info
 
