@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 from fractions import Fraction
 from pathlib import Path
+from types import SimpleNamespace
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
@@ -15,6 +16,7 @@ from tenminvideomaker.continuation import (
     chunk_plan_documents,
 )
 from tenminvideomaker.gui_service import GuiServiceError, SupervisorController
+from tenminvideomaker.qc_contracts import QcHumanDecision
 from tenminvideomaker.review import scene_review_document
 from tenminvideomaker.state_store import (
     PipelineState,
@@ -157,6 +159,54 @@ class RestartReclaimComfy(RemakeStageRecordingComfy):
 
 
 class GuiServiceTests(unittest.TestCase):
+    def test_human_decision_and_hold_override_store_server_canonical_feedback(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = Mock()
+            decision_result = Mock()
+            store.decide_qc_candidate.return_value = decision_result
+            store.accept_automatic_hold_override.return_value = decision_result
+            controller = SupervisorController(
+                SimpleNamespace(store=store),
+                StorageLayout(Path(directory) / "storage"),
+            )
+            feedback = {
+                "category": "qwen_missed_defect",
+                "note": "Defect appears near the end.",
+                "playback_timestamp_seconds": 9.876,
+            }
+
+            self.assertIs(
+                controller.decide_qc_candidate(
+                    job_id="job", scene_id=1, candidate_id="candidate",
+                    decision=QcHumanDecision.REJECT, feedback=feedback,
+                ),
+                decision_result,
+            )
+            reject_note = store.decide_qc_candidate.call_args.kwargs["note"]
+            self.assertEqual(
+                reject_note,
+                '{"action_context":"pass_rejection","category":"qwen_missed_defect",'
+                '"note":"Defect appears near the end.",'
+                '"playback_timestamp_seconds":9.88,'
+                '"version":"human_qc_feedback_v1"}',
+            )
+
+            self.assertIs(
+                controller.accept_automatic_hold_override(
+                    job_id="job", scene_id=1, candidate_id="candidate",
+                    feedback={"category": "policy_mismatch"},
+                ),
+                decision_result,
+            )
+            override_note = store.accept_automatic_hold_override.call_args.kwargs["note"]
+            self.assertEqual(
+                override_note,
+                '{"action_context":"automatic_hold_override",'
+                '"category":"policy_mismatch","note":null,'
+                '"playback_timestamp_seconds":null,'
+                '"version":"human_qc_feedback_v1"}',
+            )
+
     def _create_interrupted_video_checkpoint(
         self,
         root: Path,

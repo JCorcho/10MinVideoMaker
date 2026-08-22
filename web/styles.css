@@ -296,3 +296,27 @@ details > div { margin-top: 12px; }
   .remove-lora { min-height: auto; }
   .toast { left: 14px; right: 14px; bottom: 14px; max-width: none; }
 }
+
+.qc-human-feedback,
+.qc-human-feedback-readonly {
+  margin-top: 12px;
+  padding: 10px;
+  border: 1px solid #46546a;
+  border-radius: 8px;
+  background: #0d131d;
+}
+.qc-human-feedback > summary { cursor: pointer; font-weight: 700; }
+.qc-human-feedback label { display: grid; gap: 5px; margin-top: 10px; }
+.qc-human-feedback select,
+.qc-human-feedback textarea,
+.qc-human-feedback input { width: 100%; }
+.qc-feedback-timestamp-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+}
+.qc-human-feedback-readonly p { margin: 4px 0; }
+@media (max-width: 760px) {
+  .qc-feedback-timestamp-row { grid-template-columns: 1fr; }
+}

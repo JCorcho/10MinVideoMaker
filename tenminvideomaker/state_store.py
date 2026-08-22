@@ -3922,11 +3922,14 @@ class PipelineStateStore:
 
     def accept_automatic_hold_override(
         self, *, job_id: str, scene_id: int, candidate_id: str,
+        note: str | None = "manual_override_of_automatic_hold",
         actor: str = "local-operator",
     ) -> QcHumanDecisionResult:
         """Accept one current automatic hold after an explicit human override."""
         candidate_id = _evidence_id(candidate_id, "candidate_id")
         actor = _required_text(actor, "actor")
+        if note is not None and not isinstance(note, str):
+            raise StateTransitionError("Human decision note must be text or null.")
         decision_id = "decision-qc-hold-override-" + hashlib.sha256(candidate_id.encode("utf-8")).hexdigest()[:32]
         self.initialize()
         with self._connection() as connection:
@@ -3968,7 +3971,7 @@ class PipelineStateStore:
             now = _utc_now()
             connection.execute(
                 "INSERT INTO qc_human_decisions (decision_id, candidate_id, decision, note, actor, result_sha256, evidence_sha256, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (decision_id, candidate_id, QcHumanDecision.APPROVE.value, "manual_override_of_automatic_hold", actor, candidate["source_video_sha256"], evaluation["evidence_manifest_sha256"], now),
+                (decision_id, candidate_id, QcHumanDecision.APPROVE.value, note, actor, candidate["source_video_sha256"], evaluation["evidence_manifest_sha256"], now),
             )
             connection.execute("UPDATE qc_candidates SET state = ?, next_action = NULL, updated_at = ? WHERE candidate_id = ?", (QcCandidateState.ACCEPTED.value, now, candidate_id))
             connection.execute("UPDATE qc_candidates SET state = ?, next_action = NULL, updated_at = ? WHERE job_id = ? AND scene_id = ? AND candidate_id != ?", (QcCandidateState.SUPERSEDED.value, now, job_id, scene_id, candidate_id))

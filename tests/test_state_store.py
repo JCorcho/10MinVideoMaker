@@ -2242,6 +2242,31 @@ class StateStoreTests(unittest.TestCase):
             "manual_override_of_automatic_hold",
         )
 
+    def test_automatic_hold_override_persists_canonical_feedback_note(self) -> None:
+        candidate = self._create_qc_candidate()
+        self._complete_pass_for_candidate(candidate.candidate_id)
+        self.store.set_qc_candidate_state(
+            candidate.candidate_id, QcCandidateState.HOLD_FOR_REVIEW,
+            next_action="hold_for_review",
+        )
+        self._await_qc_review()
+        feedback_note = (
+            '{"action_context":"automatic_hold_override","category":"policy_mismatch",'
+            '"note":"Intentional design.","playback_timestamp_seconds":5.25,'
+            '"version":"human_qc_feedback_v1"}'
+        )
+
+        result = self.store.accept_automatic_hold_override(
+            job_id=candidate.job_id, scene_id=candidate.scene_id,
+            candidate_id=candidate.candidate_id, note=feedback_note,
+        )
+
+        self.assertEqual(result.decision.note, feedback_note)
+        self.assertEqual(
+            self.store.qc_human_decision(candidate.candidate_id).note,
+            feedback_note,
+        )
+
     def test_automatic_hold_override_rejects_terminal_human_decision_and_wrong_job(self) -> None:
         candidate = self._create_qc_candidate()
         self._complete_pass_for_candidate(candidate.candidate_id)

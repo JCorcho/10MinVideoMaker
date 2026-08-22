@@ -55,14 +55,90 @@ function qcErrorRows(windows) {
   ).join("");
 }
 
+const HUMAN_QC_FEEDBACK_CATEGORIES = [
+  ["", "No category"],
+  ["agree_with_qwen", "I agree with Qwen"],
+  ["policy_mismatch", "Qwen saw it correctly; review criteria are wrong"],
+  ["qwen_perception_error", "Qwen misunderstood what it saw"],
+  ["qwen_missed_defect", "Qwen missed a real defect"],
+  ["acceptable_minor_issue", "Real issue, but acceptable"],
+  ["other", "Other"],
+];
+
+function humanQcFeedbackControls() {
+  const options = HUMAN_QC_FEEDBACK_CATEGORIES.map(([value, label]) =>
+    `<option value="${attribute(value)}">${escapeHtml(label)}</option>`,
+  ).join("");
+  return `<details class="qc-human-feedback" data-qc-feedback>
+    <summary>Human feedback (optional)</summary>
+    <label>Category
+      <select data-qc-feedback-category>${options}</select>
+    </label>
+    <label>Why?
+      <textarea data-qc-feedback-note maxlength="4000" rows="3" placeholder="Optional explanation for future Qwen prompt/rubric tuning"></textarea>
+    </label>
+    <div class="qc-feedback-timestamp-row">
+      <label>Timestamp (seconds)
+        <input data-qc-feedback-timestamp type="number" min="0" step="0.01" inputmode="decimal">
+      </label>
+      <button data-qc-use-timestamp class="secondary" type="button">Use current timestamp</button>
+    </div>
+  </details>`;
+}
+
+function readOnlyHumanQcFeedback(item) {
+  const feedback = item?.human_feedback;
+  if (!feedback) return "";
+  const rows = [];
+  if (feedback.category) rows.push(`<p><strong>Feedback category:</strong> ${escapeHtml(feedback.category)}</p>`);
+  if (feedback.note) rows.push(`<p><strong>Operator note:</strong> ${escapeHtml(feedback.note)}</p>`);
+  if (feedback.playback_timestamp_seconds != null) {
+    rows.push(`<p><strong>Timestamp:</strong> ${escapeHtml(Number(feedback.playback_timestamp_seconds).toFixed(2))}s</p>`);
+  }
+  return rows.length ? `<section class="qc-human-feedback-readonly">${rows.join("")}</section>` : "";
+}
+
+function collectHumanQcFeedback(card) {
+  if (!card) return null;
+  const category = card.querySelector("[data-qc-feedback-category]")?.value?.trim() || "";
+  const note = card.querySelector("[data-qc-feedback-note]")?.value?.trim() || "";
+  const timestampText = card.querySelector("[data-qc-feedback-timestamp]")?.value?.trim() || "";
+  const feedback = {};
+  if (category) feedback.category = category;
+  if (note) feedback.note = note;
+  if (timestampText) feedback.playback_timestamp_seconds = Number(timestampText);
+  return Object.keys(feedback).length ? feedback : null;
+}
+
+function useCurrentQcTimestamp(event) {
+  const button = event.currentTarget;
+  const card = button?.closest?.("[data-qc-candidate-id]");
+  const video = card?.querySelector("video");
+  const input = card?.querySelector("[data-qc-feedback-timestamp]");
+  if (!video || !input || !Number.isFinite(video.currentTime)) return;
+  input.value = video.currentTime.toFixed(2);
+  setReviewInteractionLocked(true);
+  scheduleReviewInteractionRelease();
+}
+
 function captureReviewCandidateState() {
   const queue = $("#qc-review-queue");
-  if (!queue) return {focusedCandidateId: null, videos: {}};
+  if (!queue) return {focusedCandidateId: null, videos: {}, feedback: {}};
   const focusedCandidateId = document.activeElement?.closest?.("[data-qc-candidate-id]")?.dataset?.qcCandidateId || null;
   const videos = {};
+  const feedback = {};
   queue.querySelectorAll("[data-qc-candidate-id]").forEach((card) => {
     const candidateId = card.dataset.qcCandidateId;
     const video = card.querySelector("video");
+    const feedbackPanel = card.querySelector("[data-qc-feedback]");
+    if (feedbackPanel) {
+      feedback[candidateId] = {
+        category: card.querySelector("[data-qc-feedback-category]")?.value || "",
+        note: card.querySelector("[data-qc-feedback-note]")?.value || "",
+        timestamp: card.querySelector("[data-qc-feedback-timestamp]")?.value || "",
+        open: feedbackPanel.open,
+      };
+    }
     if (!video) return;
     videos[candidateId] = {
       currentTime: Number.isFinite(video.currentTime) ? video.currentTime : 0,
@@ -73,7 +149,7 @@ function captureReviewCandidateState() {
       hasFocus: card.contains(document.activeElement),
     };
   });
-  return {focusedCandidateId, videos};
+  return {focusedCandidateId, videos, feedback};
 }
 
 function restoreReviewCandidateState(snapshot) {
@@ -82,6 +158,17 @@ function restoreReviewCandidateState(snapshot) {
   if (!queue) return;
   queue.querySelectorAll("[data-qc-candidate-id]").forEach((card) => {
     const candidateId = card.dataset.qcCandidateId;
+    const savedFeedback = snapshot.feedback?.[candidateId];
+    if (savedFeedback) {
+      const category = card.querySelector("[data-qc-feedback-category]");
+      const note = card.querySelector("[data-qc-feedback-note]");
+      const timestamp = card.querySelector("[data-qc-feedback-timestamp]");
+      const panel = card.querySelector("[data-qc-feedback]");
+      if (category) category.value = savedFeedback.category;
+      if (note) note.value = savedFeedback.note;
+      if (timestamp) timestamp.value = savedFeedback.timestamp;
+      if (panel) panel.open = savedFeedback.open;
+    }
     const saved = snapshot.videos[candidateId];
     if (!saved) return;
     const video = card.querySelector("video");
@@ -286,6 +373,7 @@ function renderQcReviewQueue(
       <details><summary>Prior candidate attempts (${item.history.length})</summary>
         <div>${item.history.map((prior) => `<p>${escapeHtml(prior.tier)} · revision ${escapeHtml(prior.revision)} · seed ${escapeHtml(prior.seed)} · ${escapeHtml(prior.state)}</p>`).join("")}</div>
       </details>
+      ${kind === "approval" || !item.human_decision ? humanQcFeedbackControls() : readOnlyHumanQcFeedback(item)}
       <div class="qc-review-actions">
         ${kind === "approval" ? `
           <button class="primary" data-qc-decision="APPROVE" data-job-id="${attribute(item.job_id)}" data-scene-id="${attribute(item.scene_id)}" data-candidate-id="${attribute(item.candidate_id)}">Approve</button>
@@ -304,6 +392,7 @@ function renderQcReviewQueue(
   );
   $$('[data-qc-accept-hold]').forEach((button) => button.addEventListener("click", acceptQcHold));
   $$('[data-qc-open-scene]').forEach((button) => button.addEventListener("click", openQcReviewScene));
+  $$('[data-qc-use-timestamp]').forEach((button) => button.addEventListener("click", useCurrentQcTimestamp));
   $$("#qc-review-queue [data-qc-candidate-id]").forEach((card) => {
     registerReviewPlaybackWatchers(card);
   });
@@ -400,9 +489,13 @@ async function submitQcDecision(event) {
     `/scenes/${encodeURIComponent(button.dataset.sceneId)}` +
     `/candidates/${encodeURIComponent(button.dataset.candidateId)}/decision`;
   try {
+    const card = button.closest("[data-qc-candidate-id]");
+    const feedback = collectHumanQcFeedback(card);
+    const body = {decision: button.dataset.qcDecision};
+    if (feedback) body.feedback = feedback;
     await api(path, {
       method: "POST",
-      body: JSON.stringify({ decision: button.dataset.qcDecision }),
+      body: JSON.stringify(body),
     });
     const action = {
       APPROVE: "Approved",
@@ -422,6 +515,22 @@ async function submitQcDecision(event) {
   }
 }
 
+function exportQcFeedback() {
+  const jobId = state.status?.job_id
+    || state.qcReview?.pending?.[0]?.job_id
+    || state.qcReview?.holds?.[0]?.job_id;
+  if (!jobId) {
+    toast("No active QC job is available to export.", true);
+    return;
+  }
+  const link = document.createElement("a");
+  link.href = `/api/qc/jobs/${encodeURIComponent(jobId)}/feedback-export`;
+  link.download = `qc-feedback-${jobId}.jsonl`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+}
+
 async function acceptQcHold(event) {
   const button = event.currentTarget;
   if (!button || !window.confirm("Accept this scene despite the VLM hold?")) return;
@@ -430,7 +539,12 @@ async function acceptQcHold(event) {
     `/scenes/${encodeURIComponent(button.dataset.sceneId)}` +
     `/candidates/${encodeURIComponent(button.dataset.candidateId)}/accept-hold`;
   try {
-    await api(path, {method: "POST"});
+    const card = button.closest("[data-qc-candidate-id]");
+    const feedback = collectHumanQcFeedback(card);
+    await api(path, {
+      method: "POST",
+      body: JSON.stringify(feedback ? {feedback} : {}),
+    });
     toast("Accepted held QC candidate.");
     await loadQcReviewQueue({force: true, reason: "decision_refresh"});
   } catch (error) {
@@ -1994,6 +2108,7 @@ $("#refresh-reviews").addEventListener("click", () =>
   loadQcReviewQueue({force: true, reason: "manual_refresh"}),
 );
 $("#review-updates-apply").addEventListener("click", applyDeferredReviewUpdate);
+$("#export-qc-feedback").addEventListener("click", exportQcFeedback);
 $("#cancel-modal").addEventListener("click", () => $("#collision-modal").classList.add("hidden"));
 $("#approve-job").addEventListener("click", async () => {
   try {

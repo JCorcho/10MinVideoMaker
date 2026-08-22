@@ -103,7 +103,15 @@ class GuiStaticAssetTests(unittest.TestCase):
         self.assertIn("QC is CANARY / HUMAN APPROVAL REQUIRED", markup)
         self.assertIn('id="qc-review-queue"', markup)
         self.assertIn("/api/qc/review-queue", script)
-        self.assertIn('JSON.stringify({ decision: button.dataset.qcDecision })', script)
+        self.assertIn("function collectHumanQcFeedback(card)", script)
+        self.assertIn("function useCurrentQcTimestamp(event)", script)
+        self.assertIn("Human feedback (optional)", script)
+        self.assertIn("Use current timestamp", script)
+        self.assertIn("policy_mismatch", script)
+        self.assertIn("qwen_perception_error", script)
+        self.assertIn("qwen_missed_defect", script)
+        self.assertIn('id="export-qc-feedback"', markup)
+        self.assertIn("/feedback-export", script)
         self.assertIn('data-qc-decision="APPROVE"', script)
         self.assertIn('data-qc-decision="REJECT"', script)
         self.assertIn('data-qc-decision="HOLD"', script)
@@ -371,6 +379,7 @@ class GuiAppTests(unittest.TestCase):
                         quality_control_enabled=True, auto_advance_pass=False
                     )
                 ),
+                assembler=SimpleNamespace(),
             )
             controller = SupervisorController(supervisor, storage)
             client = TestClient(create_gui_app(controller, storage, Path(__file__).parents[1]))
@@ -404,12 +413,70 @@ class GuiAppTests(unittest.TestCase):
                 client.post(route, json={"decision": "APPROVE", "path": "D:/injected.mp4"}).status_code,
                 400,
             )
-            approved = client.post(route, json={"decision": "APPROVE"})
+            self.assertEqual(
+                client.post(
+                    route,
+                    json={
+                        "decision": "APPROVE",
+                        "feedback": {"version": "client-controlled"},
+                    },
+                ).status_code,
+                400,
+            )
+            feedback = {
+                "category": "policy_mismatch",
+                "note": "Qwen saw the intended design correctly.",
+                "playback_timestamp_seconds": 6.426,
+            }
+            approved = client.post(
+                route,
+                json={"decision": "APPROVE", "feedback": feedback},
+            )
             self.assertEqual(approved.status_code, 200)
             self.assertEqual(approved.json()["candidate_state"], "ACCEPTED")
             self.assertTrue(controller._wake.is_set())
-            self.assertTrue(client.post(route, json={"decision": "APPROVE"}).json()["replayed"])
+            stored_feedback = json.loads(
+                store.qc_human_decision(candidate.candidate_id).note
+            )
+            self.assertEqual(stored_feedback["version"], "human_qc_feedback_v1")
+            self.assertEqual(stored_feedback["action_context"], "pass_approval")
+            self.assertEqual(stored_feedback["category"], "policy_mismatch")
+            self.assertEqual(stored_feedback["playback_timestamp_seconds"], 6.43)
+            self.assertTrue(
+                client.post(
+                    route,
+                    json={"decision": "APPROVE", "feedback": feedback},
+                ).json()["replayed"]
+            )
             self.assertEqual(client.post(route, json={"decision": "REJECT"}).status_code, 409)
+
+            exported = client.get(
+                f"/api/qc/jobs/{job.job_id}/feedback-export"
+            )
+            self.assertEqual(exported.status_code, 200)
+            self.assertTrue(
+                exported.headers["content-type"].startswith("application/x-ndjson")
+            )
+            self.assertIn(
+                f"qc-feedback-{job.job_id}.jsonl",
+                exported.headers["content-disposition"],
+            )
+            rows = [json.loads(line) for line in exported.text.splitlines() if line]
+            self.assertEqual(len(rows), 1)
+            row = rows[0]
+            self.assertEqual(row["schema_version"], "qc_feedback_export_v1")
+            self.assertEqual(row["human_action"], "APPROVE")
+            self.assertEqual(row["human_action_context"], "pass_approval")
+            self.assertEqual(row["human_category"], "policy_mismatch")
+            self.assertEqual(row["human_playback_timestamp_seconds"], 6.43)
+            self.assertEqual(row["qwen_decision"], "PASS")
+            self.assertEqual(row["qwen_confidence"], 0.91)
+            self.assertEqual(row["qwen_summary"], "Looks clean")
+            self.assertEqual(row["prompt_version"], "production_ltx_video_qc_v1")
+            serialized_export = exported.text
+            self.assertNotIn("model_path", serialized_export)
+            self.assertNotIn("source_video_path", serialized_export)
+            self.assertNotIn("C:/model.gguf", serialized_export)
 
     def test_duplicate_gui_launch_opens_existing_instance_and_exits_cleanly(self) -> None:
         from scripts.run_gui import main

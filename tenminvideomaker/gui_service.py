@@ -35,6 +35,11 @@ from .state_store import (
     QcHumanDecisionResult,
 )
 from .qc_contracts import QcCandidateState, QcHumanDecision, QcTier
+from .qc_feedback import (
+    QC_FEEDBACK_EXPORT_VERSION,
+    canonicalize_human_qc_feedback,
+    parse_human_qc_feedback_note,
+)
 from .storage import StorageLayout, write_json_atomic
 from .supervisor import FatalPipelineError, PipelineSupervisor
 from .workflow_builder import build_t2i_api_workflow
@@ -293,25 +298,181 @@ class SupervisorController:
         scene_id: int,
         candidate_id: str,
         decision: QcHumanDecision,
+        feedback: Mapping[str, Any] | None = None,
     ) -> QcHumanDecisionResult:
+        action_context = {
+            QcHumanDecision.APPROVE: "pass_approval",
+            QcHumanDecision.REJECT: "pass_rejection",
+            QcHumanDecision.HOLD: "pass_hold",
+        }[decision]
         result = self.store.decide_qc_candidate(
             job_id=job_id,
             scene_id=scene_id,
             candidate_id=candidate_id,
             decision=decision,
-            note=None,
+            note=canonicalize_human_qc_feedback(
+                feedback,
+                action_context=action_context,
+            ),
         )
         self.wake()
         return result
 
     def accept_automatic_hold_override(
-        self, *, job_id: str, scene_id: int, candidate_id: str,
+        self,
+        *,
+        job_id: str,
+        scene_id: int,
+        candidate_id: str,
+        feedback: Mapping[str, Any] | None = None,
     ) -> QcHumanDecisionResult:
+        note = canonicalize_human_qc_feedback(
+            feedback,
+            action_context="automatic_hold_override",
+            force_record=True,
+        )
         result = self.store.accept_automatic_hold_override(
-            job_id=job_id, scene_id=scene_id, candidate_id=candidate_id,
+            job_id=job_id,
+            scene_id=scene_id,
+            candidate_id=candidate_id,
+            note=note,
         )
         self.wake()
         return result
+
+    def qc_feedback_export_rows(self, job_id: str) -> tuple[dict[str, Any], ...]:
+        """Project durable human decisions and their latest Qwen evidence."""
+        self.store.load_job(job_id)
+        rows: list[dict[str, Any]] = []
+        candidates = sorted(
+            self.store.qc_candidates(job_id),
+            key=lambda item: (
+                item.scene_id,
+                item.revision,
+                item.created_at,
+                item.candidate_id,
+            ),
+        )
+        for candidate in candidates:
+            human_decision = self.store.qc_human_decision(candidate.candidate_id)
+            if human_decision is None:
+                continue
+            evaluations = [
+                item
+                for item in self.store.qc_evaluations(candidate.candidate_id)
+                if item.state == "COMPLETE"
+            ]
+            evaluation = evaluations[-1] if evaluations else None
+            windows = (
+                _qc_windows_for_human_review(evaluation.suspect_windows)
+                if evaluation is not None
+                else []
+            )
+            responses = [
+                window.get("response", {})
+                for window in windows
+                if isinstance(window, Mapping)
+            ]
+            confidences = [
+                response.get("confidence")
+                for response in responses
+                if isinstance(response, Mapping)
+                and isinstance(response.get("confidence"), (int, float))
+            ]
+            summaries = [
+                response.get("summary")
+                for response in responses
+                if isinstance(response, Mapping)
+                and isinstance(response.get("summary"), str)
+                and response.get("summary").strip()
+            ]
+            errors = [
+                {
+                    **error,
+                    "window_number": window.get("window_number"),
+                    "window_timestamps_seconds": window.get(
+                        "timestamps_seconds", []
+                    ),
+                }
+                for window in windows
+                for error in window.get("response", {}).get("errors", [])
+                if isinstance(error, Mapping)
+            ]
+            parsed_feedback = parse_human_qc_feedback_note(human_decision.note)
+            action_context = parsed_feedback.get("action_context")
+            if not action_context:
+                if human_decision.decision == QcHumanDecision.APPROVE:
+                    action_context = (
+                        "automatic_hold_override"
+                        if human_decision.decision_id.startswith(
+                            "decision-qc-hold-override-"
+                        )
+                        or human_decision.note == "manual_override_of_automatic_hold"
+                        else "pass_approval"
+                    )
+                elif human_decision.decision == QcHumanDecision.REJECT:
+                    action_context = "pass_rejection"
+                else:
+                    action_context = "pass_hold"
+            evaluator_identity = (
+                evaluation.evaluator_identity if evaluation is not None else {}
+            )
+            rows.append(
+                {
+                    "schema_version": QC_FEEDBACK_EXPORT_VERSION,
+                    "job_id": candidate.job_id,
+                    "scene_id": candidate.scene_id,
+                    "candidate_id": candidate.candidate_id,
+                    "tier": candidate.tier.value,
+                    "revision": candidate.revision,
+                    "candidate_state_at_export": candidate.state.value,
+                    "human_action": human_decision.decision.value,
+                    "human_action_context": action_context,
+                    "human_category": parsed_feedback.get("category"),
+                    "human_note": parsed_feedback.get("note"),
+                    "human_playback_timestamp_seconds": parsed_feedback.get(
+                        "playback_timestamp_seconds"
+                    ),
+                    "human_reviewed_at": human_decision.created_at,
+                    "qwen_decision": (
+                        evaluation.normalized_decision.value
+                        if evaluation is not None
+                        and evaluation.normalized_decision is not None
+                        else None
+                    ),
+                    "qwen_confidence": min(confidences) if confidences else None,
+                    "qwen_summary": summaries[-1] if summaries else None,
+                    "qwen_errors": errors,
+                    "qwen_suspect_windows": windows,
+                    "evaluator_version": evaluator_identity.get(
+                        "evaluator_version"
+                    ),
+                    "backend_version": evaluator_identity.get("backend_version"),
+                    "model_id": evaluator_identity.get("model_id"),
+                    "prompt_version": (
+                        evaluation.prompt_version if evaluation is not None else None
+                    ),
+                    "effective_config_sha256": (
+                        evaluation.effective_config_sha256
+                        if evaluation is not None
+                        else None
+                    ),
+                }
+            )
+        return tuple(rows)
+
+    def qc_feedback_export_jsonl(self, job_id: str) -> str:
+        rows = self.qc_feedback_export_rows(job_id)
+        return "".join(
+            json.dumps(
+                row,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n"
+            for row in rows
+        )
 
     def qc_review_queue_document(self) -> dict[str, Any]:
         qc_controller = getattr(self.supervisor, "qc_controller", None)
@@ -482,6 +643,10 @@ class SupervisorController:
                         ],
                         "human_decision": (
                             human_decision.decision.value
+                            if human_decision is not None else None
+                        ),
+                        "human_feedback": (
+                            parse_human_qc_feedback_note(human_decision.note)
                             if human_decision is not None else None
                         ),
                     }

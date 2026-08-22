@@ -36,6 +36,7 @@ from .state_store import (
     StateTransitionError,
 )
 from .qc_contracts import QcHumanDecision
+from .qc_feedback import HumanQcFeedbackError
 from .storage import StorageLayout, write_json_atomic
 
 
@@ -334,10 +335,23 @@ def create_gui_app(
         request: Request,
     ) -> dict[str, Any]:
         body = await request.json()
-        if not isinstance(body, Mapping) or set(body) != {"decision"}:
+        if (
+            not isinstance(body, Mapping)
+            or "decision" not in body
+            or not set(body).issubset({"decision", "feedback"})
+        ):
             raise HTTPException(
                 status_code=400,
-                detail="Payload must contain only the durable QC decision.",
+                detail=(
+                    "Payload must contain the durable QC decision and optional "
+                    "feedback only."
+                ),
+            )
+        feedback = body.get("feedback")
+        if feedback is not None and not isinstance(feedback, Mapping):
+            raise HTTPException(
+                status_code=400,
+                detail="feedback must be an object or null.",
             )
         try:
             decision = QcHumanDecision(str(body["decision"]))
@@ -352,7 +366,10 @@ def create_gui_app(
                 scene_id=scene_id,
                 candidate_id=candidate_id,
                 decision=decision,
+                feedback=feedback,
             )
+        except HumanQcFeedbackError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
         except ValueError as error:
             raise HTTPException(status_code=400, detail="Unknown QC decision.") from error
         except StateTransitionError as error:
@@ -371,12 +388,36 @@ def create_gui_app(
         "/api/qc/jobs/{job_id}/scenes/{scene_id}/candidates/{candidate_id}/accept-hold"
     )
     async def accept_qc_hold(
-        job_id: str, scene_id: int, candidate_id: str,
+        job_id: str, scene_id: int, candidate_id: str, request: Request,
     ) -> dict[str, Any]:
+        raw_body = await request.body()
+        if raw_body:
+            try:
+                body = json.loads(raw_body)
+            except json.JSONDecodeError as error:
+                raise HTTPException(status_code=400, detail="Invalid JSON body.") from error
+        else:
+            body = {}
+        if not isinstance(body, Mapping) or not set(body).issubset({"feedback"}):
+            raise HTTPException(
+                status_code=400,
+                detail="Payload may contain optional feedback only.",
+            )
+        feedback = body.get("feedback")
+        if feedback is not None and not isinstance(feedback, Mapping):
+            raise HTTPException(
+                status_code=400,
+                detail="feedback must be an object or null.",
+            )
         try:
             result = controller.accept_automatic_hold_override(
-                job_id=job_id, scene_id=scene_id, candidate_id=candidate_id,
+                job_id=job_id,
+                scene_id=scene_id,
+                candidate_id=candidate_id,
+                feedback=feedback,
             )
+        except HumanQcFeedbackError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
         except StateTransitionError as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
         return {
@@ -385,6 +426,24 @@ def create_gui_app(
             "decision": result.decision.decision.value,
             "candidate_state": result.candidate.state.value,
         }
+
+
+    @app.get("/api/qc/jobs/{job_id}/feedback-export")
+    async def qc_feedback_export(job_id: str) -> Response:
+        try:
+            document = controller.qc_feedback_export_jsonl(job_id)
+        except StateTransitionError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        return Response(
+            content=document,
+            media_type="application/x-ndjson",
+            headers={
+                "Content-Disposition": (
+                    f'attachment; filename="qc-feedback-{job_id}.jsonl"'
+                )
+            },
+        )
+
 
     @app.get("/api/jobs/{job_id}")
     async def job_detail(job_id: str) -> dict[str, Any]:
